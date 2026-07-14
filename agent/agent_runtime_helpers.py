@@ -2389,6 +2389,55 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
 
 
 
+def _tool_id_match_keys(raw: Any) -> set:
+    """Every id string a tool_call / tool_result reference may legitimately
+    match against.
+
+    The Codex Responses API stores a tool result's ``tool_call_id`` as a
+    composite ``<call_id>|<response_item_id>`` (e.g.
+    ``call_ABC|fc_0f81…``), while the assistant ``tool_call`` that produced it
+    carries the plain ``call_ABC`` (its ``id`` / ``call_id``).  Comparing the
+    two as raw strings makes a valid pair look disjoint, so the sanitizer drops
+    the real result as orphaned and stubs the call with
+    ``[Result unavailable]``.
+
+    Expanding both sides to the SET of components they can match — the raw value
+    plus, when it is a ``|``-joined composite, each half — pairs them.  This is
+    the result-side completion of the #58168 fix, which taught the assistant
+    side to register both ``id`` and ``call_id`` but never split the composite a
+    result carries.  Mirrors ``codex_responses_adapter._split_responses_tool_id``
+    without importing it (this runs before every LLM call).
+    """
+    if not isinstance(raw, str):
+        return set()
+    value = raw.strip()
+    if not value:
+        return set()
+    keys = {value}
+    if "|" in value:
+        for part in value.split("|"):
+            part = part.strip()
+            if part:
+                keys.add(part)
+    return keys
+
+
+def _assistant_tc_match_keys(tc: Any) -> set:
+    """Match-keys for an assistant ``tool_call``: expand both ``id`` and
+    ``call_id`` (either may be a composite) so a result keyed on any component
+    pairs.  The union mirrors ``_get_tool_call_id_static``'s ``call_id || id``
+    tolerance (#58168), extended to split composites (see _tool_id_match_keys).
+    """
+    keys: set = set()
+    if isinstance(tc, dict):
+        for k in ("call_id", "id"):
+            keys |= _tool_id_match_keys(tc.get(k))
+    else:
+        for k in ("call_id", "id"):
+            keys |= _tool_id_match_keys(getattr(tc, k, None))
+    return keys
+
+
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
@@ -2492,53 +2541,59 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             elif isinstance(tc, dict):
                 tc["function"] = {"name": _EMPTY_NAME_SENTINEL, "arguments": "{}"}
 
-    surviving_call_ids: set = set()
+    # Match-keys are compared as SETS, not raw strings, so a composite
+    # Responses ``call_|fc_`` result pairs with its plain-``call_`` call
+    # (see _tool_id_match_keys / _assistant_tc_match_keys).
+    surviving_keys: set = set()
     for msg in messages:
         if msg.get("role") == "assistant":
             for tc in msg.get("tool_calls") or []:
-                cid = _ra().AIAgent._get_tool_call_id_static(tc)
-                if cid:
-                    surviving_call_ids.add(cid)
+                surviving_keys |= _assistant_tc_match_keys(tc)
 
-    result_call_ids: set = set()
+    answered_keys: set = set()
     for msg in messages:
         if msg.get("role") == "tool":
-            cid = (msg.get("tool_call_id") or "").strip()
-            if cid:
-                result_call_ids.add(cid)
+            answered_keys |= _tool_id_match_keys(msg.get("tool_call_id"))
 
     # 1. Drop tool results with no matching assistant call
-    orphaned_results = result_call_ids - surviving_call_ids
-    if orphaned_results:
-        messages = [
-            m for m in messages
-            if not (m.get("role") == "tool" and (m.get("tool_call_id") or "").strip() in orphaned_results)
-        ]
+    orphaned_any = False
+    kept: List[Dict[str, Any]] = []
+    for m in messages:
+        if m.get("role") == "tool":
+            rkeys = _tool_id_match_keys(m.get("tool_call_id"))
+            if rkeys and not (rkeys & surviving_keys):
+                orphaned_any = True
+                continue
+        kept.append(m)
+    if orphaned_any:
+        _dropped = len(messages) - len(kept)
+        messages = kept
         _ra().logger.debug(
             "Pre-call sanitizer: removed %d orphaned tool result(s)",
-            len(orphaned_results),
+            _dropped,
         )
 
     # 2. Inject stub results for calls whose result was dropped
-    missing_results = surviving_call_ids - result_call_ids
-    if missing_results:
-        patched: List[Dict[str, Any]] = []
-        for msg in messages:
-            patched.append(msg)
-            if msg.get("role") == "assistant":
-                for tc in msg.get("tool_calls") or []:
-                    cid = _ra().AIAgent._get_tool_call_id_static(tc)
-                    if cid in missing_results:
-                        patched.append({
-                            "role": "tool",
-                            "name": _ra().AIAgent._get_tool_call_name_static(tc),
-                            "content": "[Result unavailable — see context summary above]",
-                            "tool_call_id": cid,
-                        })
+    n_stubbed = 0
+    patched: List[Dict[str, Any]] = []
+    for msg in messages:
+        patched.append(msg)
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                tckeys = _assistant_tc_match_keys(tc)
+                if tckeys and not (tckeys & answered_keys):
+                    n_stubbed += 1
+                    patched.append({
+                        "role": "tool",
+                        "name": _ra().AIAgent._get_tool_call_name_static(tc),
+                        "content": "[Result unavailable — see context summary above]",
+                        "tool_call_id": _ra().AIAgent._get_tool_call_id_static(tc),
+                    })
+    if n_stubbed:
         messages = patched
         _ra().logger.debug(
             "Pre-call sanitizer: added %d stub tool result(s)",
-            len(missing_results),
+            n_stubbed,
         )
 
     # 3. Deduplicate tool_call_ids. Strict providers (DeepSeek) reject a
@@ -2549,8 +2604,8 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     # here even though repair_message_sequence also consumes matched ids.
     #   (a) collapse duplicate tool_calls WITHIN an assistant message
     #   (b) drop later tool result messages reusing an already-seen id
-    seen_assistant_call_ids: set = set()
-    seen_result_call_ids: set = set()
+    seen_assistant_keys: set = set()
+    seen_result_keys: set = set()
     deduped: List[Dict[str, Any]] = []
     removed_dupes = 0
     for msg in messages:
@@ -2558,23 +2613,21 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         if role == "assistant" and msg.get("tool_calls"):
             kept_tcs = []
             for tc in msg.get("tool_calls") or []:
-                cid = _ra().AIAgent._get_tool_call_id_static(tc)
-                if cid and cid in seen_assistant_call_ids:
+                tckeys = _assistant_tc_match_keys(tc)
+                if tckeys and (tckeys & seen_assistant_keys):
                     removed_dupes += 1
                     continue
-                if cid:
-                    seen_assistant_call_ids.add(cid)
+                seen_assistant_keys |= tckeys
                 kept_tcs.append(tc)
             if len(kept_tcs) != len(msg.get("tool_calls") or []):
                 msg = {**msg, "tool_calls": kept_tcs}
             deduped.append(msg)
         elif role == "tool":
-            cid = (msg.get("tool_call_id") or "").strip()
-            if cid and cid in seen_result_call_ids:
+            rkeys = _tool_id_match_keys(msg.get("tool_call_id"))
+            if rkeys and (rkeys & seen_result_keys):
                 removed_dupes += 1
                 continue
-            if cid:
-                seen_result_call_ids.add(cid)
+            seen_result_keys |= rkeys
             deduped.append(msg)
         else:
             deduped.append(msg)
