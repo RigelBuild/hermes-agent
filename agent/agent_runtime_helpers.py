@@ -497,21 +497,24 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             for tc in (msg.get("tool_calls") or []):
                 if not isinstance(tc, dict):
                     continue
-                for key in ("id", "call_id"):
-                    tc_id = tc.get(key)
-                    if tc_id:
-                        known_tool_ids.add(tc_id)
+                known_tool_ids |= _assistant_tc_match_keys(tc)
             filtered.append(msg)
         elif role == "tool":
-            tc_id = msg.get("tool_call_id")
-            if tc_id and tc_id in known_tool_ids:
+            # Match by the split match-key SET, not the raw string, so a Codex
+            # Responses composite ``call_|fc_`` result pairs with its plain
+            # ``call_`` assistant call (see _tool_id_match_keys). Raw-string
+            # ``tc_id in known_tool_ids`` made every composite result look
+            # orphaned and dropped it here — the SEA-1160 bug, in the pass that
+            # runs BEFORE sanitize_api_messages (conversation_loop.py:779).
+            rkeys = _tool_id_match_keys(msg.get("tool_call_id"))
+            if rkeys and (rkeys & known_tool_ids):
                 filtered.append(msg)
-                # Consume the id so a SECOND tool result carrying the same
-                # tool_call_id (duplicate from a retry/crash/session-resume
-                # glitch) falls into the drop branch below instead of being
-                # replayed — strict providers (DeepSeek) reject a duplicate
-                # tool_call_id with HTTP 400 (#58327). Credit: #55436.
-                known_tool_ids.discard(tc_id)
+                # Consume the matched keys so a SECOND result carrying the same
+                # id (duplicate from a retry/crash/session-resume glitch) falls
+                # into the drop branch below instead of being replayed — strict
+                # providers (DeepSeek) reject a duplicate tool_call_id with
+                # HTTP 400 (#58327). Credit: #55436.
+                known_tool_ids -= rkeys
             else:
                 repairs += 1
         else:
@@ -2438,6 +2441,45 @@ def _assistant_tc_match_keys(tc: Any) -> set:
     return keys
 
 
+def _tool_id_dedup_key(raw: Any) -> str | None:
+    """The single canonical CALL identity for dedup (distinct from pairing).
+
+    Pairing (passes 1-2) matches on the SET of an id's components so a
+    composite result finds its plain call.  Dedup must instead collapse only
+    *true* duplicates — two references to the SAME call.  Keying on every
+    component (as the match-key set does) would wrongly collapse two DISTINCT
+    calls whose results share a response-item (``fc_``) half
+    (``call_A|fc_X`` vs ``call_B|fc_X``).  The stable identity is the ``call_``
+    component; fall back to the response-item id, then the raw value.
+    """
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    if "|" in value:
+        call_part, _, rest = value.partition("|")
+        return call_part.strip() or rest.strip() or None
+    return value
+
+
+def _assistant_tc_dedup_key(tc: Any) -> str | None:
+    """Canonical dedup key for an assistant ``tool_call``: prefer ``call_id``
+    (the stable function-call id), fall back to ``id`` (see _tool_id_dedup_key).
+    """
+    if isinstance(tc, dict):
+        for k in ("call_id", "id"):
+            key = _tool_id_dedup_key(tc.get(k))
+            if key:
+                return key
+    else:
+        for k in ("call_id", "id"):
+            key = _tool_id_dedup_key(getattr(tc, k, None))
+            if key:
+                return key
+    return None
+
+
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
@@ -2613,21 +2655,26 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         if role == "assistant" and msg.get("tool_calls"):
             kept_tcs = []
             for tc in msg.get("tool_calls") or []:
-                tckeys = _assistant_tc_match_keys(tc)
-                if tckeys and (tckeys & seen_assistant_keys):
+                # Dedup on the canonical CALL identity, not the match-key set:
+                # two DISTINCT calls whose results share a response-item
+                # (``fc_``) half must not collapse (see _tool_id_dedup_key).
+                dkey = _assistant_tc_dedup_key(tc)
+                if dkey and dkey in seen_assistant_keys:
                     removed_dupes += 1
                     continue
-                seen_assistant_keys |= tckeys
+                if dkey:
+                    seen_assistant_keys.add(dkey)
                 kept_tcs.append(tc)
             if len(kept_tcs) != len(msg.get("tool_calls") or []):
                 msg = {**msg, "tool_calls": kept_tcs}
             deduped.append(msg)
         elif role == "tool":
-            rkeys = _tool_id_match_keys(msg.get("tool_call_id"))
-            if rkeys and (rkeys & seen_result_keys):
+            dkey = _tool_id_dedup_key(msg.get("tool_call_id"))
+            if dkey and dkey in seen_result_keys:
                 removed_dupes += 1
                 continue
-            seen_result_keys |= rkeys
+            if dkey:
+                seen_result_keys.add(dkey)
             deduped.append(msg)
         else:
             deduped.append(msg)
