@@ -2460,59 +2460,78 @@ This compaction should PRIORITISE preserving all information related to the focu
         silently dropped by the repair pass, re-exposing the original orphans.
         Stripping at the source avoids this entire class of mismatch.
         """
-        surviving_call_ids: set = set()
+        # Lazy import (matches strip_think_blocks above) — pair by the split
+        # match-key SET, not raw strings, so a Codex Responses composite
+        # ``call_|fc_`` result pairs with its plain-``call_`` assistant call.
+        # Raw set-difference (``result_call_ids - surviving_call_ids``) treated
+        # every composite result as mutually orphaned — the composite-id pairing bug on the
+        # post-compression path. Enforces the docstring invariant above: this
+        # pass and repair_message_sequence MUST agree on id semantics.
+        from agent.agent_runtime_helpers import (
+            _assistant_tc_match_keys,
+            _tool_id_match_keys,
+        )
+
+        surviving_keys: set = set()
         for msg in messages:
             if msg.get("role") == "assistant":
                 for tc in msg.get("tool_calls") or []:
-                    cid = self._get_tool_call_id(tc)
-                    if cid:
-                        surviving_call_ids.add(cid)
+                    surviving_keys |= _assistant_tc_match_keys(tc)
 
-        result_call_ids: set = set()
+        answered_keys: set = set()
         for msg in messages:
             if msg.get("role") == "tool":
-                cid = msg.get("tool_call_id")
-                if cid:
-                    result_call_ids.add(cid)
+                answered_keys |= _tool_id_match_keys(msg.get("tool_call_id"))
 
-        # 1. Remove tool results whose call_id has no matching assistant tool_call
-        orphaned_results = result_call_ids - surviving_call_ids
-        if orphaned_results:
-            messages = [
-                m for m in messages
-                if not (m.get("role") == "tool" and m.get("tool_call_id") in orphaned_results)
-            ]
+        # 1. Remove tool results with no matching assistant tool_call (by set
+        #    intersection of match-keys, not raw membership).
+        kept_msgs: List[Dict[str, Any]] = []
+        n_dropped = 0
+        for m in messages:
+            if m.get("role") == "tool":
+                rkeys = _tool_id_match_keys(m.get("tool_call_id"))
+                if rkeys and not (rkeys & surviving_keys):
+                    n_dropped += 1
+                    continue
+            kept_msgs.append(m)
+        if n_dropped:
+            messages = kept_msgs
             if not self.quiet_mode:
-                logger.info("Compression sanitizer: removed %d orphaned tool result(s)", len(orphaned_results))
+                logger.info("Compression sanitizer: removed %d orphaned tool result(s)", n_dropped)
 
         # 2. Strip orphaned tool_calls from assistant messages whose results
         #    were dropped.  Stripping is preferred over inserting stub results
         #    because stubs can be dropped by downstream repair_message_sequence
         #    when call_id != id (Codex Responses API format), re-exposing orphans.
-        missing_results = surviving_call_ids - result_call_ids
-        if missing_results:
-            for msg in messages:
-                if msg.get("role") != "assistant":
-                    continue
-                tcs = msg.get("tool_calls")
-                if not tcs:
-                    continue
-                kept = [tc for tc in tcs if self._get_tool_call_id(tc) not in missing_results]
-                if len(kept) != len(tcs):
-                    if kept:
-                        msg["tool_calls"] = kept
-                    else:
-                        msg.pop("tool_calls", None)
-                        # Ensure the assistant message still has visible
-                        # content so the API does not reject an empty turn.
-                        content = msg.get("content")
-                        if not content or (isinstance(content, str) and not content.strip()):
-                            msg["content"] = "(tool call removed)"
-            if not self.quiet_mode:
-                logger.info(
-                    "Compression sanitizer: stripped %d orphaned tool_call(s) from assistant messages",
-                    len(missing_results),
-                )
+        n_stripped = 0
+        for msg in messages:
+            if msg.get("role") != "assistant":
+                continue
+            tcs = msg.get("tool_calls")
+            if not tcs:
+                continue
+            kept = []
+            for tc in tcs:
+                tckeys = _assistant_tc_match_keys(tc)
+                if tckeys and not (tckeys & answered_keys):
+                    continue  # orphaned call — strip it
+                kept.append(tc)
+            if len(kept) != len(tcs):
+                n_stripped += len(tcs) - len(kept)
+                if kept:
+                    msg["tool_calls"] = kept
+                else:
+                    msg.pop("tool_calls", None)
+                    # Ensure the assistant message still has visible
+                    # content so the API does not reject an empty turn.
+                    content = msg.get("content")
+                    if not content or (isinstance(content, str) and not content.strip()):
+                        msg["content"] = "(tool call removed)"
+        if n_stripped and not self.quiet_mode:
+            logger.info(
+                "Compression sanitizer: stripped %d orphaned tool_call(s) from assistant messages",
+                n_stripped,
+            )
 
         return messages
 
