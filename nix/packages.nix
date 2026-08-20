@@ -12,9 +12,10 @@
       minimal = pkgs.callPackage ./hermes-agent.nix {
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
         npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
-        # Only embed clean revs — dirtyRev doesn't represent any upstream
-        # commit, so comparing it would always claim "update available".
-        rev = inputs.self.rev or null;
+        # rev intentionally omitted (defaults to null): threading
+        # inputs.self.rev embeds a repo revision that never matches an upstream
+        # hermes release, so banner.py's update check would compare garbage;
+        # null falls back to the PyPI version check.
       };
 
       # All platform-portable optional integrations pre-built.
