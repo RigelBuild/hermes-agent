@@ -1,4 +1,4 @@
-name: CI
+name: Rigel CI
 
 # Branch-protection gate producing a check-run literally named `CI` for the
 # fork's `main` ruleset to pin (RIG-2213). Upstream's `ci.yml` aggregator
