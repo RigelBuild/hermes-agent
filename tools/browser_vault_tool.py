@@ -268,6 +268,13 @@ def browser_vault_unlock(backend_name: str) -> str:
         return json.dumps({"success": False, "error": f"No unlockable vault backend named {backend_name!r}."})
     if backend.is_unlocked():
         return json.dumps({"success": True, "backend": backend.name, "already_unlocked": True})
+    if getattr(backend, "desktop_app", False):
+        # The 1Password app owns the approval prompt; there is no master password to collect.
+        try:
+            backend.unlock("")  # type: ignore[attr-defined]
+        except Exception as exc:
+            return json.dumps({"success": False, "error_type": "unlock_failed", "error": str(exc)[:300]})
+        return json.dumps({"success": True, "backend": backend.name, "desktop_app": True})
     if not can_prompt_here():
         return json.dumps({"success": False, "error_type": "unlock_unavailable",
                            "error": (f"{backend.display_name} is locked and this session cannot prompt for the "

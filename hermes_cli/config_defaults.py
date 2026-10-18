@@ -2468,6 +2468,9 @@ DEFAULT_CONFIG = {
             "binary_path": "",      # absolute path to op; empty = PATH.
             # Env var holding a service-account token (headless auth, no unlock prompt). Unset = prompt.
             "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",
+            # Unlock through the 1Password app's CLI integration instead of a master password: the
+            # app approves each op call, and unlock/lock only open and close this session's gate.
+            "desktop_app": False,
         },
         "bitwarden": {
             "enabled": True,        # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
