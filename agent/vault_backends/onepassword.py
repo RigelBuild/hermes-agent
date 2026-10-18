@@ -3,6 +3,9 @@
 Unlock: ``op signin --raw`` with the master password on stdin (desktop-app
 integration or account-level auth) mints an ``OP_SESSION_<account>`` token.
 A configured service-account token skips the prompt entirely (headless).
+Desktop-app mode (``vault.onepassword.desktop_app``) mints no token: the 1Password
+app authorises every ``op`` call itself, so an unlock only proves the app answers
+and opens this session's gate; a lock closes it again.
 List: ``op item list --categories Login --format json`` → title, urls,
 username, vault. Resolve: ``op item get <id> --vault <vault-id> ...`` (service
 accounts reject an item read without a vault query).
@@ -26,6 +29,8 @@ from agent.vault_store import VaultItemMeta, normalize_origin
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30.0
+# Stands in for a session token in desktop-app mode; never passed to op.
+_DESKTOP_APP_MARKER = "desktop-app"
 
 
 class OnePasswordLoginBackend(LoginBackend):
@@ -40,6 +45,7 @@ class OnePasswordLoginBackend(LoginBackend):
         env_name = str(self.cfg.get("service_account_token_env") or "OP_SERVICE_ACCOUNT_TOKEN")
         self._service_token = get_secret(env_name, "") or ""
         self._item_vaults: dict[str, str] = {}  # item id -> vault id from the latest ``item list``
+        self.desktop_app = bool(self.cfg.get("desktop_app")) and not self._service_token
 
     # ── auth ────────────────────────────────────────────────────────────────
 
@@ -63,7 +69,7 @@ class OnePasswordLoginBackend(LoginBackend):
             env["OP_ACCOUNT"] = account
         if self._service_token:
             env["OP_SERVICE_ACCOUNT_TOKEN"] = self._service_token
-        elif session_token:
+        elif session_token and not self.desktop_app:
             # op signin --raw prints the bare token; the env var name carries the account shorthand,
             # which op also accepts as plain OP_SESSION for the default account.
             env[f"OP_SESSION_{account}" if account else "OP_SESSION"] = session_token
@@ -75,6 +81,9 @@ class OnePasswordLoginBackend(LoginBackend):
     def unlock(self, master_password: str) -> None:
         """Mint a session token from the master password (consumed on stdin, never argv)."""
         generation = _unlock.begin_unlock(self.name)
+        if self.desktop_app:
+            self._unlock_desktop_app(generation)
+            return
         cmd = [str(self._op()), "signin", "--raw"]
         if account := str(self.cfg.get("account") or ""):
             cmd += ["--account", account]
@@ -83,6 +92,17 @@ class OnePasswordLoginBackend(LoginBackend):
         if proc.returncode != 0 or not token:
             raise RuntimeError(f"1Password unlock failed: {_scrub(proc.stderr or '')[:200] or 'no session token'}")
         if not _unlock.store_session_token(self.name, token, generation):
+            raise RuntimeError("1Password was locked while unlocking; try again")
+
+    def _unlock_desktop_app(self, generation: int) -> None:
+        """Open the session gate once the 1Password app authorises ``op`` (the app shows its own
+        approval prompt). No token exists in this mode, so the gate holds a fixed marker."""
+        proc = run_cli([str(self._op()), "whoami"], env=self._env(None), timeout=_TIMEOUT, label="op",
+                       timeout_message="op timed out waiting for the 1Password app", stdin=subprocess.DEVNULL)
+        if proc.returncode != 0:
+            raise RuntimeError("1Password app did not authorise the CLI (unlock the app and enable "
+                               f"Settings > Developer > Integrate with 1Password CLI): {_scrub(proc.stderr or '')[:200]}")
+        if not _unlock.store_session_token(self.name, _DESKTOP_APP_MARKER, generation):
             raise RuntimeError("1Password was locked while unlocking; try again")
 
     def _run(self, *args: str) -> str:
