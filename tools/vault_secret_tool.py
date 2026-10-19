@@ -115,6 +115,12 @@ def vault_secret_run(command: str, env: Any, workdir: str = "", timeout: Any = N
         return _locked(backend)
     except Exception as exc:
         return _err(redact(str(exc), list(values.values()))[:300])
+    short = [name for name, value in values.items() if len(value.strip()) < _MIN_REDACT]
+    if short:
+        # Output redaction skips needles this short (they would shred ordinary text), so a value
+        # this short could be echoed back verbatim. Refuse rather than return it.
+        return _err(f"{', '.join(short)}: field is shorter than {_MIN_REDACT} characters, so its "
+                    "value could not be redacted from the output; not run")
 
     from tools.environments.local import build_subprocess_env
 
