@@ -965,12 +965,20 @@ def _presence(approval_callback=None) -> tuple:
     return approval_callback, is_cli, is_gateway, is_ask
 
 
+# Reviewer verdict appended to a plugin approval's reason when the plugin asked for review first.
+_REVIEW_NOTES = {
+    "approve": "**Reviewer:** passed",
+    "escalate": "**Reviewer:** no clear verdict, check it carefully",
+}
+
+
 def _run_approval_gate(
     *, pattern_key: str, description: str, display_target: str, approval_callback=None,
     subject: str = "", noun: str = "flagged actions",
     advice: str = "Find an alternative approach that avoids this action.",
     cron_deny_message: str = "", single_query_deny_message: str = "", unattended_deny_message: str = "",
     autoapprove_log_prefix: str, fail_closed_when_no_human: bool = False, no_human_block_message: str = "",
+    review_first: bool = False,
 ) -> dict:
     """Shared human-approval gate for a flagged action (tool call or write): decision core for
     :func:`request_tool_approval` and the file-tool write gates.
@@ -982,6 +990,9 @@ def _run_approval_gate(
     never runs ungated.
     Unattended deny text is ``ctx.block_message(subject, noun, advice)`` unless the caller passes
     an explicit ``*_deny_message`` (the file-tool write gates word their own).
+    ``review_first``: run the smart reviewer as a gate BEFORE the human, whatever
+    ``approvals.mode`` is. A DENY blocks without asking; any other verdict still asks the human,
+    with the verdict appended to the reason, so the reviewer can never approve on its own.
     """
     # Hardline blocks are the caller's job BEFORE this gate, so yolo here only skips the recoverable approval layer.
     # ``approvals.mode: off`` is the third bypass source (the Desktop "Approvals: off" toggle writes it); the shell
@@ -1031,6 +1042,15 @@ def _run_approval_gate(
                        "HERMES_GATEWAY_SESSION to require approval.", *log_args)
         return _approved()
 
+    if review_first:
+        verdict = _smart_verdict(display_target, description, pattern_key, [pattern_key], session_key)
+        if verdict == "deny":
+            _record_denial(session_key)
+            return _blocked(
+                f"BLOCKED by the approval reviewer before reaching the user: {description}. "
+                f"Do NOT retry.{_denial_breaker_addendum(session_key)}",
+                pattern_key=pattern_key, description=description)
+        description = f"{description}\n{_REVIEW_NOTES.get(verdict, _REVIEW_NOTES['escalate'])}"
     return _human_decision(
         _ACTION_GATE, command=display_target, description=description, pattern_key=pattern_key,
         pattern_keys=[pattern_key], session_key=session_key,
@@ -1118,7 +1138,8 @@ def check_dangerous_command(command: str, env_type: str,
     )
 
 
-def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", approval_callback=None) -> dict:
+def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", approval_callback=None,
+                          display: Optional[str] = None, review: bool = False) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
 
     Entry point for a plugin ``pre_tool_call`` hook returning ``{"action": "approve", ...}``:
@@ -1127,7 +1148,10 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
     the LLM cannot skip it. Cron honors ``approvals.cron_mode``; any OTHER non-interactive
     context without an approval bridge fails CLOSED. ``rule_key`` controls the ``[a]lways``
     allowlist grain; when empty it is ``tool_name`` + a hash of ``reason`` so DISTINCT reasons
-    on the same tool persist independently. Returns the ``check_dangerous_command`` result shape.
+    on the same tool persist independently. ``display`` replaces the synthetic
+    ``<tool> (plugin approval rule)`` label in the prompt's code block with the actual request;
+    ``review`` runs the smart reviewer first (see ``_run_approval_gate(review_first=...)``).
+    Returns the ``check_dangerous_command`` result shape.
     """
     description = reason or f"Plugin requires approval for {tool_name}"
     if not rule_key:
@@ -1137,7 +1161,8 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
         # Namespaced so plugin-rule approvals share the allowlist machinery without ever colliding with a real
         # command pattern key; the display target is a synthetic label for the display/allowlist layer.
         pattern_key=f"plugin_rule:{rule_key}", description=description,
-        display_target=f"<{tool_name}> (plugin approval rule)", approval_callback=approval_callback,
+        display_target=display or f"<{tool_name}> (plugin approval rule)", approval_callback=approval_callback,
+        review_first=review,
         subject=subject, advice="Find an alternative approach.",
         autoapprove_log_prefix=f"plugin-escalated tool call '{tool_name}' in non-interactive non-gateway context",
         fail_closed_when_no_human=True,
