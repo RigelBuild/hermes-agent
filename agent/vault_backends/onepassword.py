@@ -10,7 +10,10 @@ Desktop-app mode (``vault.onepassword.desktop_app``) mints no token: the 1Passwo
 app authorises every ``op`` call itself, so an unlock only proves the app answers
 and opens this session's gate; a lock closes it again.
 List: ``op item list --categories Login --format json`` → title, urls,
-username, vault. Resolve: ``op item get <id> --vault <vault-id> ...`` (service
+username, vault. Any item (Secure Note, API Credential, ...) can also be searched by
+title and its field labels listed (``search_items``/``item_fields``, metadata only),
+and one field read server-side by item and field id (``read_field``) for
+``vault_secret``'s run action, which injects it into a child process. Resolve: ``op item get <id> --vault <vault-id> ...`` (service
 accounts reject an item read without a vault query).
 """
 
@@ -49,6 +52,7 @@ class OnePasswordLoginBackend(LoginBackend):
         self._service_token = get_secret(env_name, "") or ""
         self._item_vaults: dict[str, str] = {}  # item id -> vault id from the latest ``item list``
         self._item_accounts: dict[str, str] = {}  # item id -> account it was listed from ("" = default)
+        self._any_accounts: dict[str, str] = {}  # same, for search_items / item_fields / read_field
         self.desktop_app = bool(self.cfg.get("desktop_app")) and not self._service_token
 
     # ── auth ────────────────────────────────────────────────────────────────
@@ -225,6 +229,75 @@ class OnePasswordLoginBackend(LoginBackend):
         except Exception:
             return None
         return code if code.isdigit() else None
+
+    # ── any item: metadata search, field labels, one server-side field read ─────
+    def search_items(self, query: str) -> list[dict]:
+        """Items of every category whose title contains *query*; metadata only."""
+        if not self.is_unlocked():
+            raise UnlockRequired(self)
+        needle = query.strip().lower()
+        out: list[dict] = []
+        for account in self._accounts():
+            raw = json.loads(self._run("item", "list", "--format", "json", account=account) or "[]")
+            for item in raw if isinstance(raw, list) else []:
+                if not isinstance(item, dict) or not item.get("id"):
+                    continue
+                title = str(item.get("title") or "")
+                if needle and needle not in title.lower():
+                    continue
+                vault = item.get("vault") or {}
+                self._any_accounts[str(item["id"])] = account
+                out.append({"item": f"{self.prefix}{item['id']}", "title": title,
+                            "category": str(item.get("category") or ""),
+                            "vault": str(vault.get("name") or "") if isinstance(vault, dict) else "",
+                            "account": account or "default"})
+        return out
+
+    def _get_item(self, item: str) -> dict:
+        item_id = item.removeprefix(self.prefix)
+        if not item_id or item_id.startswith("-"):
+            raise RuntimeError("1Password item not found; search again")
+        accounts = [self._any_accounts[item_id]] if item_id in self._any_accounts else self._accounts()
+        last = ""
+        for account in accounts:
+            try:
+                raw = self._run("item", "get", item_id, "--reveal", "--format", "json", account=account)
+            except RuntimeError as exc:
+                last = str(exc)
+                continue
+            data = json.loads(raw or "{}")
+            if isinstance(data, dict) and data.get("id"):
+                self._any_accounts[item_id] = account
+                return data
+        raise RuntimeError("1Password item not found" + (f": {last[:120]}" if last else ""))
+
+    def item_fields(self, item: str) -> list[dict]:
+        """Field ids and labels of one item. Values are dropped here and never returned."""
+        data = self._get_item(item)
+        sections = {str(sec.get("id") or ""): str(sec.get("label") or "")
+                    for sec in data.get("sections") or [] if isinstance(sec, dict)}
+        out = []
+        for field in data.get("fields") or []:
+            if not isinstance(field, dict) or not field.get("id"):
+                continue
+            section = field.get("section") or {}
+            sid = str(section.get("id") or "") if isinstance(section, dict) else ""
+            out.append({"field": str(field["id"]), "label": str(field.get("label") or ""),
+                        "section": sections.get(sid, ""), "type": str(field.get("type") or ""),
+                        "has_value": bool(field.get("value"))})
+        return out
+
+    def read_field(self, item: str, field: str) -> str:
+        """One field's value, server-side only: the caller injects it and never returns it."""
+        data = self._get_item(item)
+        match = next((f for f in data.get("fields") or []
+                      if isinstance(f, dict) and str(f.get("id") or "") == field), None)
+        if match is None:
+            raise RuntimeError("field not found on that item; list its fields again")
+        value = match.get("value")
+        if not isinstance(value, str) or not value:
+            raise RuntimeError("that field is empty")
+        return value
 
 
 def _web_origins(origins: list[str]) -> tuple:

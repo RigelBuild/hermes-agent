@@ -20,6 +20,7 @@ _HERMES_CORE_TOOLS = [
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
     "browser_vault",  # rides with the browser; deferred by default (tools.tool_search.defer)
     "browser_exec",  # replaces the other browser tools when browser.backend is "browser-use"
+    "vault_secret",  # default-off (tools_config._DEFAULT_OFF_TOOLSETS); a host enables it beside a guard hook
     "text_to_speech",
     "todo_list", "memory",
     "session_search",
@@ -98,6 +99,11 @@ TOOLSETS = {
         "screenshots, mouse, keyboard, scroll, drag. Does NOT steal the user's cursor "
         "or keyboard focus. Works with any tool-capable model.",
         ["computer_use"],
+    ),
+    "vault_secret": _ts(
+        "Use any 1Password field (notes, API credentials, keys) in a shell command without the "
+        "value entering the conversation. Opt-in: enable only where a pre_tool_call hook gates run.",
+        ["vault_secret"],
     ),
     "terminal": _ts("Terminal/command execution and process management tools", ["terminal", "process_manage"]),
     "skills": _ts(
