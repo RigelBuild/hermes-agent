@@ -225,13 +225,13 @@ def test_edit_keeps_other_fields_and_redacts_existing_secrets(env):
     created = _create(vst, [{"label": "credential", "file": str(_secret_file(scratch, "old.txt", value=_OLD))},
                             {"label": "region", "section": "Meta", "command": "echo concealed-region"}])
     assert created["success"] is True, created
-    res = _call(vst, action="edit", item=created["item"], reason="rotate the OAuth client secret",
+    res = _call(vst, action="edit", item=created["item"], title="Google OAuth client", reason="rotate the OAuth client secret",
                 fields=[{"label": "credential", "file": str(_secret_file(scratch, "new.txt"))}])
     assert res["success"] is True, res
     fields = {f["label"]: f for f in _store(tmp)["rigelbuild"][0]["fields"]}
     assert fields["credential"]["value"] == _SECRET and fields["region"]["value"] == "concealed-region"
     # op rejects an edit and echoes the whole item: neither the new nor an existing value comes back.
-    bad = _call(vst, action="edit", item=created["item"], reason="rotate the OAuth client secret",
+    bad = _call(vst, action="edit", item=created["item"], title="Google OAuth client", reason="rotate the OAuth client secret",
                 fields=[{"label": "fail-echo", "file": str(_secret_file(scratch, "x.txt", value=_OLD + "-new"))}])
     assert bad["success"] is False
     text = json.dumps(bad)
@@ -241,7 +241,7 @@ def test_edit_keeps_other_fields_and_redacts_existing_secrets(env):
 def test_edit_cannot_turn_a_secret_field_plain(env):
     vst, _, scratch, _ = env
     created = _create(vst, [{"label": "credential", "file": str(_secret_file(scratch))}])
-    res = _call(vst, action="edit", item=created["item"], reason="change the credential field type",
+    res = _call(vst, action="edit", item=created["item"], title="Google OAuth client", reason="change the credential field type",
                 fields=[{"label": "credential", "type": "STRING", "file": str(_secret_file(scratch, "n.txt"))}])
     assert res["success"] is False and "secret field" in res["error"]
 
@@ -252,10 +252,35 @@ def test_edit_refuses_items_a_template_round_trip_could_damage(env):
     store = _store(tmp)
     store["rigelbuild"][0]["fields"].append({"id": "pk1", "type": "PASSKEY", "label": "passkey", "value": ""})
     (tmp / "store.json").write_text(json.dumps(store))
-    res = _call(vst, action="edit", item=created["item"], reason="rotate the OAuth client secret",
+    res = _call(vst, action="edit", item=created["item"], title="Google OAuth client", reason="rotate the OAuth client secret",
                 fields=[{"label": "credential", "file": str(_secret_file(scratch, "n.txt"))}])
     assert res["success"] is False and "PASSKEY" in res["error"]
     assert '"edit"' not in _logs(tmp)[0]
+
+
+def test_edit_requires_the_items_current_title(env):
+    vst, tmp, scratch, _ = env
+    created = _create(vst, [{"label": "credential", "file": str(_secret_file(scratch))}])
+    res = _call(vst, action="edit", item=created["item"], title="Some other item", reason="rotate the secret",
+                fields=[{"label": "credential", "file": str(_secret_file(scratch, "n.txt"))}])
+    assert res["success"] is False and "title does not match" in res["error"]
+    assert '"edit"' not in _logs(tmp)[0]
+
+
+def test_symlinked_ancestor_directory_is_refused(env, tmp_path):
+    vst, _, scratch, _ = env
+    outside = tmp_path / "outside-dir"
+    outside.mkdir(mode=0o700)
+    _secret_file(outside, "k.txt")
+    (scratch / "linkdir").symlink_to(outside)
+    res = _create(vst, [{"label": "credential", "file": str(scratch / "linkdir" / "k.txt")}])
+    assert res["success"] is False and "symlinks are refused" in res["error"]
+
+
+def test_value_command_output_is_capped_while_reading(env):
+    vst, _, _, _ = env
+    res = _create(vst, [{"label": "credential", "command": "yes x | head -c 200000"}])
+    assert res["success"] is False and "more than" in res["error"]
 
 
 def test_errors_are_withheld_when_a_value_line_is_too_short_to_redact(env):

@@ -334,11 +334,15 @@ class OnePasswordLoginBackend(LoginBackend):
                         input_text=json.dumps(template))
         return self._summary(out, account, title)
 
-    def edit_item(self, *, item: str, fields: list[dict]) -> dict:
-        """Set *fields* on an existing item, keeping every other field; returns its handle."""
+    def edit_item(self, *, item: str, title: str, fields: list[dict]) -> dict:
+        """Set *fields* on an existing item, keeping every other field; returns its handle. *title*
+        must equal the item's current title (the approver was shown it)."""
         if not self.writes_enabled():
             raise PermissionError("1Password writes are off (vault.onepassword.allow_write)")
         data = self._get_item(item)
+        if str(data.get("title") or "") != title:
+            data.clear()
+            raise ValueError("that item's title does not match the title given; search again")
         item_id = str(data["id"])
         account = self._any_accounts.get(item_id, self._accounts()[0])
         # op's docs: a JSON-template edit overwrites passkeys. Refuse any item holding a field or
@@ -367,7 +371,7 @@ class OnePasswordLoginBackend(LoginBackend):
                                        "the item holds a value too short to redact)")) from None
         finally:
             data.clear()
-        return self._summary(out, account, "")
+        return self._summary(out, account, title)
 
     def _summary(self, raw: str, account: str, title: str) -> dict:
         try:

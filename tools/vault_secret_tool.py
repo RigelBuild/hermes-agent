@@ -24,6 +24,7 @@ import os
 import re
 import stat
 import subprocess
+import time
 import urllib.parse
 from typing import Any, Optional
 
@@ -183,25 +184,53 @@ _CATEGORIES = {
 def _scratch_root() -> str:
     from hermes_constants import get_scratch_dir
 
-    return os.path.realpath(get_scratch_dir(prune=False))
+    return str(get_scratch_dir(prune=False))
+
+
+def _relative_to_scratch(path: str) -> tuple[str, str]:
+    """(resolved scratch root, *path* relative to it), matching the root by its own spelling or
+    its resolved one (macOS /var → /private/var). Only the root is resolved: components below it
+    are walked without following symlinks by _open_under."""
+    raw = os.path.normpath(os.path.abspath(os.path.expanduser(_scratch_root())))
+    resolved = os.path.realpath(raw)
+    expanded = os.path.normpath(os.path.abspath(os.path.expanduser(path)))
+    for base in (raw, resolved):
+        if os.path.commonpath([expanded, base]) == base and expanded != base:
+            return resolved, os.path.relpath(expanded, base)
+    raise ValueError(f"{path}: value files must be under the Hermes scratch dir ({raw})")
+
+
+def _open_under(root: str, rel: str) -> tuple[int, int, str]:
+    """Open *rel* below *root* one component at a time with O_NOFOLLOW, so no symlink anywhere
+    on the path (ancestor or leaf, even one swapped in mid-call) can redirect it. Returns
+    (parent dir fd, file fd, leaf name); the caller closes both."""
+    flags_dir = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    parts = [p for p in rel.split(os.sep) if p not in ("", ".")]
+    if not parts or ".." in parts:
+        raise ValueError("bad path")
+    dir_fd = os.open(root, flags_dir)
+    try:
+        for part in parts[:-1]:
+            nxt = os.open(part, flags_dir, dir_fd=dir_fd)
+            os.close(dir_fd)
+            dir_fd = nxt
+        return dir_fd, os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd), parts[-1]
+    except BaseException:
+        os.close(dir_fd)
+        raise
 
 
 def _read_source_file(path: str) -> tuple[str, str]:
-    """A value file: a regular file (not a symlink) under the scratch dir, owned by this user,
-    with no group or other access. Returns (value, resolved path); errors name the path, never
-    the content. The resolved path is what is opened (and later deleted), so a symlinked parent
-    swapped in after the check cannot redirect either."""
-    root = _scratch_root()
-    expanded = os.path.abspath(os.path.expanduser(path))
-    if os.path.islink(expanded):
-        raise ValueError(f"{path}: cannot open (symlinks are refused)")
-    resolved = os.path.realpath(expanded)
-    if os.path.commonpath([resolved, root]) != root:
-        raise ValueError(f"{path}: value files must be under the Hermes scratch dir ({root})")
+    """A value file: a regular file under the scratch dir, owned by this user, with no group or
+    other access, reached without following any symlink. Returns (value, path relative to the
+    scratch dir); errors name the path, never the content."""
+    root, rel = _relative_to_scratch(path)
     try:
-        fd = os.open(resolved, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    except OSError as exc:
-        raise ValueError(f"{path}: cannot open ({exc.strerror}; symlinks are refused)") from None
+        dir_fd, fd, _ = _open_under(root, rel)
+    except (OSError, ValueError) as exc:
+        reason = getattr(exc, "strerror", None) or str(exc)
+        raise ValueError(f"{path}: cannot open ({reason}; symlinks are refused)") from None
+    os.close(dir_fd)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
@@ -216,9 +245,20 @@ def _read_source_file(path: str) -> tuple[str, str]:
     finally:
         os.close(fd)
     try:
-        return raw.decode("utf-8").removesuffix("\n").removesuffix("\r"), resolved
+        return raw.decode("utf-8").removesuffix("\n").removesuffix("\r"), path
     except UnicodeDecodeError:
         raise ValueError(f"{path}: not UTF-8 text") from None
+
+
+def _unlink_source(path: str) -> None:
+    """Delete a value file via the same no-follow walk that read it."""
+    root, rel = _relative_to_scratch(path)
+    dir_fd, fd, leaf = _open_under(root, rel)
+    try:
+        os.unlink(leaf, dir_fd=dir_fd)
+    finally:
+        os.close(fd)
+        os.close(dir_fd)
 
 
 def _no_op_credentials(env: dict[str, str]) -> dict[str, str]:
@@ -234,19 +274,43 @@ def _read_source_command(command: str, cwd: str) -> str:
     on failure."""
     from tools.environments.local import build_subprocess_env
 
+    # stderr is never reported, so it is discarded; stdout is read with a hard cap, and the child
+    # is killed as soon as it exceeds the cap or the timeout.
+    proc = subprocess.Popen(["bash", "-c", command], cwd=cwd, env=_no_op_credentials(build_subprocess_env()),
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    chunks: list[bytes] = []
+    size = 0
+    deadline = time.monotonic() + _SOURCE_TIMEOUT
     try:
-        # stderr is never reported, so it is discarded rather than buffered.
-        proc = subprocess.run(["bash", "-c", command], cwd=cwd, env=_no_op_credentials(build_subprocess_env()),
-                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                              timeout=_SOURCE_TIMEOUT, check=False)
+        os.set_blocking(proc.stdout.fileno(), False)
+        while True:
+            if time.monotonic() > deadline:
+                raise ValueError(f"value command timed out after {_SOURCE_TIMEOUT}s")
+            try:
+                chunk = os.read(proc.stdout.fileno(), 65536)
+            except BlockingIOError:
+                time.sleep(0.02)
+                continue
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > _MAX_SOURCE_BYTES:
+                raise ValueError(f"value command printed more than {_MAX_SOURCE_BYTES} bytes")
+            chunks.append(chunk)
+        code = proc.wait(timeout=max(deadline - time.monotonic(), 0.1))
     except subprocess.TimeoutExpired:
         raise ValueError(f"value command timed out after {_SOURCE_TIMEOUT}s") from None
-    if proc.returncode != 0:
-        raise ValueError(f"value command exited {proc.returncode}")
-    if len(proc.stdout) > _MAX_SOURCE_BYTES:
-        raise ValueError(f"value command printed more than {_MAX_SOURCE_BYTES} bytes")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        proc.stdout.close()
+    if code != 0:
+        raise ValueError(f"value command exited {code}")
+    out = b"".join(chunks)
+    chunks.clear()
     try:
-        return proc.stdout.decode("utf-8").removesuffix("\n").removesuffix("\r")
+        return out.decode("utf-8").removesuffix("\n").removesuffix("\r")
     except UnicodeDecodeError:
         raise ValueError("value command output is not UTF-8 text") from None
 
@@ -302,8 +366,10 @@ def vault_secret_write(action: str, args: dict[str, Any]) -> str:
             return _err("create needs account, vault, title and category")
         if category.lower() not in _CATEGORIES:
             return _err(f"unknown category {category!r}")
-    elif not str(args.get("item") or "").strip():
-        return _err("edit needs item (a handle from search)")
+    elif not str(args.get("item") or "").strip() or not title:
+        # The title names the target in the approval prompt, and the backend refuses the edit
+        # unless it matches the item, so the approver sees what is really changed.
+        return _err("edit needs item (a handle from search) and title (that item's current title)")
     cwd = os.path.expanduser(str(args.get("workdir") or "")) or os.getcwd()
     if not os.path.isdir(cwd):
         return _err(f"workdir does not exist: {args.get('workdir')}")
@@ -331,7 +397,7 @@ def vault_secret_write(action: str, args: dict[str, Any]) -> str:
             result = backend.create_item(account=str(args.get("account") or ""), vault=vault, title=title,
                                          category=category, fields=updates)
         else:
-            result = backend.edit_item(item=str(args["item"]), fields=updates)
+            result = backend.edit_item(item=str(args["item"]), title=title, fields=updates)
     except UnlockRequired:
         return _locked(backend)
     except Exception as exc:
@@ -346,7 +412,7 @@ def vault_secret_write(action: str, args: dict[str, Any]) -> str:
         for spec in specs:
             if spec["source"] == "file":
                 try:
-                    os.unlink(spec["resolved"])
+                    _unlink_source(spec["resolved"])
                     deleted.append(spec["ref"])
                 except OSError:
                     pass
@@ -393,7 +459,7 @@ VAULT_SECRET_SCHEMA = {
         "field ids and labels, never values; run (command, env: {VAR: {item, field}}, reason, optional "
         "workdir, timeout) → runs `bash -c command` with each field injected as $VAR and returns the exit code and "
         "output with the values redacted. create (account, vault, title, category, fields, reason) / edit "
-        "(item, fields, reason) write an item when the host allows writes; each field is {label, section?, "
+        "(item, title, fields, reason) write an item when the host allows writes; each field is {label, section?, "
         "type?, and one of file (a 0600 file under the Hermes scratch dir), command (its stdout, run in "
         "workdir) or value (inline, non-secret fields only)}; the result is the item handle, title, vault, "
         "account and each field's label and source, never a value. A host enables writes "
@@ -409,7 +475,8 @@ VAULT_SECRET_SCHEMA = {
             "item": {"type": "string", "description": "fields, edit: an item handle from search."},
             "account": {"type": "string", "description": "create: 1Password account (required when several)."},
             "vault": {"type": "string", "description": "create: vault name or id."},
-            "title": {"type": "string", "description": "create: the new item's title."},
+            "title": {"type": "string", "description": "create: the new item's title. edit (required): the "
+                      "item's current title, shown to the approver and checked against the item."},
             "category": {"type": "string", "description": "create: item category, e.g. API Credential, "
                          "Secure Note, Password, Login."},
             "fields": {
