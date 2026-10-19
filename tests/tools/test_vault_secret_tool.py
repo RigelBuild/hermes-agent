@@ -24,7 +24,8 @@ items = {"rigelbuild": [{"id": "sopsid", "title": "SOPS", "category": "SECURE_NO
                          "sections": [{"id": "op1", "label": "Operator"}],
                          "fields": [{"id": "notesPlain", "label": "notesPlain", "type": "STRING", "value": ""},
                                     {"id": "pk", "label": "private key", "type": "CONCEALED", "section": {"id": "op1"},
-                                     "value": "__AGE__"}]}],
+                                     "value": "__AGE__"},
+                                    {"id": "pin", "label": "pin", "type": "CONCEALED", "value": "42"}]}],
          "my": [{"id": "gmailid", "title": "Gmail", "category": "LOGIN", "vault": {"name": "Private"}, "fields": []}]}
 if argv[:2] == ["item", "list"]:
     print(json.dumps([{k: v for k, v in i.items() if k not in ("fields", "sections")} for i in items.get(account, [])]))
@@ -84,6 +85,15 @@ def test_run_injects_the_field_and_redacts_it_in_every_common_form(unlocked):
     import base64
     assert base64.b64encode(_AGE.encode()).decode() not in res["output"]
 
+
+
+def test_run_refuses_a_value_too_short_to_redact(unlocked):
+    """Redaction skips needles under _MIN_REDACT, so a short value would come back verbatim."""
+    vst, tmp = unlocked
+    res = _call(vst, action="run", command='echo "$P" > ran.txt; echo "$P"', workdir=str(tmp),
+                env={"K": {"item": "op:sopsid", "field": "pk"}, "P": {"item": "op:sopsid", "field": "pin"}})
+    assert not res["success"] and "P" in res["error"] and "42" not in json.dumps(res)
+    assert not (tmp / "ran.txt").exists()
 
 def test_run_refuses_reserved_names_and_bad_references(unlocked):
     vst, _ = unlocked
