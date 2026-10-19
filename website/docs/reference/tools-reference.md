@@ -364,7 +364,7 @@ Registered on the `hermes-discord` platform toolset (gateway only). Uses the sam
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `discord` | Read and participate in a Discord server. Actions include `search_members`, `fetch_messages`, `send_message`, `react`, `fetch_channel`, `list_channels`, and more. | `DISCORD_BOT_TOKEN` |
+| `discord` | Read and participate in a Discord server. Actions include `search_members`, `fetch_messages`, `list_forum_posts`, `create_forum_post`, and `post_message` (find-or-create a dated forum post and add messages), plus `send_message`, `react`, and more. | `DISCORD_BOT_TOKEN` |
 
 ## `discord_admin` toolset
 
