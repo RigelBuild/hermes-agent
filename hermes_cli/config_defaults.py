@@ -2465,6 +2465,9 @@ DEFAULT_CONFIG = {
             # Detected managers are login sources unless the user opts out (vault.<name>.enabled: false).
             "enabled": True,        # `op` CLI: Login items with a website URL become fillable handles.
             "account": "",          # account shorthand for `op --account`; empty = default account.
+            # Several accounts sharing one master password (shorthands or sign-in addresses): one
+            # unlock signs in to each, and logins from all of them are fillable. Overrides `account`.
+            "accounts": [],
             "binary_path": "",      # absolute path to op; empty = PATH.
             # Env var holding a service-account token (headless auth, no unlock prompt). Unset = prompt.
             "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",

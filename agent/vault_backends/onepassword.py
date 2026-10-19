@@ -2,6 +2,9 @@
 
 Unlock: ``op signin --raw`` with the master password on stdin (desktop-app
 integration or account-level auth) mints an ``OP_SESSION_<account>`` token.
+``vault.onepassword.accounts`` lists several accounts (shorthand, sign-in address or
+ID) that share the master password: one unlock signs in to each, all or nothing, and
+listings and reads span them all. ``account`` (one account) still works.
 A configured service-account token skips the prompt entirely (headless).
 Desktop-app mode (``vault.onepassword.desktop_app``) mints no token: the 1Password
 app authorises every ``op`` call itself, so an unlock only proves the app answers
@@ -45,6 +48,7 @@ class OnePasswordLoginBackend(LoginBackend):
         env_name = str(self.cfg.get("service_account_token_env") or "OP_SERVICE_ACCOUNT_TOKEN")
         self._service_token = get_secret(env_name, "") or ""
         self._item_vaults: dict[str, str] = {}  # item id -> vault id from the latest ``item list``
+        self._item_accounts: dict[str, str] = {}  # item id -> account it was listed from ("" = default)
         self.desktop_app = bool(self.cfg.get("desktop_app")) and not self._service_token
 
     # ── auth ────────────────────────────────────────────────────────────────
@@ -55,7 +59,31 @@ class OnePasswordLoginBackend(LoginBackend):
             raise RuntimeError("1Password CLI (op) not found — install it or set vault.onepassword.binary_path")
         return op
 
-    def _env(self, session_token: Optional[str]) -> dict[str, str]:
+    def _accounts(self) -> list[str]:
+        """Configured accounts in order; ``[""]`` means op's default (single) account."""
+        raw = self.cfg.get("accounts")
+        if isinstance(raw, str):
+            raw = [raw]
+        accounts = [str(a).strip() for a in raw or [] if str(a).strip()] if isinstance(raw, (list, tuple)) else []
+        if not accounts and (single := str(self.cfg.get("account") or "").strip()):
+            accounts = [single]
+        return list(dict.fromkeys(accounts)) or [""]
+
+    def _tokens(self, stored: Optional[str]) -> dict[str, str]:
+        """Per-account session tokens from the stored session. One account stores op's bare token;
+        several store a JSON object keyed by account."""
+        if not stored:
+            return {}
+        accounts = self._accounts()
+        if len(accounts) == 1:
+            return {accounts[0]: stored}
+        try:
+            data = json.loads(stored)
+        except ValueError:
+            return {}
+        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+    def _env(self, session_token: Optional[str], account: Optional[str] = None) -> dict[str, str]:
         from agent.secret_scope import get_secret
         env = {k: os.environ[k] for k in _OP_ENV_ALLOWLIST if k in os.environ and not k.startswith("OP_CONNECT_")}
         # Connect credentials outrank OP_SERVICE_ACCOUNT_TOKEN inside op, so they must come from the
@@ -64,7 +92,8 @@ class OnePasswordLoginBackend(LoginBackend):
             if v := get_secret(k, ""):
                 env[k] = v
         env["NO_COLOR"] = "1"
-        account = str(self.cfg.get("account") or "")
+        if account is None:
+            account = self._accounts()[0]
         if account:
             env["OP_ACCOUNT"] = account
         if self._service_token:
@@ -84,14 +113,22 @@ class OnePasswordLoginBackend(LoginBackend):
         if self.desktop_app:
             self._unlock_desktop_app(generation)
             return
-        cmd = [str(self._op()), "signin", "--raw"]
-        if account := str(self.cfg.get("account") or ""):
-            cmd += ["--account", account]
-        proc = run_with_stdin_secret(cmd, env=self._env(None), secret=master_password, timeout=_TIMEOUT, label="op")
-        token = (proc.stdout or "").strip()
-        if proc.returncode != 0 or not token:
-            raise RuntimeError(f"1Password unlock failed: {_scrub(proc.stderr or '')[:200] or 'no session token'}")
-        if not _unlock.store_session_token(self.name, token, generation):
+        accounts = self._accounts()
+        tokens: dict[str, str] = {}
+        for account in accounts:
+            cmd = [str(self._op()), "signin", "--raw"]
+            if account:
+                cmd += ["--account", account]
+            proc = run_with_stdin_secret(cmd, env=self._env(None, account), secret=master_password,
+                                         timeout=_TIMEOUT, label="op")
+            token = (proc.stdout or "").strip()
+            if proc.returncode != 0 or not token:
+                where = f" ({account})" if account else ""
+                raise RuntimeError(f"1Password unlock failed{where}: "
+                                   f"{_scrub(proc.stderr or '')[:200] or 'no session token'}")
+            tokens[account] = token
+        stored = tokens[accounts[0]] if len(accounts) == 1 else json.dumps(tokens)
+        if not _unlock.store_session_token(self.name, stored, generation):
             raise RuntimeError("1Password was locked while unlocking; try again")
 
     def _unlock_desktop_app(self, generation: int) -> None:
@@ -105,11 +142,18 @@ class OnePasswordLoginBackend(LoginBackend):
         if not _unlock.store_session_token(self.name, _DESKTOP_APP_MARKER, generation):
             raise RuntimeError("1Password was locked while unlocking; try again")
 
-    def _run(self, *args: str) -> str:
+    def _run(self, *args: str, account: Optional[str] = None) -> str:
+        if account is None:
+            account = self._accounts()[0]
         token = None if self._service_token else _unlock.get_session_token(self.name)
         if not self._service_token and not token:
             raise UnlockRequired(self)
-        proc = run_cli([str(self._op()), *args], env=self._env(token), timeout=_TIMEOUT, label="op",
+        if not self._service_token and not self.desktop_app:
+            token = self._tokens(token).get(account)
+            if not token:
+                _unlock.lock(self.name)
+                raise UnlockRequired(self)
+        proc = run_cli([str(self._op()), *args], env=self._env(token, account), timeout=_TIMEOUT, label="op",
                        timeout_message="op timed out", stdin=subprocess.DEVNULL)
         if proc.returncode != 0:
             err = _scrub(proc.stderr or "")
@@ -125,13 +169,19 @@ class OnePasswordLoginBackend(LoginBackend):
     def list_items(self) -> list[VaultItemMeta]:
         if not self.is_unlocked():
             return []
-        raw = json.loads(self._run("item", "list", "--categories", "Login", "--format", "json") or "[]")
+        listed: list[tuple[str, dict]] = []
+        for account in self._accounts():
+            raw = json.loads(self._run("item", "list", "--categories", "Login", "--format", "json",
+                                       account=account) or "[]")
+            listed += [(account, item) for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
         out: list[VaultItemMeta] = []
         self._item_vaults = {}
-        for item in raw if isinstance(raw, list) else []:
+        self._item_accounts = {}
+        for account, item in listed:
             vault = item.get("vault") or {}
             if item.get("id"):
                 self._item_vaults[str(item["id"])] = str(vault.get("id") or "") if isinstance(vault, dict) else ""
+                self._item_accounts[str(item["id"])] = account
             urls = [str(u["href"]) for u in item.get("urls") or [] if isinstance(u, dict) and u.get("href")]
             origins = _all_origins(urls)
             if not origins:
@@ -159,14 +209,19 @@ class OnePasswordLoginBackend(LoginBackend):
         vault_id = self._item_vaults[item_id]
         return [item_id, "--vault", vault_id] if vault_id else [item_id]
 
+    def _item_account(self, handle: str) -> str:
+        return self._item_accounts.get(handle[len(self.prefix):], self._accounts()[0])
+
     def resolve_password(self, handle: str) -> str:
-        return self._run("item", "get", *self._item_selector(handle),
-                         "--fields", "label=password", "--reveal").rstrip("\r\n")
+        selector = self._item_selector(handle)
+        return self._run("item", "get", *selector, "--fields", "label=password", "--reveal",
+                         account=self._item_account(handle)).rstrip("\r\n")
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         # `--otp` mints the current TOTP from the item's one-time-password field; items without one error out.
         try:
-            code = self._run("item", "get", *self._item_selector(handle), "--otp").strip()
+            selector = self._item_selector(handle)
+            code = self._run("item", "get", *selector, "--otp", account=self._item_account(handle)).strip()
         except Exception:
             return None
         return code if code.isdigit() else None
