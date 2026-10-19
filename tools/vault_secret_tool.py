@@ -87,12 +87,18 @@ def _parse_env(raw: Any) -> list[tuple[str, str, str]]:
     return out
 
 
-def vault_secret_run(command: str, env: Any, workdir: str = "", timeout: Any = None) -> str:
+def vault_secret_run(command: str, env: Any, workdir: str = "", timeout: Any = None,
+                     reason: str = "") -> str:
     backend = _backend()
     if backend is None:
         return _err("1Password is not an enabled vault backend.")
     if not isinstance(command, str) or not command.strip():
         return _err("command is required")
+    if not isinstance(reason, str) or len(reason.strip()) < 10:
+        # The approver (reviewer model, then the user) sees only the command and the field names;
+        # the reason is what tells them why a secret is needed and what the command does with it.
+        return _err("reason is required: say what this run is for, which task it serves and what "
+                    "the command does with each field, so the approver can judge it")
     try:
         refs = _parse_env(env)
     except ValueError as exc:
@@ -169,7 +175,8 @@ def _handle(args: dict[str, Any], **_kwargs: Any) -> str:
         return _err(str(exc)[:300])
     if action == "run":
         return vault_secret_run(str(args.get("command") or ""), args.get("env"),
-                                str(args.get("workdir") or ""), args.get("timeout"))
+                                str(args.get("workdir") or ""), args.get("timeout"),
+                                str(args.get("reason") or ""))
     return _err(f"Unknown action {action!r}; use search, fields or run.")
 
 
@@ -178,8 +185,8 @@ VAULT_SECRET_SCHEMA = {
     "description": (
         "Use a field from any 1Password item (Secure Note, API Credential, SSH key, ...) in a shell command "
         "without the value entering the conversation. search (query: title text) → items; fields (item) → "
-        "field ids and labels, never values; run (command, env: {VAR: {item, field}}, optional workdir, "
-        "timeout) → runs `bash -c command` with each field injected as $VAR and returns the exit code and "
+        "field ids and labels, never values; run (command, env: {VAR: {item, field}}, reason, optional "
+        "workdir, timeout) → runs `bash -c command` with each field injected as $VAR and returns the exit code and "
         "output with the values redacted. There is no way to print a value: never try to echo, encode or "
         "write one out, and never ask the user for it. For website logins use browser_vault."
     ),
@@ -189,7 +196,11 @@ VAULT_SECRET_SCHEMA = {
             "action": {"type": "string", "enum": ["search", "fields", "run"]},
             "query": {"type": "string", "description": "search: case-insensitive title substring."},
             "item": {"type": "string", "description": "fields: an item handle from search."},
-            "command": {"type": "string", "description": "run: bash command that reads the variables."},
+            "command": {"type": "string", "description": "run: bash command that reads the variables. "
+                        "Prefer the operations inline over a script path, so the approver sees them."},
+            "reason": {"type": "string", "description": (
+                "run (required): why this needs the secret, the task it serves, and what the command "
+                "does with each variable. Shown to the reviewer and the user who approve the run.")},
             "env": {
                 "type": "object",
                 "description": "run: {VAR_NAME: {\"item\": handle, \"field\": field id}}.",

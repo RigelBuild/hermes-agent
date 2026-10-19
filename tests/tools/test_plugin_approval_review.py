@@ -132,3 +132,38 @@ def test_directive_review_must_be_literal_true(monkeypatch):
     resolve_pre_tool_block("terminal", {})
     assert seen["review"] is False
     assert seen["display"] is None
+
+
+def _verdict_with_note(monkeypatch, verdict, note):
+    from tools import approval_smart
+
+    def _smart(command, description, pattern_key, pattern_keys, session_key):
+        approval_smart._last_note.text = note
+        return verdict
+
+    monkeypatch.setattr(approval, "_smart_verdict", _smart)
+
+
+def test_reviewer_reason_reaches_the_human_prompt(monkeypatch):
+    seen = _capture_human(monkeypatch)
+    _verdict_with_note(monkeypatch, "escalate", "Runs a script by path; its contents are not shown.")
+    request_tool_approval("vault_secret", "why", rule_key="k", display="cmd", review=True)
+    assert seen["description"] == ("why\n**Reviewer:** unsure, check it carefully: "
+                                   "Runs a script by path; its contents are not shown.")
+
+
+def test_reviewer_reason_is_in_the_deny_message(monkeypatch):
+    monkeypatch.setattr(approval, "_human_decision", lambda *a, **k: pytest.fail("human must not be asked"))
+    _verdict_with_note(monkeypatch, "deny", "Pipes the key to a remote host.")
+    result = request_tool_approval("vault_secret", "why", rule_key="k", display="cmd", review=True)
+    assert "Reviewer: Pipes the key to a remote host." in result["message"]
+
+
+def test_a_stale_reason_does_not_leak_into_the_next_prompt(monkeypatch):
+    from tools import approval_smart
+
+    approval_smart._last_note.text = "left over from an earlier call"
+    seen = _capture_human(monkeypatch)
+    _verdict(monkeypatch, "approve")
+    request_tool_approval("terminal", "why", rule_key="k", display="cmd", review=True)
+    assert "left over" not in seen["description"]
