@@ -22,6 +22,7 @@ import base64
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import time
@@ -277,7 +278,8 @@ def _read_source_command(command: str, cwd: str) -> str:
     # stderr is never reported, so it is discarded; stdout is read with a hard cap, and the child
     # is killed as soon as it exceeds the cap or the timeout.
     proc = subprocess.Popen(["bash", "-c", command], cwd=cwd, env=_no_op_credentials(build_subprocess_env()),
-                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            start_new_session=True)
     chunks: list[bytes] = []
     size = 0
     deadline = time.monotonic() + _SOURCE_TIMEOUT
@@ -301,9 +303,15 @@ def _read_source_command(command: str, cwd: str) -> str:
     except subprocess.TimeoutExpired:
         raise ValueError(f"value command timed out after {_SOURCE_TIMEOUT}s") from None
     finally:
+        # The command runs in its own session: end its whole process group, so a background child
+        # it spawned cannot outlive the call (or keep writing to the pipe).
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
         if proc.poll() is None:
             proc.kill()
-            proc.wait()
+        proc.wait()
         proc.stdout.close()
     if code != 0:
         raise ValueError(f"value command exited {code}")

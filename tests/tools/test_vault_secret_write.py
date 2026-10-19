@@ -283,6 +283,18 @@ def test_value_command_output_is_capped_while_reading(env):
     assert res["success"] is False and "more than" in res["error"]
 
 
+def test_value_command_background_children_do_not_outlive_the_call(env, tmp_path):
+    vst, _, _, _ = env
+    marker = tmp_path / "survivor"
+    res = _create(vst, [{"label": "credential",
+                         "command": f"(sleep 2; touch {marker}) >/dev/null & echo " + _SECRET}])
+    assert res["success"] is True, res
+    import time
+
+    time.sleep(3)
+    assert not marker.exists()
+
+
 def test_errors_are_withheld_when_a_value_line_is_too_short_to_redact(env):
     vst, _, scratch, _ = env
     res = _create(vst, [{"label": "credential", "file": str(_secret_file(scratch, value=_SECRET + "\nab"))}],
