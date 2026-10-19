@@ -220,14 +220,17 @@ def scrub_ansi(text: str) -> str:
 
 
 def run_cli(argv: Sequence[str], *, env: dict[str, str], timeout: float, label: str,
-            timeout_message: str, stdin: Any = subprocess.DEVNULL) -> subprocess.CompletedProcess:
+            timeout_message: str, stdin: Any = subprocess.DEVNULL,
+            input_text: Optional[str] = None) -> subprocess.CompletedProcess:
     """``subprocess.run`` an argv list (never a shell), capturing utf-8 text; timeout
-    and spawn failure become ``RuntimeError``. Callers own returncode interpretation."""
+    and spawn failure become ``RuntimeError``. Callers own returncode interpretation.
+    ``input_text`` is written to the child's stdin (and replaces ``stdin``), so a secret
+    payload never has to go through argv."""
+    stdin_kwargs: dict[str, Any] = {"input": input_text} if input_text is not None else {"stdin": stdin}
     try:
         return subprocess.run(
             list(argv), env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=timeout, stdin=stdin,
-            check=False,
+            timeout=timeout, check=False, **stdin_kwargs,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(timeout_message) from exc
