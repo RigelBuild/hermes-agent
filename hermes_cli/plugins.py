@@ -2067,7 +2067,7 @@ def resolve_pre_tool_block(
 
 def _resolve_block_from_details(
     details: _PreToolCallDirective, tool_name: str, *, turn_id: str = "", tool_call_id: str = "",
-    session_id: str = "",
+    session_id: str = "", args: Optional[dict[str, Any]] = None,
 ) -> Optional[str]:
     """The ONE place for the fail-closed approval logic: ``block`` blocks with its message; an
     ``approve`` whose gate errors, denies, or times out is blocked; anything else proceeds."""
@@ -2084,7 +2084,7 @@ def _resolve_block_from_details(
                 turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id)
         try:
             result = request_tool_approval(tool_name, details.message or "", rule_key=details.rule_key or tool_name,
-                                           display=details.display, review=details.review)
+                                           display=details.display, review=details.review, args=args)
         finally:
             if approval_tokens is not None:
                 with suppress(Exception):
@@ -2104,8 +2104,11 @@ def _dispatch_pre_tool_call_hooks(
     """Invoke ``pre_tool_call`` hooks once; return ``(block_message, modified_args)`` — the resolved
     block/approve message (``None`` to proceed) and merged ``modify`` args (``None`` if none)."""
     details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
+    # The approver sees the call that will run: the modified args when a hook rewrote them.
+    shown_args = details.modified_args if details.modified_args is not None else args
     block_msg = _resolve_block_from_details(
-        details, tool_name, **{k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")})
+        details, tool_name, args=shown_args,
+        **{k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")})
     return (block_msg, details.modified_args)
 
 

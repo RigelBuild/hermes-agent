@@ -116,7 +116,8 @@ def test_directive_carries_display_and_review(monkeypatch):
 
     monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
     assert resolve_pre_tool_block("terminal", {}) is None
-    assert seen == {"tool_name": "terminal", "reason": "why", "rule_key": "k", "display": "cmd", "review": True}
+    assert seen == {"tool_name": "terminal", "reason": "why", "rule_key": "k", "display": "cmd", "review": True,
+                    "args": {}}
 
 
 def test_directive_review_must_be_literal_true(monkeypatch):
@@ -167,3 +168,40 @@ def test_a_stale_reason_does_not_leak_into_the_next_prompt(monkeypatch):
     _verdict(monkeypatch, "approve")
     request_tool_approval("terminal", "why", rule_key="k", display="cmd", review=True)
     assert "left over" not in seen["description"]
+
+
+def test_without_display_the_call_and_its_arguments_are_shown(monkeypatch):
+    seen = _capture_human(monkeypatch)
+    request_tool_approval("browser_vault", "why", rule_key="k",
+                          args={"action": "list", "url": "chrome://new-tab-page"})
+    assert seen["command"] == 'browser_vault(action="list", url="chrome://new-tab-page")'
+
+
+def test_rendered_call_masks_credentials_and_clips_long_values(monkeypatch):
+    seen = _capture_human(monkeypatch)
+    request_tool_approval("browser_vault", "why", rule_key="k",
+                          args={"action": "enter_code", "code": "123456", "password": "hunter22",
+                                "note": "x" * 1000, "opts": {"n": 1}})
+    shown = seen["command"]
+    assert "123456" not in shown and "hunter22" not in shown
+    assert 'code=[REDACTED]' in shown and "(1000 chars)" in shown and 'opts={"n": 1}' in shown
+
+
+def test_display_still_wins_over_the_rendered_call(monkeypatch):
+    seen = _capture_human(monkeypatch)
+    request_tool_approval("terminal", "why", rule_key="k", display="cmd", args={"command": "other"})
+    assert seen["command"] == "cmd"
+
+
+def test_the_hook_dispatch_passes_the_args_that_will_run(monkeypatch):
+    from hermes_cli.plugins import resolve_pre_tool_block
+
+    monkeypatch.setattr(
+        "hermes_cli.lifecycle.invoke_hook",
+        lambda hook_name, **kwargs: [{"action": "approve", "message": "why", "rule_key": "k"}],
+    )
+    seen = {}
+    monkeypatch.setattr("tools.approval.request_tool_approval",
+                        lambda tool_name, reason, **kw: seen.update(kw) or {"approved": True, "message": None})
+    resolve_pre_tool_block("browser_vault", {"action": "list", "url": "https://x.test"})
+    assert seen["args"] == {"action": "list", "url": "https://x.test"}

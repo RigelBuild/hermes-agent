@@ -14,10 +14,12 @@ call time; sibling-defined names are imported from their defining module.
 from dataclasses import dataclass
 import hashlib
 import importlib
+import json
 import logging
 import os
+import re
 import threading
-from typing import Optional
+from typing import Any, Optional
 
 from utils import env_var_enabled, is_truthy_value
 from agent.i18n import t
@@ -1159,8 +1161,38 @@ def check_dangerous_command(command: str, env_type: str,
     )
 
 
+_CALL_VALUE_LIMIT = 300
+_CALL_LIMIT = 1500
+# Argument names whose values are never shown, whatever the plugin: credentials and one-time codes.
+_SECRET_ARG = re.compile(r"pass(word|phrase)?|secret|token|otp|totp|code|credential|api[_-]?key|private", re.IGNORECASE)
+
+
+def _render_tool_call(tool_name: str, args: Any) -> str:
+    """The tool call as the approver should read it: ``tool(key=value, ...)`` with string values
+    clipped, credential-named arguments masked and the rest passed through ``redact_sensitive_text``."""
+    from agent.redact import redact_sensitive_text
+
+    def value(key: str, raw: Any) -> str:
+        if _SECRET_ARG.search(key):
+            return "[REDACTED]"
+        if isinstance(raw, (dict, list)):
+            text = json.dumps(raw, ensure_ascii=False, default=str)
+        else:
+            text = raw if isinstance(raw, str) else repr(raw)
+        if len(text) > _CALL_VALUE_LIMIT:
+            text = f"{text[:_CALL_VALUE_LIMIT]}… ({len(text)} chars)"
+        return json.dumps(text, ensure_ascii=False) if isinstance(raw, str) else text
+
+    if not isinstance(args, dict) or not args:
+        return f"{tool_name}()"
+    parts = [f"{key}={value(str(key), raw)}" for key, raw in args.items()]
+    rendered = redact_sensitive_text(f"{tool_name}(" + ", ".join(parts) + ")", force=True)
+    return rendered if len(rendered) <= _CALL_LIMIT else rendered[: _CALL_LIMIT - 1] + "…"
+
+
 def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", approval_callback=None,
-                          display: Optional[str] = None, review: bool = False) -> dict:
+                          display: Optional[str] = None, review: bool = False,
+                          args: Optional[dict] = None) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
 
     Entry point for a plugin ``pre_tool_call`` hook returning ``{"action": "approve", ...}``:
@@ -1171,6 +1203,7 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
     allowlist grain; when empty it is ``tool_name`` + a hash of ``reason`` so DISTINCT reasons
     on the same tool persist independently. ``display`` replaces the synthetic
     ``<tool> (plugin approval rule)`` label in the prompt's code block with the actual request;
+    without it, ``args`` (the call's arguments) are rendered there instead, credentials masked;
     ``review`` runs the smart reviewer first (see ``_run_approval_gate(review_first=...)``).
     Returns the ``check_dangerous_command`` result shape.
     """
@@ -1182,7 +1215,9 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
         # Namespaced so plugin-rule approvals share the allowlist machinery without ever colliding with a real
         # command pattern key; the display target is a synthetic label for the display/allowlist layer.
         pattern_key=f"plugin_rule:{rule_key}", description=description,
-        display_target=display or f"<{tool_name}> (plugin approval rule)", approval_callback=approval_callback,
+        display_target=display or (_render_tool_call(tool_name, args) if args is not None
+                                   else f"<{tool_name}> (plugin approval rule)"),
+        approval_callback=approval_callback,
         review_first=review,
         subject=subject, advice="Find an alternative approach.",
         autoapprove_log_prefix=f"plugin-escalated tool call '{tool_name}' in non-interactive non-gateway context",
