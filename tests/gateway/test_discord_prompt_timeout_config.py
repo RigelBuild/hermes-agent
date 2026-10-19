@@ -76,3 +76,12 @@ def test_value_clamped_to_minimum(monkeypatch):
     """A typo of e.g. 5 seconds must not make prompts disappear."""
     _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 5}})
     assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_MIN
+
+
+def test_values_past_fifteen_minutes_are_honoured_up_to_the_cap(monkeypatch):
+    """Bot-sent prompts outlive the 15-minute interaction token, so 20 minutes must stick."""
+    _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 1200}})
+    assert _read_discord_prompt_timeout() == 1200
+    _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 10**6}})
+    from plugins.platforms.discord.adapter_config_readers import _DISCORD_PROMPT_TIMEOUT_MAX
+    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_MAX == 3600
