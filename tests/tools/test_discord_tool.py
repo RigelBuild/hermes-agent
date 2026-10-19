@@ -815,6 +815,65 @@ class TestDiscordForumActions:
         assert result["count"] == 1
         assert result["posts"][0]["id"] == "22"
         assert calls[-1][1] == {"limit": "100", "before": "2025-01-03T00:00:00Z"}
+        assert result["has_more"] is False
+
+    def test_list_forum_posts_reports_timestamp_tie_truncation(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        self._allow_actions(monkeypatch)
+        page_threads = [
+            {
+                "id": str(index), "name": f"Daily {index}", "parent_id": "forum",
+                "thread_metadata": {
+                    "archived": True, "create_timestamp": f"2025-01-0{index}T00:00:00Z",
+                    "archive_timestamp": "2025-01-03T00:00:00Z" if index in (99, 100)
+                    else f"2025-01-0{index}T00:00:00Z",
+                },
+            }
+            for index in range(1, 101)
+        ]
+
+        def request(method, path, token, **kwargs):
+            if path == "/channels/forum":
+                return {"guild_id": "guild"}
+            if path == "/guilds/guild/threads/active":
+                return {"threads": []}
+            return {"threads": page_threads, "has_more": True}
+
+        with patch("tools.discord_tool._discord_request", side_effect=request) as mock_request:
+            result = json.loads(discord_core(action="list_forum_posts", channel_id="forum"))
+        assert result["has_more"] is True
+        assert result["count"] == 50
+        assert mock_request.call_count == 3  # A shared page-boundary timestamp cannot advance safely.
+
+    def test_list_forum_posts_bounds_archive_scan(self, monkeypatch):
+        from tools import discord_tool
+
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        self._allow_actions(monkeypatch)
+        monkeypatch.setattr(discord_tool, "_MAX_ARCHIVED_THREAD_PAGES", 2)
+        archive_calls = []
+
+        def request(method, path, token, **kwargs):
+            if path == "/channels/forum":
+                return {"guild_id": "guild"}
+            if path == "/guilds/guild/threads/active":
+                return {"threads": []}
+            archive_calls.append(kwargs.get("params"))
+            page_number = len(archive_calls)
+            thread = {
+                "id": str(page_number), "name": f"Daily {page_number}", "parent_id": "forum",
+                "thread_metadata": {
+                    "archived": True, "create_timestamp": f"2025-01-0{page_number}T00:00:00Z",
+                    "archive_timestamp": f"2025-01-0{page_number}T00:00:00Z",
+                },
+            }
+            return {"threads": [thread], "has_more": True}
+
+        with patch("tools.discord_tool._discord_request", side_effect=request):
+            result = json.loads(discord_core(action="list_forum_posts", channel_id="forum", limit=1))
+        assert len(archive_calls) == 2
+        assert result["count"] == 1
+        assert result["has_more"] is True
 
     def test_create_forum_post_splits_starter_and_remainder(self, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
@@ -868,9 +927,9 @@ class TestDiscordForumActions:
         }) as request:
             discord_core(
                 action="create_forum_post", channel_id="forum", name="daily", content="text",
-                applied_tags=["tag-1"],
+                applied_tags=["123456789012345678"],
             )
-        assert request.call_args.kwargs["body"]["applied_tags"] == ["tag-1"]
+        assert request.call_args.kwargs["body"]["applied_tags"] == ["123456789012345678"]
 
     def test_chunk_failures_report_partial_delivery(self, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
@@ -952,8 +1011,13 @@ class TestDiscordForumActions:
         ))
         invalid_tags = json.loads(discord_core(
             action="create_forum_post", channel_id="forum", name="today", content="text",
-            applied_tags=["", "tag-2"],
+            applied_tags=["not-a-snowflake"],
+        ))
+        too_many_tags = json.loads(discord_core(
+            action="create_forum_post", channel_id="forum", name="today", content="text",
+            applied_tags=["123456789012345678"] * 6,
         ))
         assert "content" in empty["error"]
-        assert "non-empty forum tag IDs" in invalid_tags["error"]
+        assert "positive 64-bit" in invalid_tags["error"]
+        assert "five" in too_many_tags["error"]
         request.assert_not_called()

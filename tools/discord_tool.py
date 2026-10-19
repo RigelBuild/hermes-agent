@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 DISCORD_API_BASE = "https://discord.com/api/v10"
 _DISCORD_RESPONSE_BODY_MAX_BYTES = 4 * 1024 * 1024
 _DISCORD_ERROR_BODY_MAX_BYTES = 64 * 1024
+_MAX_ARCHIVED_THREAD_PAGES = 10
 
 # Application flag bits (GET /applications/@me → "flags"); the *_LIMITED bit is the
 # <100-guild variant of the same intent.
@@ -399,7 +400,8 @@ def _list_forum_posts(
     threads = list(active.get("threads", []))
     archived: list[dict[str, Any]] = []
     before = None
-    while True:
+    has_more = False
+    for _ in range(_MAX_ARCHIVED_THREAD_PAGES):
         params = {"limit": "100"}
         if before:
             params["before"] = before
@@ -409,11 +411,25 @@ def _list_forum_posts(
         page_threads = page.get("threads", [])
         archived.extend(page_threads)
         if not page.get("has_more") or not page_threads:
+            has_more = False
             break
         next_before = (page_threads[-1].get("thread_metadata") or {}).get("archive_timestamp")
         if not next_before or next_before == before:
+            has_more = True
+            break
+        # Discord paginates archives by timestamp. If the page boundary timestamp
+        # is shared by another thread, the cursor cannot reliably include all ties.
+        # Report possible truncation instead of silently returning an incomplete list.
+        if any(
+            (thread.get("thread_metadata") or {}).get("archive_timestamp") == next_before
+            for thread in page_threads[:-1]
+        ):
+            has_more = True
             break
         before = next_before
+        has_more = True
+    else:
+        has_more = True
 
     by_id: dict[str, dict[str, Any]] = {}
     for thread in [*threads, *archived]:
@@ -433,7 +449,7 @@ def _list_forum_posts(
             "archived": bool((thread.get("thread_metadata") or {}).get("archived", False)),
             "created_at": created_at or None, "message_count": thread.get("message_count", 0),
         })
-    return json.dumps({"posts": posts, "count": len(posts)})
+    return json.dumps({"posts": posts, "count": len(posts), "has_more": has_more})
 
 
 def _message_chunks(content: str) -> list[str]:
@@ -497,8 +513,16 @@ def _require_forum_post_text(name: str, content: str) -> None:
 def _validate_applied_tags(applied_tags: Optional[list[str]]) -> None:
     if applied_tags is None or applied_tags == []:
         return
-    if not isinstance(applied_tags, list) or any(not isinstance(tag, str) or not tag for tag in applied_tags):
-        raise ValueError("applied_tags must be a list of non-empty forum tag IDs.")
+    if not isinstance(applied_tags, list) or any(
+        not isinstance(tag, str)
+        or not tag.isascii()
+        or not tag.isdigit()
+        or len(tag) > 20
+        or int(tag) == 0
+        or int(tag) >= 2**64
+        for tag in applied_tags
+    ):
+        raise ValueError("applied_tags must be a list of positive 64-bit Discord forum tag snowflake IDs.")
     if len(applied_tags) > 5:
         raise ValueError("A forum post can have at most five applied_tags.")
 
@@ -598,7 +622,7 @@ _ACTION_MANIFEST = [
     ("unpin_message", _unpin_message, "(channel_id, message_id)", "unpin a message"),
     ("delete_message", _delete_message, "(channel_id, message_id)", "delete a message"),
     ("create_thread", _create_thread, "(channel_id, name)", "create a public thread; optional message_id anchor"),
-    ("list_forum_posts", _list_forum_posts, "(channel_id)", "find forum posts by title; use for daily find-or-create workflows"),
+    ("list_forum_posts", _list_forum_posts, "(channel_id)", "find forum posts by title; use for daily find-or-create workflows; response has_more flags archive scan truncation"),
     ("create_forum_post", _create_forum_post, "(channel_id, name, content)", "create a forum post with starter message; optional applied_tags for required forum tags; use for daily forum workflows"),
     ("post_message", _post_message, "(channel_id, content)", "post into a channel or forum post; use for daily forum workflows"),
     ("add_role", _add_role, "(guild_id, user_id, role_id)", "assign a role"),
