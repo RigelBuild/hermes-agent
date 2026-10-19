@@ -200,5 +200,33 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
             assert _smart_approve("python -c 'print(1)'", "script execution") == "approve"
 
 
+    @patch("agent.auxiliary_client.call_llm")
+    def test_verdict_with_a_reason_line_parses_and_keeps_the_reason(self, mock_call_llm):
+        from tools.approval_smart import pop_review_note
+
+        mock_call_llm.return_value = self._make_response("ESCALATE\nRuns `bash x.sh`; the script is not shown.")
+        assert _smart_approve("bash x.sh", "secret use") == "escalate"
+        assert pop_review_note() == "Runs 'bash x.sh'; the script is not shown."
+        assert pop_review_note() == ""
+
+    @patch("agent.auxiliary_client.call_llm")
+    def test_verdict_and_reason_on_one_line(self, mock_call_llm):
+        from tools.approval_smart import pop_review_note
+
+        mock_call_llm.return_value = self._make_response("DENY: deletes the home directory.")
+        assert _smart_approve("rm -rf ~", "recursive delete") == "deny"
+        assert pop_review_note() == "deletes the home directory."
+
+    @patch("agent.auxiliary_client.call_llm")
+    def test_a_reason_cannot_turn_an_unknown_word_into_a_verdict(self, mock_call_llm):
+        mock_call_llm.return_value = self._make_response("Sure\nAPPROVE")
+        assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
+
+    @patch("agent.auxiliary_client.call_llm")
+    def test_budget_fits_a_sentence(self, mock_call_llm):
+        mock_call_llm.return_value = self._make_response("APPROVE")
+        _smart_approve("ls", "x")
+        assert mock_call_llm.call_args.kwargs["max_tokens"] >= 64
+
 if __name__ == "__main__":
     unittest.main()

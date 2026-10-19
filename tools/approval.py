@@ -37,7 +37,7 @@ from tools.approval_floors import (
 )
 from tools.approval_gateway_wait import _await_gateway_decision
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
-from tools.approval_smart import _smart_verdict
+from tools.approval_smart import _smart_verdict, pop_review_note
 
 logger = logging.getLogger(__name__)
 
@@ -773,7 +773,10 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     counts toward the denial breaker even when an owner may override it. ESCALATE follows the
     normal, potentially persistent manual behavior.
     """
+    pop_review_note()  # drop any note a previous review on this thread left behind
     verdict = _smart_verdict(command, description, pattern_key, pattern_keys, session_key)
+    note = pop_review_note()
+    _gate_note.text = _review_line(verdict, note) if verdict != "approve" else ""
     if verdict == "approve":
         _reset_denials(session_key)
         logger.debug(spec.smart_log.format(command=command[:60], description=description, session_key=session_key))
@@ -783,12 +786,13 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     _record_denial(session_key)
     if human_present:
         return None, True
+    why = f" Reviewer: {note}" if note else ""
     return {
         # Unattended programmatic platforms (webhook/msgraph_webhook/ api_server): respect unattended_mode
         # config. Resolves instantly — never a pending approval nobody can answer (#37284, #87509).
         "approved": False,
         "message": (f"BLOCKED by smart approval: {description}. The command was assessed as genuinely "
-                    f"dangerous. Do NOT retry.{_denial_breaker_addendum(session_key)}"),
+                    f"dangerous.{why} Do NOT retry.{_denial_breaker_addendum(session_key)}"),
         "smart_denied": True,
     }, True
 
@@ -807,10 +811,14 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
 
     smart_denied = False
     if smart:
+        _gate_note.text = ""
         result, smart_denied = _smart_gate(spec, command, description, pattern_key, pattern_keys,
                                            session_key, human_present=is_cli or is_gateway or is_ask)
         if result is not None:
             return result
+        if _gate_note.text:
+            # Show the human what the reviewer saw (its verdict and one-sentence reason).
+            description = f"{description}\n{_gate_note.text}"
     pending_body = pending_body() if pending_body else None
     allow_permanent = not smart_denied
 
@@ -968,8 +976,18 @@ def _presence(approval_callback=None) -> tuple:
 # Reviewer verdict appended to a plugin approval's reason when the plugin asked for review first.
 _REVIEW_NOTES = {
     "approve": "**Reviewer:** passed",
-    "escalate": "**Reviewer:** no clear verdict, check it carefully",
+    "escalate": "**Reviewer:** unsure, check it carefully",
+    "deny": "**Reviewer:** flagged as dangerous",
 }
+
+
+_gate_note = threading.local()
+
+
+def _review_line(verdict: str, note: str) -> str:
+    """The reviewer's verdict for the human prompt, with its one-sentence reason when it gave one."""
+    head = _REVIEW_NOTES.get(verdict, _REVIEW_NOTES["escalate"])
+    return f"{head}: {note}" if note else head
 
 
 def _run_approval_gate(
@@ -1043,14 +1061,17 @@ def _run_approval_gate(
         return _approved()
 
     if review_first:
+        pop_review_note()  # drop any note a previous review on this thread left behind
         verdict = _smart_verdict(display_target, description, pattern_key, [pattern_key], session_key)
+        note = pop_review_note()
         if verdict == "deny":
             _record_denial(session_key)
+            why = f" Reviewer: {note}" if note else ""
             return _blocked(
-                f"BLOCKED by the approval reviewer before reaching the user: {description}. "
+                f"BLOCKED by the approval reviewer before reaching the user: {description}.{why} "
                 f"Do NOT retry.{_denial_breaker_addendum(session_key)}",
                 pattern_key=pattern_key, description=description)
-        description = f"{description}\n{_REVIEW_NOTES.get(verdict, _REVIEW_NOTES['escalate'])}"
+        description = f"{description}\n{_review_line(verdict, note)}"
     return _human_decision(
         _ACTION_GATE, command=display_target, description=description, pattern_key=pattern_key,
         pattern_keys=[pattern_key], session_key=session_key,

@@ -77,7 +77,7 @@ def test_run_injects_the_field_and_redacts_it_in_every_common_form(unlocked):
     vst, tmp = unlocked
     command = ('test "$K" = "' + _AGE + '" && echo match; echo "$K"; printf %s "$K" | base64; '
                'python3 -c "import json,os; print(json.dumps(os.environ[\'K\']))"; echo "$K" > out.txt; wc -c < out.txt')
-    res = _call(vst, action="run", command=command, workdir=str(tmp),
+    res = _call(vst, action="run", reason="test run of the injected field", command=command, workdir=str(tmp),
                 env={"K": {"item": "op:sopsid", "field": "pk"}})
     assert res["success"] and res["exit_code"] == 0 and res["injected"] == ["K"]
     assert res["output"].splitlines()[0] == "match"
@@ -90,7 +90,7 @@ def test_run_injects_the_field_and_redacts_it_in_every_common_form(unlocked):
 def test_run_refuses_a_value_too_short_to_redact(unlocked):
     """Redaction skips needles under _MIN_REDACT, so a short value would come back verbatim."""
     vst, tmp = unlocked
-    res = _call(vst, action="run", command='echo "$P" > ran.txt; echo "$P"', workdir=str(tmp),
+    res = _call(vst, action="run", reason="test run of the injected field", command='echo "$P" > ran.txt; echo "$P"', workdir=str(tmp),
                 env={"K": {"item": "op:sopsid", "field": "pk"}, "P": {"item": "op:sopsid", "field": "pin"}})
     assert not res["success"] and "P" in res["error"] and "42" not in json.dumps(res)
     assert not (tmp / "ran.txt").exists()
@@ -99,19 +99,19 @@ def test_run_refuses_reserved_names_and_bad_references(unlocked):
     vst, _ = unlocked
     for env in ({"PATH": {"item": "op:sopsid", "field": "pk"}}, {"lower": {"item": "op:sopsid", "field": "pk"}},
                 {"K": {"item": "op:sopsid"}}, {}):
-        res = _call(vst, action="run", command="true", env=env)
+        res = _call(vst, action="run", reason="test run of the injected field", command="true", env=env)
         assert res["success"] is False
-    res = _call(vst, action="run", command="true", env={"K": {"item": "op:sopsid", "field": "nope"}})
+    res = _call(vst, action="run", reason="test run of the injected field", command="true", env={"K": {"item": "op:sopsid", "field": "nope"}})
     assert res["success"] is False and "field not found" in res["error"]
-    res = _call(vst, action="run", command="true", env={"K": {"item": "op:--help", "field": "pk"}})
+    res = _call(vst, action="run", reason="test run of the injected field", command="true", env={"K": {"item": "op:--help", "field": "pk"}})
     assert res["success"] is False
 
 
 def test_run_reports_failure_and_timeout(unlocked):
     vst, _ = unlocked
-    res = _call(vst, action="run", command='echo "$K" >&2; exit 3', env={"K": {"item": "op:sopsid", "field": "pk"}})
+    res = _call(vst, action="run", reason="test run of the injected field", command='echo "$K" >&2; exit 3', env={"K": {"item": "op:sopsid", "field": "pk"}})
     assert res["success"] is False and res["exit_code"] == 3 and _AGE not in res["output"]
-    res = _call(vst, action="run", command="sleep 5", timeout=1, env={"K": {"item": "op:sopsid", "field": "pk"}})
+    res = _call(vst, action="run", reason="test run of the injected field", command="sleep 5", timeout=1, env={"K": {"item": "op:sopsid", "field": "pk"}})
     assert res["exit_code"] is None and "timed out" in res["output"]
 
 
@@ -121,7 +121,7 @@ def test_locked_backend_asks_for_an_unlock(unlocked):
     vst, _ = unlocked
     unlock.lock("onepassword")
     assert _call(vst, action="search", query="")["error_type"] == "locked"
-    assert _call(vst, action="run", command="true",
+    assert _call(vst, action="run", reason="test run of the injected field", command="true",
                  env={"K": {"item": "op:sopsid", "field": "pk"}})["error_type"] == "locked"
 
 
@@ -130,3 +130,15 @@ def test_redact_handles_multiline_values():
 
     secret = "line-one-secret\nline-two-secret"
     assert redact("a line-two-secret b", [secret]) == "a [REDACTED] b"
+
+
+def test_run_requires_a_reason(unlocked):
+    vst, tmp = unlocked
+    for reason in (None, "", "  why  "):
+        args = {"action": "run", "command": "echo hi > ran.txt", "workdir": str(tmp),
+                "env": {"K": {"item": "op:sopsid", "field": "pk"}}}
+        if reason is not None:
+            args["reason"] = reason
+        res = _call(vst, **args)
+        assert not res["success"] and "reason is required" in res["error"]
+    assert not (tmp / "ran.txt").exists()
