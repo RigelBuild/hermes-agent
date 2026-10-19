@@ -77,6 +77,14 @@ def redact(text: str, secrets: list[str]) -> str:
     return text
 
 
+def safe_error(text: str, secrets: list[str], generic: str) -> str:
+    """*text* redacted, or *generic* when a value has a line too short to redact (it could survive
+    in an error that echoes the payload)."""
+    if any(0 < len(line.strip()) < _MIN_REDACT for s in secrets for line in s.splitlines()):
+        return generic
+    return redact(text, secrets)
+
+
 def _parse_env(raw: Any) -> list[tuple[str, str, str]]:
     """``env``: {NAME: {"item": ..., "field": ...}} → [(NAME, item, field)]."""
     if not isinstance(raw, dict) or not raw:
@@ -178,15 +186,20 @@ def _scratch_root() -> str:
     return os.path.realpath(get_scratch_dir(prune=False))
 
 
-def _read_source_file(path: str) -> str:
+def _read_source_file(path: str) -> tuple[str, str]:
     """A value file: a regular file (not a symlink) under the scratch dir, owned by this user,
-    with no group or other access. Errors name the path, never the content."""
+    with no group or other access. Returns (value, resolved path); errors name the path, never
+    the content. The resolved path is what is opened (and later deleted), so a symlinked parent
+    swapped in after the check cannot redirect either."""
     root = _scratch_root()
     expanded = os.path.abspath(os.path.expanduser(path))
-    if os.path.commonpath([os.path.realpath(expanded), root]) != root:
+    if os.path.islink(expanded):
+        raise ValueError(f"{path}: cannot open (symlinks are refused)")
+    resolved = os.path.realpath(expanded)
+    if os.path.commonpath([resolved, root]) != root:
         raise ValueError(f"{path}: value files must be under the Hermes scratch dir ({root})")
     try:
-        fd = os.open(expanded, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(resolved, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except OSError as exc:
         raise ValueError(f"{path}: cannot open ({exc.strerror}; symlinks are refused)") from None
     try:
@@ -203,7 +216,7 @@ def _read_source_file(path: str) -> str:
     finally:
         os.close(fd)
     try:
-        return raw.decode("utf-8").removesuffix("\n").removesuffix("\r")
+        return raw.decode("utf-8").removesuffix("\n").removesuffix("\r"), resolved
     except UnicodeDecodeError:
         raise ValueError(f"{path}: not UTF-8 text") from None
 
@@ -222,8 +235,10 @@ def _read_source_command(command: str, cwd: str) -> str:
     from tools.environments.local import build_subprocess_env
 
     try:
+        # stderr is never reported, so it is discarded rather than buffered.
         proc = subprocess.run(["bash", "-c", command], cwd=cwd, env=_no_op_credentials(build_subprocess_env()),
-                              stdin=subprocess.DEVNULL, capture_output=True, timeout=_SOURCE_TIMEOUT, check=False)
+                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              timeout=_SOURCE_TIMEOUT, check=False)
     except subprocess.TimeoutExpired:
         raise ValueError(f"value command timed out after {_SOURCE_TIMEOUT}s") from None
     if proc.returncode != 0:
@@ -255,10 +270,11 @@ def _parse_fields(raw: Any) -> list[dict]:
             raise ValueError(f"{label}: give exactly one of file, command or value")
         source = sources[0]
         if source == "value":
-            # The literal passed through the conversation, so it may only be a non-secret.
+            # The literal passed through the conversation, so it may only be a non-secret. A
+            # secret-looking label is refused whatever type the caller claims for it.
             if not isinstance(spec["value"], str):
                 raise ValueError(f"{label}: value must be a string")
-            if kind in SECRET_TYPES or (not kind and _SECRET_LABEL.search(label)):
+            if kind in SECRET_TYPES or _SECRET_LABEL.search(label):
                 raise ValueError(f"{label}: secret fields take a file or command, never an inline value")
         out.append({"label": label, "section": str(spec.get("section") or "").strip(), "type": kind,
                     "source": source, "ref": str(spec[source])})
@@ -299,7 +315,7 @@ def vault_secret_write(action: str, args: dict[str, Any]) -> str:
     try:
         for spec in specs:
             if spec["source"] == "file":
-                value = _read_source_file(spec["ref"])
+                value, spec["resolved"] = _read_source_file(spec["ref"])
             elif spec["source"] == "command":
                 value = _read_source_command(spec["ref"], cwd)
             else:
@@ -319,7 +335,8 @@ def vault_secret_write(action: str, args: dict[str, Any]) -> str:
     except UnlockRequired:
         return _locked(backend)
     except Exception as exc:
-        return _err(redact(str(exc), secrets)[:300])
+        return _err(safe_error(str(exc), secrets, f"1Password {action} failed (details withheld: a value "
+                               "has a line too short to redact)")[:300])
     finally:
         for update in updates:
             update["value"] = ""
@@ -329,7 +346,7 @@ def vault_secret_write(action: str, args: dict[str, Any]) -> str:
         for spec in specs:
             if spec["source"] == "file":
                 try:
-                    os.unlink(os.path.expanduser(spec["ref"]))
+                    os.unlink(spec["resolved"])
                     deleted.append(spec["ref"])
                 except OSError:
                     pass
@@ -377,9 +394,11 @@ VAULT_SECRET_SCHEMA = {
         "workdir, timeout) → runs `bash -c command` with each field injected as $VAR and returns the exit code and "
         "output with the values redacted. create (account, vault, title, category, fields, reason) / edit "
         "(item, fields, reason) write an item when the host allows writes; each field is {label, section?, "
-        "type?, and one of file (a 0600 file under the Hermes scratch dir), command (its stdout) or value "
-        "(inline, non-secret fields only)}; the result is the item handle and field labels. Every write is "
-        "approved by the user. There is no way to print a value: never try to echo, encode or "
+        "type?, and one of file (a 0600 file under the Hermes scratch dir), command (its stdout, run in "
+        "workdir) or value (inline, non-secret fields only)}; the result is the item handle, title, vault, "
+        "account and each field's label and source, never a value. A host enables writes "
+        "(vault.onepassword.allow_write) only with an approval hook that asks the user for each one. "
+        "There is no way to print a value: never try to echo, encode or "
         "write one out, and never ask the user for it. For website logins use browser_vault."
     ),
     "parameters": {
@@ -402,7 +421,8 @@ VAULT_SECRET_SCHEMA = {
                         "label": {"type": "string"},
                         "section": {"type": "string"},
                         "type": {"type": "string", "description": "CONCEALED (default for file/command), "
-                                 "STRING, EMAIL, URL, PHONE, DATE, MONTH_YEAR, MENU, OTP, SSHKEY."},
+                                 "STRING, EMAIL, URL, PHONE, DATE, MONTH_YEAR, MENU, OTP, SSHKEY, "
+                                 "CREDIT_CARD_NUMBER."},
                         "file": {"type": "string", "description": "path of a 0600 file under the scratch dir "
                                  "holding the value (one trailing newline is dropped)."},
                         "command": {"type": "string", "description": "bash command whose stdout is the value."},
@@ -428,7 +448,8 @@ VAULT_SECRET_SCHEMA = {
                     "required": ["item", "field"],
                 },
             },
-            "workdir": {"type": "string", "description": "run: working directory (default: current)."},
+            "workdir": {"type": "string", "description": "run, and create/edit value commands: working "
+                        "directory (default: current)."},
             "timeout": {"type": "integer", "description": f"run: seconds, max {_MAX_TIMEOUT}."},
         },
         "required": ["action"],

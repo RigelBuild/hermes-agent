@@ -161,6 +161,7 @@ def test_op_error_echoing_the_payload_is_redacted(env):
     {"label": "client secret", "value": _SECRET},
     {"label": "API token", "value": _SECRET},
     {"label": "password", "value": _SECRET},
+    {"label": "password", "type": "STRING", "value": _SECRET},
 ])
 def test_inline_value_is_refused_for_secret_fields(env, field):
     vst, tmp, _, _ = env
@@ -243,6 +244,26 @@ def test_edit_cannot_turn_a_secret_field_plain(env):
     res = _call(vst, action="edit", item=created["item"], reason="change the credential field type",
                 fields=[{"label": "credential", "type": "STRING", "file": str(_secret_file(scratch, "n.txt"))}])
     assert res["success"] is False and "secret field" in res["error"]
+
+
+def test_edit_refuses_items_a_template_round_trip_could_damage(env):
+    vst, tmp, scratch, _ = env
+    created = _create(vst, [{"label": "credential", "file": str(_secret_file(scratch))}])
+    store = _store(tmp)
+    store["rigelbuild"][0]["fields"].append({"id": "pk1", "type": "PASSKEY", "label": "passkey", "value": ""})
+    (tmp / "store.json").write_text(json.dumps(store))
+    res = _call(vst, action="edit", item=created["item"], reason="rotate the OAuth client secret",
+                fields=[{"label": "credential", "file": str(_secret_file(scratch, "n.txt"))}])
+    assert res["success"] is False and "PASSKEY" in res["error"]
+    assert '"edit"' not in _logs(tmp)[0]
+
+
+def test_errors_are_withheld_when_a_value_line_is_too_short_to_redact(env):
+    vst, _, scratch, _ = env
+    res = _create(vst, [{"label": "credential", "file": str(_secret_file(scratch, value=_SECRET + "\nab"))}],
+                  title="FAIL-ECHO")
+    assert res["success"] is False and "withheld" in res["error"]
+    assert "ab\\n" not in res["error"] and _SECRET not in res["error"]
 
 
 def test_writes_are_off_unless_the_host_allows_them(env, monkeypatch):

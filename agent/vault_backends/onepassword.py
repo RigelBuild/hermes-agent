@@ -341,6 +341,15 @@ class OnePasswordLoginBackend(LoginBackend):
         data = self._get_item(item)
         item_id = str(data["id"])
         account = self._any_accounts.get(item_id, self._accounts()[0])
+        # op's docs: a JSON-template edit overwrites passkeys. Refuse any item holding a field or
+        # attachment the round trip might not carry back intact, rather than risk losing it.
+        unknown = sorted({str(f.get("type") or "") for f in data.get("fields") or []
+                          if isinstance(f, dict) and str(f.get("type") or "").upper() not in _ROUND_TRIP_TYPES})
+        if unknown or data.get("files") or any("passkey" in str(k).lower() for k in data):
+            data.clear()
+            raise RuntimeError("this item holds a passkey, attachment or field type "
+                               f"({', '.join(unknown) or 'files/passkey'}) that an edit could overwrite; "
+                               "edit it in the 1Password app")
         existing = [str(f.get("value")) for f in data.get("fields") or []
                     if isinstance(f, dict) and isinstance(f.get("value"), str) and f.get("value")]
         try:
@@ -352,9 +361,10 @@ class OnePasswordLoginBackend(LoginBackend):
         except (RuntimeError, ValueError) as exc:
             # The item was read with --reveal so its other secrets survive the round trip; keep
             # them out of any error op (or the merge) produces.
-            from tools.vault_secret_tool import redact
+            from tools.vault_secret_tool import safe_error
 
-            raise type(exc)(redact(str(exc), existing)) from None
+            raise type(exc)(safe_error(str(exc), existing, "op could not edit the item (details withheld: "
+                                       "the item holds a value too short to redact)")) from None
         finally:
             data.clear()
         return self._summary(out, account, "")
@@ -374,6 +384,9 @@ class OnePasswordLoginBackend(LoginBackend):
 # Field types whose value is a secret: never set from an inline literal, never downgraded.
 SECRET_TYPES = frozenset({"CONCEALED", "OTP", "SSHKEY", "CREDIT_CARD_NUMBER"})
 PLAIN_TYPES = frozenset({"STRING", "EMAIL", "URL", "PHONE", "DATE", "MONTH_YEAR", "MENU"})
+# Field types an edit round trip carries back unchanged; anything else (a passkey, an unknown
+# future type) makes edit_item refuse.
+_ROUND_TRIP_TYPES = SECRET_TYPES | PLAIN_TYPES | {"", "REFERENCE", "ADDRESS"}
 _LABEL_ALIASES = {"notes": "notesPlain"}
 
 
