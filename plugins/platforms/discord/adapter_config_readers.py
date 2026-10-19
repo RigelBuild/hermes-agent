@@ -24,11 +24,13 @@ def _read_dm_role_auth_guild() -> Optional[int]:
     return guild_id if guild_id > 0 else None
 
 
-# Default timeout for Discord button views when ``approvals.discord_prompt_timeout`` is unset;
-# Discord interaction tokens expire at ~15 minutes, so 900s is the practical ceiling.
+# Default timeout for Discord button views when ``approvals.discord_prompt_timeout`` is unset.
+# Prompts are bot messages, not interaction responses: each click brings a fresh interaction and
+# the timeout edit uses the bot's own message, so the ~15-minute interaction-token expiry does not
+# bound them. The ceiling is a sanity cap so a typo cannot leave buttons live for days.
 _DISCORD_PROMPT_TIMEOUT_DEFAULT = 300
 _DISCORD_PROMPT_TIMEOUT_MIN = 30
-_DISCORD_PROMPT_TIMEOUT_MAX = 900
+_DISCORD_PROMPT_TIMEOUT_MAX = 3600
 
 
 def _read_discord_prompt_timeout() -> int:
