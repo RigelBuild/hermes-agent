@@ -394,10 +394,15 @@ discord:
     roles: false                  # @role pings (default: false)
     users: true                   # @user pings (default: true)
     replied_user: true            # reply-reference pings the author (default: true)
+  post_channels: []               # Where the discord tool's post actions may post (empty = anywhere)
 
 # Session isolation (applies to all gateway platforms, not just Discord)
 group_sessions_per_user: true     # Isolate sessions per user in shared channels
 ```
+
+#### `discord.post_channels`
+
+Channel IDs (YAML list or comma-separated string) where the `discord` tool's `create_forum_post` and `post_message` actions may post. `create_forum_post` needs the forum's own ID in the list. `post_message` also accepts a thread or forum post whose parent is listed; a channel under a listed category does not count. Empty means any channel the bot can post in. If the setting can't be read or has an unsupported type, both actions refuse to post.
 
 #### `discord.require_mention`
 

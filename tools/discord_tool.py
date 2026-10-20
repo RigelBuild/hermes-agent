@@ -10,6 +10,7 @@ import functools
 import hashlib
 import json
 import logging
+import math
 import threading
 import time
 from datetime import UTC, datetime
@@ -36,9 +37,10 @@ _FLAGS_MESSAGE_CONTENT = (1 << 18) | (1 << 19)
 
 
 class DiscordAPIError(Exception):
-    def __init__(self, status: int, body: str):
+    def __init__(self, status: int, body: str, headers: Optional[dict[str, str]] = None):
         self.status = status
         self.body = body
+        self.headers = {k.lower(): v for k, v in (headers or {}).items()}
         super().__init__(f"Discord API error {status}: {body}")
 
 
@@ -54,10 +56,78 @@ def _get_bot_token() -> Optional[str]:
     return (get_secret("DISCORD_BOT_TOKEN", "") or "").strip() or None
 
 
+_RATE_LIMIT_RETRIES = 2
+_RATE_LIMIT_MAX_WAIT_SECONDS = 10.0
+# A global 429 limits every request this bot makes, so later requests in this process wait it out
+# too instead of each discovering the limit on its own.
+_global_rate_limit_until = 0.0
+_global_rate_limit_lock = threading.Lock()
+
+
+def _rate_limit_wait(error: "DiscordAPIError") -> Optional[float]:
+    """Seconds to wait before retrying a 429, or ``None`` when the wait is unknown or too long.
+
+    Uses the JSON ``retry_after``, else the ``Retry-After`` / ``X-RateLimit-Reset-After`` headers."""
+    retry_after: Optional[float] = None
+    try:
+        retry_after = float(json.loads(error.body).get("retry_after"))
+    except (TypeError, ValueError, AttributeError):
+        for header in ("retry-after", "x-ratelimit-reset-after"):
+            try:
+                retry_after = float(error.headers[header])
+                break
+            except (KeyError, TypeError, ValueError):
+                continue
+    if retry_after is None or not math.isfinite(retry_after) or retry_after < 0 \
+            or retry_after > _RATE_LIMIT_MAX_WAIT_SECONDS:
+        return None
+    return retry_after
+
+
+def _is_global_rate_limit(error: "DiscordAPIError") -> bool:
+    if error.headers.get("x-ratelimit-global", "").lower() == "true":
+        return True
+    try:
+        return bool(json.loads(error.body).get("global"))
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def _wait_for_global_rate_limit() -> None:
+    """Sleep until no global limit is pending, rechecking in case another request extended it."""
+    while True:
+        with _global_rate_limit_lock:
+            remaining = _global_rate_limit_until - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(remaining)
+
+
 def _discord_request(
     method: str, path: str, token: str, params: Optional[dict[str, str]] = None,
     body: Optional[dict[str, Any]] = None, timeout: int = 15) -> Any:
-    """Make a request to the Discord REST API."""
+    """Make a request to the Discord REST API, waiting out short 429 rate limits."""
+    global _global_rate_limit_until
+    for attempt in range(_RATE_LIMIT_RETRIES + 1):
+        _wait_for_global_rate_limit()
+        try:
+            return _discord_request_once(method, path, token, params=params, body=body, timeout=timeout)
+        except DiscordAPIError as error:
+            wait = _rate_limit_wait(error) if error.status == 429 else None
+            if error.status == 429 and wait is not None and _is_global_rate_limit(error):
+                with _global_rate_limit_lock:
+                    _global_rate_limit_until = max(_global_rate_limit_until, time.monotonic() + wait)
+            if wait is None or attempt == _RATE_LIMIT_RETRIES:
+                raise
+            logger.info("Discord rate limited %s %s; retrying in %.2fs", method, path, wait)
+            time.sleep(wait)
+    raise AssertionError("unreachable")
+
+
+def _discord_request_once(
+    method: str, path: str, token: str, params: Optional[dict[str, str]] = None,
+    body: Optional[dict[str, Any]] = None, timeout: int = 15) -> Any:
+    """Make one request to the Discord REST API."""
     url = f"{DISCORD_API_BASE}{path}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
@@ -80,7 +150,7 @@ def _discord_request(
             error_body = too_large.body
         except Exception:
             error_body = ""
-        raise DiscordAPIError(e.code, error_body) from e
+        raise DiscordAPIError(e.code, error_body, dict(e.headers.items()) if e.headers else None) from e
 
 
 _CHANNEL_TYPE_NAMES = {
@@ -442,6 +512,7 @@ def _list_forum_posts(
     filtered.sort(key=lambda thread: _thread_created_at(thread)[0], reverse=True)
     posts = []
     result_limit = max(1, int(_limit_param(limit, 50)))
+    has_more = has_more or len(filtered) > result_limit
     for thread in filtered[:result_limit]:
         _, created_at = _thread_created_at(thread)
         posts.append({
@@ -452,8 +523,118 @@ def _list_forum_posts(
     return json.dumps({"posts": posts, "count": len(posts), "has_more": has_more})
 
 
-def _message_chunks(content: str) -> list[str]:
-    return [content[index:index + 2000] for index in range(0, len(content), 2000)]
+_DISCORD_MESSAGE_MAX_CHARS = 2000
+_FENCE_CLOSE = "\n```"
+# A reopened fence keeps its language tag only when the tag is short; otherwise it reopens bare.
+_MAX_REOPEN_CHARS = 40
+
+
+def _message_chunks(content: str, limit: int = _DISCORD_MESSAGE_MAX_CHARS) -> list[str]:
+    """Split ``content`` into chunks of at most ``limit`` characters without changing it.
+
+    Splits after a newline when one is in reach (else a space, else hard at the limit) and keeps
+    every character, so indentation and blank lines survive. A split inside a code fence closes it
+    at the chunk end and reopens it (with its language tag, if short) in the next chunk.
+    """
+    if len(content) <= limit:
+        return [content]
+    chunks: list[str] = []
+    remaining = content
+    reopen = ""  # fence opener to prepend when the previous chunk ended inside a code block
+    while remaining:
+        if len(reopen) + len(remaining) <= limit:
+            chunks.append(reopen + remaining)
+            break
+        # Always consume at least one character so the loop terminates.
+        budget = max(1, limit - len(reopen) - len(_FENCE_CLOSE))
+        region = remaining[:budget]
+        split_at = region.rfind("\n") + 1
+        if split_at < budget // 2:
+            split_at = region.rfind(" ") + 1
+        if split_at < 1:
+            split_at = budget
+        body, remaining = remaining[:split_at], remaining[split_at:]
+        chunk = reopen + body
+        opener = _open_fence_after(chunk)
+        if opener is not None:
+            chunk += _FENCE_CLOSE[1:] if chunk.endswith("\n") else _FENCE_CLOSE
+            reopen = (opener if len(opener) <= _MAX_REOPEN_CHARS else "```") + "\n"
+        else:
+            reopen = ""
+        chunks.append(chunk)
+    return chunks
+
+
+def _open_fence_after(text: str) -> Optional[str]:
+    """The opening fence line (e.g. ```` ```python ````) left open at the end of ``text``, if any.
+
+    A fence opens on a line starting with three or more backticks and closes only on a line of
+    backticks at least as long as the opener, with nothing else on it (CommonMark).
+    """
+    opener: Optional[str] = None
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped.startswith("```"):
+            continue
+        ticks = len(stripped) - len(stripped.lstrip("`"))
+        if opener is None:
+            opener = stripped
+        elif stripped == "`" * ticks and ticks >= len(opener) - len(opener.lstrip("`")):
+            opener = None
+    return opener
+
+
+class _PostScopeConfigError(ValueError):
+    """``discord.post_channels`` is set but cannot be read; posting fails closed."""
+
+
+def _load_post_channels_config() -> Optional[set[str]]:
+    """``discord.post_channels`` (comma string or list of channel IDs), or ``None`` when unset.
+
+    Fails closed: an unreadable config or an unsupported value raises instead of unrestricting."""
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.config_read_errors import FailedConfigRead
+        config = load_config()
+    except Exception as exc:
+        raise _PostScopeConfigError(f"Could not read discord.post_channels; refusing to post: {exc}") from exc
+    if isinstance(config, FailedConfigRead):
+        # A fallback after a failed read holds defaults (empty = unrestricted), not the user's limit.
+        raise _PostScopeConfigError(
+            f"Could not read config.yaml, so discord.post_channels is unknown; refusing to post: "
+            f"{config.read_error}")
+    raw = ((config or {}).get("discord") or {}).get("post_channels")
+    if raw is None or raw == "" or raw == []:
+        return None
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    elif isinstance(raw, int) and not isinstance(raw, bool):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        raise _PostScopeConfigError(
+            f"discord.post_channels must be a channel ID list or comma string, not {type(raw).__name__}; "
+            "refusing to post.")
+    return {str(item).strip() for item in raw if str(item).strip()}
+
+
+_THREAD_CHANNEL_TYPES = frozenset({10, 11, 12})  # announcement, public and private threads
+
+
+def _require_post_scope(
+    token: str, channel_id: str, channel: Optional[dict[str, Any]] = None, *, allow_thread_parent: bool = True,
+) -> None:
+    """Refuse posts outside ``discord.post_channels``. Only a thread (forum post) inherits its
+    parent's permission; a channel under an allowed category does not."""
+    allowed = _load_post_channels_config()
+    if allowed is None or str(channel_id) in allowed:
+        return
+    if allow_thread_parent:
+        if channel is None:
+            channel = _discord_request("GET", f"/channels/{channel_id}", token) or {}
+        if channel.get("type") in _THREAD_CHANNEL_TYPES and str(channel.get("parent_id") or "") in allowed:
+            return
+    raise ValueError(
+        f"Channel {channel_id} is outside discord.post_channels; allowed: {', '.join(sorted(allowed)) or '<none>'}")
 
 
 def _allowed_mentions() -> dict[str, Any]:
@@ -481,7 +662,12 @@ def _allowed_mentions() -> dict[str, Any]:
 def _send_message_chunks(
     token: str, channel_id: str, content: str, allowed_mentions: Optional[dict[str, Any]] = None,
 ) -> list[str]:
-    chunks = _message_chunks(content)
+    return _send_chunks(token, channel_id, _message_chunks(content), allowed_mentions)
+
+
+def _send_chunks(
+    token: str, channel_id: str, chunks: list[str], allowed_mentions: Optional[dict[str, Any]] = None,
+) -> list[str]:
     mentions = allowed_mentions if allowed_mentions is not None else _allowed_mentions()
     message_ids = []
     for index, chunk in enumerate(chunks, start=1):
@@ -527,11 +713,11 @@ def _validate_applied_tags(applied_tags: Optional[list[str]]) -> None:
         raise ValueError("A forum post can have at most five applied_tags.")
 
 
-def _forum_post_body(name: str, content: str, applied_tags: Optional[list[str]]) -> dict[str, Any]:
+def _forum_post_body(name: str, starter: str, applied_tags: Optional[list[str]]) -> dict[str, Any]:
     _validate_applied_tags(applied_tags)
     body: dict[str, Any] = {
         "name": name,
-        "message": {"content": _message_chunks(content)[0], "allowed_mentions": _allowed_mentions()},
+        "message": {"content": starter, "allowed_mentions": _allowed_mentions()},
         "auto_archive_duration": 1440,
     }
     if applied_tags:
@@ -545,15 +731,14 @@ def _create_forum_post(
 ) -> str:
     """Create a tagged forum thread with a starter message, then append long content."""
     _require_forum_post_text(name, content)
+    _require_post_scope(token, channel_id, allow_thread_parent=False)
     chunks = _message_chunks(content)
-    body = _forum_post_body(name, content, applied_tags)
+    body = _forum_post_body(name, chunks[0], applied_tags)
     thread = _discord_request("POST", f"/channels/{channel_id}/threads", token, body=body)
     starter = thread.get("message") or {}
     try:
         message_ids = (
-            _send_message_chunks(
-                token, thread["id"], "".join(chunks[1:]), allowed_mentions=body["message"]["allowed_mentions"],
-            )
+            _send_chunks(token, thread["id"], chunks[1:], allowed_mentions=body["message"]["allowed_mentions"])
             if len(chunks) > 1 else []
         )
     except Exception as exc:
@@ -575,6 +760,7 @@ def _create_forum_post(
 def _post_message(token: str, channel_id: str, content: str, **_kwargs: Any) -> str:
     """Post message chunks to a channel/thread, reopening an archived thread first."""
     channel = _discord_request("GET", f"/channels/{channel_id}", token)
+    _require_post_scope(token, channel_id, channel)
     if (channel.get("thread_metadata") or {}).get("archived"):
         try:
             _discord_request("PATCH", f"/channels/{channel_id}", token, body={"archived": False})
@@ -623,8 +809,8 @@ _ACTION_MANIFEST = [
     ("delete_message", _delete_message, "(channel_id, message_id)", "delete a message"),
     ("create_thread", _create_thread, "(channel_id, name)", "create a public thread; optional message_id anchor"),
     ("list_forum_posts", _list_forum_posts, "(channel_id)", "find forum posts by title; use for daily find-or-create workflows; response has_more flags archive scan truncation"),
-    ("create_forum_post", _create_forum_post, "(channel_id, name, content)", "create a forum post with starter message; optional applied_tags for required forum tags; use for daily forum workflows"),
-    ("post_message", _post_message, "(channel_id, content)", "post into a channel or forum post; use for daily forum workflows"),
+    ("create_forum_post", _create_forum_post, "(channel_id, name, content)", "create a forum post with starter message; optional applied_tags for required forum tags; use for daily forum workflows; limited by discord.post_channels"),
+    ("post_message", _post_message, "(channel_id, content)", "post into a channel or forum post; use for daily forum workflows; limited by discord.post_channels"),
     ("add_role", _add_role, "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", _remove_role, "(guild_id, user_id, role_id)", "remove a role"),
 ]
