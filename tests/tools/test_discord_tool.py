@@ -815,6 +815,23 @@ class TestDiscordForumActions:
         assert result["count"] == 1
         assert result["posts"][0]["id"] == "22"
         assert calls[-1][1] == {"limit": "100", "before": "2025-01-03T00:00:00Z"}
+        assert result["has_more"] is True  # a second match was cut by limit=1
+
+    def test_list_forum_posts_has_more_false_when_complete(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        self._allow_actions(monkeypatch)
+        thread = {"id": "22", "name": "Daily", "parent_id": "forum", "thread_metadata": {}}
+
+        def request(method, path, token, **kwargs):
+            if path == "/channels/forum":
+                return {"guild_id": "guild"}
+            if path == "/guilds/guild/threads/active":
+                return {"threads": [thread]}
+            return {"threads": [], "has_more": False}
+
+        with patch("tools.discord_tool._discord_request", side_effect=request):
+            result = json.loads(discord_core(action="list_forum_posts", channel_id="forum", limit=5))
+        assert result["count"] == 1
         assert result["has_more"] is False
 
     def test_list_forum_posts_reports_timestamp_tie_truncation(self, monkeypatch):
@@ -886,7 +903,7 @@ class TestDiscordForumActions:
                 return {"id": "thread-1", "name": "2025-01-01", "message": {"id": "starter-1"}}
             return {"id": f"message-{len(calls)}"}
 
-        content = "a" * 2001
+        content = ("line of text\n" * 200).strip()  # ~2.6k chars, splits once at a newline
         with patch("tools.discord_tool._discord_request", side_effect=request):
             result = json.loads(discord_core(
                 action="create_forum_post", channel_id="forum", name="2025-01-01", content=content,
@@ -896,16 +913,67 @@ class TestDiscordForumActions:
             "success": True, "thread_id": "thread-1", "name": "2025-01-01",
             "starter_message_id": "starter-1", "additional_message_ids": ["message-2"],
         }
-        assert calls == [
-            ("POST", "/channels/forum/threads", {
-                "name": "2025-01-01", "message": {
-                    "content": "a" * 2000, "allowed_mentions": {"parse": ["users"], "replied_user": True},
-                }, "auto_archive_duration": 1440,
-            }),
-            ("POST", "/channels/thread-1/messages", {
-                "content": "a", "allowed_mentions": {"parse": ["users"], "replied_user": True},
-            }),
-        ]
+        mentions = {"parse": ["users"], "replied_user": True}
+        assert [(method, path) for method, path, _ in calls] == [
+            ("POST", "/channels/forum/threads"), ("POST", "/channels/thread-1/messages")]
+        thread_body = calls[0][2]
+        assert thread_body["name"] == "2025-01-01"
+        assert thread_body["auto_archive_duration"] == 1440
+        assert thread_body["message"]["allowed_mentions"] == mentions
+        assert calls[1][2]["allowed_mentions"] == mentions
+        starter, rest = thread_body["message"]["content"], calls[1][2]["content"]
+        assert len(starter) <= 2000 and len(rest) <= 2000
+        assert starter.endswith("(1/2)") and rest.endswith("(2/2)")
+        assert starter.removesuffix(" (1/2)").endswith("line of text")  # split on a line boundary
+
+    def test_message_chunks_keep_code_fences_balanced(self):
+        from tools.discord_tool import _message_chunks
+
+        content = "```python\n" + "print('x')\n" * 400 + "```"
+        chunks = _message_chunks(content)
+        assert len(chunks) > 1
+        assert all(len(chunk) <= 2000 for chunk in chunks)
+        assert all(chunk.count("```") % 2 == 0 for chunk in chunks)
+        assert _message_chunks("short") == ["short"]
+
+    def test_post_channels_scope_limits_post_targets(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": "", "post_channels": ["forum"]}},
+        )
+        channels = {
+            "/channels/post-in-forum": {"id": "post-in-forum", "parent_id": "forum", "thread_metadata": {}},
+            "/channels/elsewhere": {"id": "elsewhere", "parent_id": "other"},
+        }
+
+        def request(method, path, token, **kwargs):
+            if method == "GET":
+                return channels[path]
+            if path == "/channels/forum/threads":
+                return {"id": "t", "name": "n", "message": {"id": "s"}}
+            return {"id": "m"}
+
+        with patch("tools.discord_tool._discord_request", side_effect=request) as mock_request:
+            ok = json.loads(discord_core(action="post_message", channel_id="post-in-forum", content="hi"))
+            created = json.loads(discord_core(
+                action="create_forum_post", channel_id="forum", name="n", content="hi"))
+            denied = json.loads(discord_core(action="post_message", channel_id="elsewhere", content="hi"))
+            denied_forum = json.loads(discord_core(
+                action="create_forum_post", channel_id="elsewhere", name="n", content="hi"))
+        assert ok["success"] is True
+        assert created["success"] is True
+        assert "post_channels" in denied["error"]
+        assert "post_channels" in denied_forum["error"]
+        posted_paths = [c.args[1] for c in mock_request.call_args_list if c.args[0] == "POST"]
+        assert all("elsewhere" not in path for path in posted_paths)
+
+    @pytest.mark.parametrize("value", [None, "", []])
+    def test_post_channels_empty_means_unrestricted(self, monkeypatch, value):
+        from tools.discord_tool import _load_post_channels_config
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"discord": {"post_channels": value}})
+        assert _load_post_channels_config() is None
 
     def test_rest_message_mentions_follow_profile_config(self, monkeypatch):
         from tools.discord_tool import _allowed_mentions
@@ -983,16 +1051,47 @@ class TestDiscordForumActions:
             ))
 
         assert result == {"success": True, "message_ids": ["message-3", "message-4"]}
-        assert calls == [
+        assert calls[:2] == [
             ("GET", "/channels/thread", None),
             ("PATCH", "/channels/thread", {"archived": False}),
-            ("POST", "/channels/thread/messages", {
-                "content": "b" * 2000, "allowed_mentions": {"parse": ["users"], "replied_user": True},
-            }),
-            ("POST", "/channels/thread/messages", {
-                "content": "b", "allowed_mentions": {"parse": ["users"], "replied_user": True},
-            }),
         ]
+        sent = [body for method, _path, body in calls[2:]]
+        assert [method for method, _p, _b in calls[2:]] == ["POST", "POST"]
+        assert all(len(body["content"]) <= 2000 for body in sent)
+        assert all(body["allowed_mentions"] == {"parse": ["users"], "replied_user": True} for body in sent)
+        assert "".join(body["content"].rsplit(" (", 1)[0] for body in sent) == "b" * 2001
+
+    def test_discord_request_retries_short_rate_limits(self, monkeypatch):
+        from tools import discord_tool
+
+        sleeps = []
+        monkeypatch.setattr(discord_tool.time, "sleep", sleeps.append)
+        responses = [DiscordAPIError(429, '{"retry_after": 0.5}'), {"id": "ok"}]
+
+        def once(*_args, **_kwargs):
+            item = responses.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        with patch("tools.discord_tool._discord_request_once", side_effect=once):
+            assert discord_tool._discord_request("POST", "/x", "tok") == {"id": "ok"}
+        assert sleeps == [0.5]
+
+    def test_discord_request_gives_up_on_long_or_repeated_rate_limits(self, monkeypatch):
+        from tools import discord_tool
+
+        monkeypatch.setattr(discord_tool.time, "sleep", lambda _s: None)
+        with patch("tools.discord_tool._discord_request_once",
+                   side_effect=DiscordAPIError(429, '{"retry_after": 60}')) as once:
+            with pytest.raises(DiscordAPIError):
+                discord_tool._discord_request("POST", "/x", "tok")
+        assert once.call_count == 1
+        with patch("tools.discord_tool._discord_request_once",
+                   side_effect=DiscordAPIError(429, '{"retry_after": 0.1}')) as once:
+            with pytest.raises(DiscordAPIError):
+                discord_tool._discord_request("POST", "/x", "tok")
+        assert once.call_count == discord_tool._RATE_LIMIT_RETRIES + 1
 
     def test_new_actions_validate_required_params_and_name_limit(self, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
