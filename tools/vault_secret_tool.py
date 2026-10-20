@@ -7,8 +7,12 @@ Actions:
   child, and return its exit code and output with every injected value (and its common
   encodings) redacted. The value never reaches the model, argv or disk.
 
+- create / edit: write one item (off unless ``vault.onepassword.allow_write``). Values come from a
+  0600 file under the scratch dir or a command's stdout; an inline value is accepted only for a
+  non-secret field. The item JSON reaches ``op`` on stdin, and only the handle and labels return.
+
 The tool cannot print a value: it has no read action, and ``run`` output is scrubbed. Hosts
-gate ``run`` with a pre_tool_call hook (it carries the command and the item/field names for
+gate ``run``, ``create`` and ``edit`` with a pre_tool_call hook (it carries the command and the item/field names for
 the approval prompt); a host without one should not enable this tool.
 """
 
@@ -18,7 +22,10 @@ import base64
 import json
 import os
 import re
+import signal
+import stat
 import subprocess
+import time
 import urllib.parse
 from typing import Any, Optional
 
@@ -70,6 +77,14 @@ def redact(text: str, secrets: list[str]) -> str:
     for needle in sorted({v for s in secrets for v in _variants(s)}, key=len, reverse=True):
         text = text.replace(needle, "[REDACTED]")
     return text
+
+
+def safe_error(text: str, secrets: list[str], generic: str) -> str:
+    """*text* redacted, or *generic* when a value has a line too short to redact (it could survive
+    in an error that echoes the payload)."""
+    if any(0 < len(line.strip()) < _MIN_REDACT for s in secrets for line in s.splitlines()):
+        return generic
+    return redact(text, secrets)
 
 
 def _parse_env(raw: Any) -> list[tuple[str, str, str]]:
@@ -152,6 +167,268 @@ def vault_secret_run(command: str, env: Any, workdir: str = "", timeout: Any = N
                        "injected": [name for name, _, _ in refs]}, ensure_ascii=False)
 
 
+# ── create / edit: write an item whose values come from a file or a command, never the chat ──
+
+_MAX_FIELDS = 20
+_MAX_SOURCE_BYTES = 64 * 1024
+_SOURCE_TIMEOUT = 60
+# A label like these is a secret even when the caller gives no type, so a literal is refused.
+_SECRET_LABEL = re.compile(r"(?<![a-z])(pass(word|phrase)?|secret|token|key|credential|private|otp|pin)(?![a-z])",
+                           re.IGNORECASE)
+_CATEGORIES = {
+    "api credential", "bank account", "credit card", "database", "driver license", "email account",
+    "identity", "login", "membership", "outdoor license", "passport", "password", "reward program",
+    "secure note", "server", "social security number", "software license", "wireless router", "ssh key",
+}
+
+
+def _scratch_root() -> str:
+    from hermes_constants import get_scratch_dir
+
+    return str(get_scratch_dir(prune=False))
+
+
+def _relative_to_scratch(path: str) -> tuple[str, str]:
+    """(resolved scratch root, *path* relative to it), matching the root by its own spelling or
+    its resolved one (macOS /var → /private/var). Only the root is resolved: components below it
+    are walked without following symlinks by _open_under."""
+    raw = os.path.normpath(os.path.abspath(os.path.expanduser(_scratch_root())))
+    resolved = os.path.realpath(raw)
+    expanded = os.path.normpath(os.path.abspath(os.path.expanduser(path)))
+    for base in (raw, resolved):
+        if os.path.commonpath([expanded, base]) == base and expanded != base:
+            return resolved, os.path.relpath(expanded, base)
+    raise ValueError(f"{path}: value files must be under the Hermes scratch dir ({raw})")
+
+
+def _open_under(root: str, rel: str) -> tuple[int, int, str]:
+    """Open *rel* below *root* one component at a time with O_NOFOLLOW, so no symlink anywhere
+    on the path (ancestor or leaf, even one swapped in mid-call) can redirect it. Returns
+    (parent dir fd, file fd, leaf name); the caller closes both."""
+    flags_dir = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    parts = [p for p in rel.split(os.sep) if p not in ("", ".")]
+    if not parts or ".." in parts:
+        raise ValueError("bad path")
+    dir_fd = os.open(root, flags_dir)
+    try:
+        for part in parts[:-1]:
+            nxt = os.open(part, flags_dir, dir_fd=dir_fd)
+            os.close(dir_fd)
+            dir_fd = nxt
+        return dir_fd, os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd), parts[-1]
+    except BaseException:
+        os.close(dir_fd)
+        raise
+
+
+def _read_source_file(path: str) -> tuple[str, str]:
+    """A value file: a regular file under the scratch dir, owned by this user, with no group or
+    other access, reached without following any symlink. Returns (value, path relative to the
+    scratch dir); errors name the path, never the content."""
+    root, rel = _relative_to_scratch(path)
+    try:
+        dir_fd, fd, _ = _open_under(root, rel)
+    except (OSError, ValueError) as exc:
+        reason = getattr(exc, "strerror", None) or str(exc)
+        raise ValueError(f"{path}: cannot open ({reason}; symlinks are refused)") from None
+    os.close(dir_fd)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"{path}: not a regular file")
+        if info.st_uid != os.getuid():
+            raise ValueError(f"{path}: not owned by this user")
+        if info.st_mode & 0o077:
+            raise ValueError(f"{path}: mode {stat.S_IMODE(info.st_mode):04o}; chmod 600 it first")
+        if info.st_size > _MAX_SOURCE_BYTES:
+            raise ValueError(f"{path}: larger than {_MAX_SOURCE_BYTES} bytes")
+        raw = os.read(fd, _MAX_SOURCE_BYTES + 1)
+    finally:
+        os.close(fd)
+    try:
+        return raw.decode("utf-8").removesuffix("\n").removesuffix("\r"), path
+    except UnicodeDecodeError:
+        raise ValueError(f"{path}: not UTF-8 text") from None
+
+
+def _unlink_source(path: str) -> None:
+    """Delete a value file via the same no-follow walk that read it."""
+    root, rel = _relative_to_scratch(path)
+    dir_fd, fd, leaf = _open_under(root, rel)
+    try:
+        os.unlink(leaf, dir_fd=dir_fd)
+    finally:
+        os.close(fd)
+        os.close(dir_fd)
+
+
+def _no_op_credentials(env: dict[str, str]) -> dict[str, str]:
+    """Drop every 1Password credential variable. The gateway's own unlock never enters the
+    environment, but a session or token exported into the launch env would otherwise pass on."""
+    return {k: v for k, v in env.items()
+            if not (k.upper().startswith(("OP_SESSION", "OP_CONNECT_")) or k.upper().startswith("OP_SERVICE_ACCOUNT"))}
+
+
+def _read_source_command(command: str, cwd: str) -> str:
+    """A value command's stdout. It runs with the ordinary scrubbed child env minus any 1Password
+    credential, so it can never write with the gateway's session; only its exit code is reported
+    on failure."""
+    from tools.environments.local import build_subprocess_env
+
+    # stderr is never reported, so it is discarded; stdout is read with a hard cap, and the child
+    # is killed as soon as it exceeds the cap or the timeout.
+    proc = subprocess.Popen(["bash", "-c", command], cwd=cwd, env=_no_op_credentials(build_subprocess_env()),
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            start_new_session=True)
+    chunks: list[bytes] = []
+    size = 0
+    deadline = time.monotonic() + _SOURCE_TIMEOUT
+    try:
+        os.set_blocking(proc.stdout.fileno(), False)
+        while True:
+            if time.monotonic() > deadline:
+                raise ValueError(f"value command timed out after {_SOURCE_TIMEOUT}s")
+            try:
+                chunk = os.read(proc.stdout.fileno(), 65536)
+            except BlockingIOError:
+                time.sleep(0.02)
+                continue
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > _MAX_SOURCE_BYTES:
+                raise ValueError(f"value command printed more than {_MAX_SOURCE_BYTES} bytes")
+            chunks.append(chunk)
+        code = proc.wait(timeout=max(deadline - time.monotonic(), 0.1))
+    except subprocess.TimeoutExpired:
+        raise ValueError(f"value command timed out after {_SOURCE_TIMEOUT}s") from None
+    finally:
+        # The command runs in its own session: end its whole process group, so a background child
+        # it spawned cannot outlive the call (or keep writing to the pipe).
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+        proc.stdout.close()
+    if code != 0:
+        raise ValueError(f"value command exited {code}")
+    out = b"".join(chunks)
+    chunks.clear()
+    try:
+        return out.decode("utf-8").removesuffix("\n").removesuffix("\r")
+    except UnicodeDecodeError:
+        raise ValueError("value command output is not UTF-8 text") from None
+
+
+def _parse_fields(raw: Any) -> list[dict]:
+    """Validate the field specs (no value is read yet)."""
+    from agent.vault_backends.onepassword import PLAIN_TYPES, SECRET_TYPES
+
+    if not isinstance(raw, list) or not raw or len(raw) > _MAX_FIELDS:
+        raise ValueError(f"fields must list 1 to {_MAX_FIELDS} fields")
+    out = []
+    for spec in raw:
+        if not isinstance(spec, dict) or not str(spec.get("label") or "").strip():
+            raise ValueError("each field needs a label")
+        label = str(spec["label"]).strip()
+        kind = str(spec.get("type") or "").upper()
+        if kind and kind not in PLAIN_TYPES | SECRET_TYPES:
+            raise ValueError(f"{label}: unknown type {kind!r}")
+        sources = [k for k in ("file", "command", "value") if spec.get(k) not in (None, "")]
+        if len(sources) != 1:
+            raise ValueError(f"{label}: give exactly one of file, command or value")
+        source = sources[0]
+        if source == "value":
+            # The literal passed through the conversation, so it may only be a non-secret. A
+            # secret-looking label is refused whatever type the caller claims for it.
+            if not isinstance(spec["value"], str):
+                raise ValueError(f"{label}: value must be a string")
+            if kind in SECRET_TYPES or _SECRET_LABEL.search(label):
+                raise ValueError(f"{label}: secret fields take a file or command, never an inline value")
+        out.append({"label": label, "section": str(spec.get("section") or "").strip(), "type": kind,
+                    "source": source, "ref": str(spec[source])})
+    return out
+
+
+def vault_secret_write(action: str, args: dict[str, Any]) -> str:
+    backend = _backend()
+    if backend is None:
+        return _err("1Password is not an enabled vault backend.")
+    if not getattr(backend, "writes_enabled", lambda: False)():
+        return _err("1Password writes are off on this host (vault.onepassword.allow_write).")
+    reason = str(args.get("reason") or "")
+    if len(reason.strip()) < 10:
+        return _err(f"reason is required: say what this {action} is for and where each value comes from, "
+                    "so the approver can judge it")
+    try:
+        specs = _parse_fields(args.get("fields"))
+    except ValueError as exc:
+        return _err(str(exc))
+    title = str(args.get("title") or "").strip()
+    if action == "create":
+        vault, category = str(args.get("vault") or "").strip(), str(args.get("category") or "").strip()
+        if not (title and vault and category):
+            return _err("create needs account, vault, title and category")
+        if category.lower() not in _CATEGORIES:
+            return _err(f"unknown category {category!r}")
+    elif not str(args.get("item") or "").strip() or not title:
+        # The title names the target in the approval prompt, and the backend refuses the edit
+        # unless it matches the item, so the approver sees what is really changed.
+        return _err("edit needs item (a handle from search) and title (that item's current title)")
+    cwd = os.path.expanduser(str(args.get("workdir") or "")) or os.getcwd()
+    if not os.path.isdir(cwd):
+        return _err(f"workdir does not exist: {args.get('workdir')}")
+
+    from agent.vault_backends.base import UnlockRequired
+
+    secrets: list[str] = []
+    updates: list[dict] = []
+    try:
+        for spec in specs:
+            if spec["source"] == "file":
+                value, spec["resolved"] = _read_source_file(spec["ref"])
+            elif spec["source"] == "command":
+                value = _read_source_command(spec["ref"], cwd)
+            else:
+                value = spec["ref"]
+            if spec["source"] != "value":
+                if len(value.strip()) < _MIN_REDACT:
+                    raise ValueError(f"{spec['label']}: value is shorter than {_MIN_REDACT} characters, so it "
+                                     "could not be redacted from errors; not written")
+                secrets.append(value)
+            updates.append({"label": spec["label"], "section": spec["section"], "type": spec["type"],
+                            "value": value, "literal": spec["source"] == "value"})
+        if action == "create":
+            result = backend.create_item(account=str(args.get("account") or ""), vault=vault, title=title,
+                                         category=category, fields=updates)
+        else:
+            result = backend.edit_item(item=str(args["item"]), title=title, fields=updates)
+    except UnlockRequired:
+        return _locked(backend)
+    except Exception as exc:
+        return _err(safe_error(str(exc), secrets, f"1Password {action} failed (details withheld: a value "
+                               "has a line too short to redact)")[:300])
+    finally:
+        for update in updates:
+            update["value"] = ""
+        secrets.clear()
+    deleted = []
+    if args.get("delete_sources") is True:
+        for spec in specs:
+            if spec["source"] == "file":
+                try:
+                    _unlink_source(spec["resolved"])
+                    deleted.append(spec["ref"])
+                except OSError:
+                    pass
+    return json.dumps({"success": True, "action": action, **result,
+                       "fields": [{"label": s["label"], "section": s["section"], "source": s["source"]} for s in specs],
+                       "deleted_sources": deleted}, ensure_ascii=False)
+
+
 def _handle(args: dict[str, Any], **_kwargs: Any) -> str:
     action = str(args.get("action") or "")
     backend = _backend()
@@ -177,7 +454,9 @@ def _handle(args: dict[str, Any], **_kwargs: Any) -> str:
         return vault_secret_run(str(args.get("command") or ""), args.get("env"),
                                 str(args.get("workdir") or ""), args.get("timeout"),
                                 str(args.get("reason") or ""))
-    return _err(f"Unknown action {action!r}; use search, fields or run.")
+    if action in {"create", "edit"}:
+        return vault_secret_write(action, args)
+    return _err(f"Unknown action {action!r}; use search, fields, run, create or edit.")
 
 
 VAULT_SECRET_SCHEMA = {
@@ -187,20 +466,54 @@ VAULT_SECRET_SCHEMA = {
         "without the value entering the conversation. search (query: title text) → items; fields (item) → "
         "field ids and labels, never values; run (command, env: {VAR: {item, field}}, reason, optional "
         "workdir, timeout) → runs `bash -c command` with each field injected as $VAR and returns the exit code and "
-        "output with the values redacted. There is no way to print a value: never try to echo, encode or "
+        "output with the values redacted. create (account, vault, title, category, fields, reason) / edit "
+        "(item, title, fields, reason) write an item when the host allows writes; each field is {label, section?, "
+        "type?, and one of file (a 0600 file under the Hermes scratch dir), command (its stdout, run in "
+        "workdir) or value (inline, non-secret fields only)}; the result is the item handle, title, vault, "
+        "account and each field's label and source, never a value. A host enables writes "
+        "(vault.onepassword.allow_write) only with an approval hook that asks the user for each one. "
+        "There is no way to print a value: never try to echo, encode or "
         "write one out, and never ask the user for it. For website logins use browser_vault."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["search", "fields", "run"]},
+            "action": {"type": "string", "enum": ["search", "fields", "run", "create", "edit"]},
             "query": {"type": "string", "description": "search: case-insensitive title substring."},
-            "item": {"type": "string", "description": "fields: an item handle from search."},
+            "item": {"type": "string", "description": "fields, edit: an item handle from search."},
+            "account": {"type": "string", "description": "create: 1Password account (required when several)."},
+            "vault": {"type": "string", "description": "create: vault name or id."},
+            "title": {"type": "string", "description": "create: the new item's title. edit (required): the "
+                      "item's current title, shown to the approver and checked against the item."},
+            "category": {"type": "string", "description": "create: item category, e.g. API Credential, "
+                         "Secure Note, Password, Login."},
+            "fields": {
+                "type": "array",
+                "description": "create, edit: fields to set. Never put a secret in value.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "section": {"type": "string"},
+                        "type": {"type": "string", "description": "CONCEALED (default for file/command), "
+                                 "STRING, EMAIL, URL, PHONE, DATE, MONTH_YEAR, MENU, OTP, SSHKEY, "
+                                 "CREDIT_CARD_NUMBER."},
+                        "file": {"type": "string", "description": "path of a 0600 file under the scratch dir "
+                                 "holding the value (one trailing newline is dropped)."},
+                        "command": {"type": "string", "description": "bash command whose stdout is the value."},
+                        "value": {"type": "string", "description": "inline value, non-secret fields only."},
+                    },
+                    "required": ["label"],
+                },
+            },
+            "delete_sources": {"type": "boolean", "description": "create, edit: delete the value files "
+                               "after a successful write."},
             "command": {"type": "string", "description": "run: bash command that reads the variables. "
                         "Prefer the operations inline over a script path, so the approver sees them."},
             "reason": {"type": "string", "description": (
-                "run (required): why this needs the secret, the task it serves, and what the command "
-                "does with each variable. Shown to the reviewer and the user who approve the run.")},
+                "run, create, edit (required): why this needs the secret, the task it serves, and what the "
+                "command does with each variable (or where each written value comes from). Shown to the "
+                "reviewer and the user who approve the call.")},
             "env": {
                 "type": "object",
                 "description": "run: {VAR_NAME: {\"item\": handle, \"field\": field id}}.",
@@ -210,7 +523,8 @@ VAULT_SECRET_SCHEMA = {
                     "required": ["item", "field"],
                 },
             },
-            "workdir": {"type": "string", "description": "run: working directory (default: current)."},
+            "workdir": {"type": "string", "description": "run, and create/edit value commands: working "
+                        "directory (default: current)."},
             "timeout": {"type": "integer", "description": f"run: seconds, max {_MAX_TIMEOUT}."},
         },
         "required": ["action"],

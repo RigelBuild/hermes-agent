@@ -146,7 +146,7 @@ class OnePasswordLoginBackend(LoginBackend):
         if not _unlock.store_session_token(self.name, _DESKTOP_APP_MARKER, generation):
             raise RuntimeError("1Password was locked while unlocking; try again")
 
-    def _run(self, *args: str, account: Optional[str] = None) -> str:
+    def _run(self, *args: str, account: Optional[str] = None, input_text: Optional[str] = None) -> str:
         if account is None:
             account = self._accounts()[0]
         token = None if self._service_token else _unlock.get_session_token(self.name)
@@ -158,7 +158,7 @@ class OnePasswordLoginBackend(LoginBackend):
                 _unlock.lock(self.name)
                 raise UnlockRequired(self)
         proc = run_cli([str(self._op()), *args], env=self._env(token, account), timeout=_TIMEOUT, label="op",
-                       timeout_message="op timed out", stdin=subprocess.DEVNULL)
+                       timeout_message="op timed out", stdin=subprocess.DEVNULL, input_text=input_text)
         if proc.returncode != 0:
             err = _scrub(proc.stderr or "")
             # A service account never holds a session, so an auth failure there is not a lock to undo:
@@ -298,6 +298,155 @@ class OnePasswordLoginBackend(LoginBackend):
         if not isinstance(value, str) or not value:
             raise RuntimeError("that field is empty")
         return value
+
+    # ── writes: create an item, or set fields on one (vault_secret create/edit) ──────
+    # Off unless ``vault.onepassword.allow_write`` is true: the host must gate every write
+    # with its own approval hook before enabling it. The item JSON (values included) goes to
+    # ``op`` on stdin only, never argv, and nothing returned here carries a value.
+
+    def writes_enabled(self) -> bool:
+        return bool(self.cfg.get("allow_write"))
+
+    def _write_account(self, account: str) -> str:
+        accounts = self._accounts()
+        account = (account or "").strip()
+        if not account:
+            if len(accounts) > 1:
+                raise ValueError(f"account is required: one of {', '.join(accounts)}")
+            return accounts[0]
+        if account not in accounts:
+            raise ValueError(f"account {account!r} is not configured; use one of {', '.join(a or 'default' for a in accounts)}")
+        return account
+
+    def create_item(self, *, account: str, vault: str, title: str, category: str,
+                    fields: list[dict]) -> dict:
+        """Create one item from *category*'s template with *fields* set; returns its handle."""
+        if not self.writes_enabled():
+            raise PermissionError("1Password writes are off (vault.onepassword.allow_write)")
+        account = self._write_account(account)
+        template = json.loads(self._run("item", "template", "get", category, account=account) or "{}")
+        if not isinstance(template, dict):
+            raise RuntimeError("op returned no template for that category")
+        merge_fields(template, fields)
+        template["title"] = title
+        template.pop("id", None)
+        out = self._run("item", "create", "--vault", vault, "--format", "json", "-", account=account,
+                        input_text=json.dumps(template))
+        return self._summary(out, account, title)
+
+    def edit_item(self, *, item: str, title: str, fields: list[dict]) -> dict:
+        """Set *fields* on an existing item, keeping every other field; returns its handle. *title*
+        must equal the item's current title (the approver was shown it)."""
+        if not self.writes_enabled():
+            raise PermissionError("1Password writes are off (vault.onepassword.allow_write)")
+        data = self._get_item(item)
+        if str(data.get("title") or "") != title:
+            data.clear()
+            raise ValueError("that item's title does not match the title given; search again")
+        item_id = str(data["id"])
+        account = self._any_accounts.get(item_id, self._accounts()[0])
+        # op's docs: a JSON-template edit overwrites passkeys. Refuse any item holding a field or
+        # attachment the round trip might not carry back intact, rather than risk losing it.
+        unknown = sorted({str(f.get("type") or "") for f in data.get("fields") or []
+                          if isinstance(f, dict) and str(f.get("type") or "").upper() not in _ROUND_TRIP_TYPES})
+        if unknown or data.get("files") or any("passkey" in str(k).lower() for k in data):
+            data.clear()
+            raise RuntimeError("this item holds a passkey, attachment or field type "
+                               f"({', '.join(unknown) or 'files/passkey'}) that an edit could overwrite; "
+                               "edit it in the 1Password app")
+        existing = [str(f.get("value")) for f in data.get("fields") or []
+                    if isinstance(f, dict) and isinstance(f.get("value"), str) and f.get("value")]
+        try:
+            merge_fields(data, fields)
+            vault = data.get("vault") or {}
+            vault_id = str(vault.get("id") or "") if isinstance(vault, dict) else ""
+            args = ["item", "edit", item_id, "--format", "json"] + (["--vault", vault_id] if vault_id else [])
+            out = self._run(*args, account=account, input_text=json.dumps(data))
+        except (RuntimeError, ValueError) as exc:
+            # The item was read with --reveal so its other secrets survive the round trip; keep
+            # them out of any error op (or the merge) produces.
+            from tools.vault_secret_tool import safe_error
+
+            raise type(exc)(safe_error(str(exc), existing, "op could not edit the item (details withheld: "
+                                       "the item holds a value too short to redact)")) from None
+        finally:
+            data.clear()
+        return self._summary(out, account, title)
+
+    def _summary(self, raw: str, account: str, title: str) -> dict:
+        try:
+            data = json.loads(raw or "{}")
+        except ValueError:
+            data = {}
+        data = data if isinstance(data, dict) else {}
+        vault = data.get("vault") or {}
+        return {"item": f"{self.prefix}{data.get('id') or ''}", "title": str(data.get("title") or title),
+                "vault": str(vault.get("name") or "") if isinstance(vault, dict) else "",
+                "account": account or "default"}
+
+
+# Field types whose value is a secret: never set from an inline literal, never downgraded.
+SECRET_TYPES = frozenset({"CONCEALED", "OTP", "SSHKEY", "CREDIT_CARD_NUMBER"})
+PLAIN_TYPES = frozenset({"STRING", "EMAIL", "URL", "PHONE", "DATE", "MONTH_YEAR", "MENU"})
+# Field types an edit round trip carries back unchanged; anything else (a passkey, an unknown
+# future type) makes edit_item refuse.
+_ROUND_TRIP_TYPES = SECRET_TYPES | PLAIN_TYPES | {"", "REFERENCE", "ADDRESS"}
+_LABEL_ALIASES = {"notes": "notesPlain"}
+
+
+def field_is_secret(field: dict) -> bool:
+    return str(field.get("type") or "").upper() in SECRET_TYPES or str(field.get("purpose") or "").upper() == "PASSWORD"
+
+
+def merge_fields(item: dict, updates: list[dict]) -> None:
+    """Apply ``[{label, section?, type?, value, literal}]`` to op item JSON in place.
+
+    A field matches by id or label (and section label when given); an unmatched label is added
+    as a new field, in a new section when needed. A literal (inline) value may only land in a
+    plain field: setting one on a secret field, or turning a secret field plain, raises."""
+    fields = item.setdefault("fields", [])
+    sections = item.setdefault("sections", [])
+    if not isinstance(fields, list) or not isinstance(sections, list):
+        raise RuntimeError("unexpected item JSON from op")
+    for update in updates:
+        label = str(update["label"])
+        want_section = str(update.get("section") or "")
+        sec_id = ""
+        if want_section:
+            sec = next((s for s in sections if isinstance(s, dict)
+                        and want_section.lower() in {str(s.get("label") or "").lower(), str(s.get("id") or "").lower()}), None)
+            if sec is None:
+                sec = {"id": _new_id(), "label": want_section}
+                sections.append(sec)
+            sec_id = str(sec["id"])
+        keys = {label.lower(), _LABEL_ALIASES.get(label.lower(), label).lower()}
+        candidates = [f for f in fields if isinstance(f, dict)
+                      and keys & {str(f.get("id") or "").lower(), str(f.get("label") or "").lower()}
+                      and (not want_section or str((f.get("section") or {}).get("id") or "") == sec_id)]
+        if len(candidates) > 1:
+            raise ValueError(f"{label}: several fields match; give its section")
+        new_type = str(update.get("type") or "").upper()
+        if candidates:
+            target = candidates[0]
+            if field_is_secret(target) and (update.get("literal") or (new_type and new_type not in SECRET_TYPES)):
+                raise ValueError(f"{label}: is a secret field; set it from a file or command, and keep its type")
+            if new_type:
+                target["type"] = new_type
+        else:
+            new_type = new_type or ("STRING" if update.get("literal") else "CONCEALED")
+            target = {"id": _new_id(), "label": label, "type": new_type}
+            if sec_id:
+                target["section"] = {"id": sec_id}
+            fields.append(target)
+        if update.get("literal") and field_is_secret(target):
+            raise ValueError(f"{label}: a secret field cannot take an inline value")
+        target["value"] = update["value"]
+
+
+def _new_id() -> str:
+    import secrets as _secrets
+
+    return _secrets.token_hex(13)
 
 
 def _web_origins(origins: list[str]) -> tuple:
