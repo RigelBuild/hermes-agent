@@ -53,3 +53,25 @@ async def test_drain_drops_a_finally_refused_watch_event(tmp_path, monkeypatch, 
             'Watch notification refused, dropping it for discord chat=42: admission_conflict']
     finally:
         authority.db.close()
+
+
+@pytest.mark.parametrize('reason, requeued', [
+    ('invalid_params', False), ('permission_denied', False), ('profile_mismatch', False),
+    ('runtime_draining', True), ('queue_full', True), ('not_found', True),
+])
+@pytest.mark.asyncio
+async def test_drain_requeues_only_owner_state_refusals(tmp_path, monkeypatch, reason, requeued):
+    from gateway import session_automation
+    from hermes_state_runtime import RuntimeStoreError
+    runner, authority, _adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human')
+
+    def refuse(*args, **kwargs):
+        raise RuntimeStoreError(reason)
+    monkeypatch.setattr(session_automation, 'snapshot_automation', refuse)
+    try:
+        pending = queue.Queue()
+        pending.put(_watch_event(metadata, 'e1'))
+        await runner._drain_watch_notifications(pending)
+        assert pending.empty() is not requeued
+    finally:
+        authority.db.close()
