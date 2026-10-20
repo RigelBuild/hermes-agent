@@ -946,6 +946,48 @@ class TestDiscordForumActions:
         assert "".join(chunks) == content
         assert all(len(chunk) <= 2000 for chunk in chunks)
 
+    def test_message_chunks_terminate_and_stay_in_limit_with_long_openers(self):
+        from tools.discord_tool import _message_chunks
+
+        for opener in ("```" + "x" * 3000, "```" + "y" * 100):
+            content = opener + "\n" + "z" * 5000
+            chunks = _message_chunks(content)
+            assert all(len(chunk) <= 2000 for chunk in chunks)
+            assert all(chunk.count("```") % 2 == 0 for chunk in chunks[:-1])
+
+    def test_fence_closer_must_be_bare_backticks(self):
+        from tools.discord_tool import _open_fence_after
+
+        assert _open_fence_after("```py\ncode\n```not-a-close\n") == "```py"
+        assert _open_fence_after("```py\ncode\n```\n") is None
+        assert _open_fence_after("````\ncode\n```\n") == "````"  # closer shorter than opener
+        assert _open_fence_after("````\ncode\n`````\n") is None
+
+    def test_rate_limit_rejects_non_finite_retry(self):
+        from tools.discord_tool import _rate_limit_wait
+
+        assert _rate_limit_wait(DiscordAPIError(429, '{"retry_after": "NaN"}')) is None
+        assert _rate_limit_wait(DiscordAPIError(429, "", {"Retry-After": "inf"})) is None
+
+    def test_global_wait_rechecks_an_extended_deadline(self, monkeypatch):
+        from tools import discord_tool
+
+        clock = [0.0]
+        sleeps = []
+        monkeypatch.setattr(discord_tool.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(discord_tool, "_global_rate_limit_until", 1.0)
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            clock[0] += seconds
+            if len(sleeps) == 1:  # another request extends the limit while this one sleeps
+                discord_tool._global_rate_limit_until = 3.0
+
+        monkeypatch.setattr(discord_tool.time, "sleep", sleep)
+        discord_tool._wait_for_global_rate_limit()
+        assert sleeps == [1.0, 2.0]
+        assert clock[0] == 3.0
+
     def test_post_channels_scope_limits_post_targets(self, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
         monkeypatch.setattr(
@@ -995,7 +1037,20 @@ class TestDiscordForumActions:
         assert _load_post_channels_config() is None
 
     def test_post_channels_fails_closed(self, monkeypatch):
+        from hermes_cli.config_read_errors import FailedConfigRead
         from tools.discord_tool import _load_post_channels_config
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: FailedConfigRead({"discord": {"post_channels": ""}}, error=OSError("EIO")),
+        )
+        with pytest.raises(ValueError, match="refusing to post"):
+            _load_post_channels_config()
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        with patch("tools.discord_tool._discord_request", return_value={"type": 11}) as request:
+            result = json.loads(discord_core(action="post_message", channel_id="thread", content="hi"))
+        assert "refusing to post" in result["error"]
+        assert all(c.args[0] != "POST" for c in request.call_args_list)
 
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"discord": {"post_channels": {"a": 1}}})
         with pytest.raises(ValueError, match="refusing to post"):

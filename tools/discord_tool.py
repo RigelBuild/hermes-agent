@@ -10,6 +10,7 @@ import functools
 import hashlib
 import json
 import logging
+import math
 import threading
 import time
 from datetime import UTC, datetime
@@ -77,7 +78,8 @@ def _rate_limit_wait(error: "DiscordAPIError") -> Optional[float]:
                 break
             except (KeyError, TypeError, ValueError):
                 continue
-    if retry_after is None or retry_after < 0 or retry_after > _RATE_LIMIT_MAX_WAIT_SECONDS:
+    if retry_after is None or not math.isfinite(retry_after) or retry_after < 0 \
+            or retry_after > _RATE_LIMIT_MAX_WAIT_SECONDS:
         return None
     return retry_after
 
@@ -92,9 +94,12 @@ def _is_global_rate_limit(error: "DiscordAPIError") -> bool:
 
 
 def _wait_for_global_rate_limit() -> None:
-    with _global_rate_limit_lock:
-        remaining = _global_rate_limit_until - time.monotonic()
-    if remaining > 0:
+    """Sleep until no global limit is pending, rechecking in case another request extended it."""
+    while True:
+        with _global_rate_limit_lock:
+            remaining = _global_rate_limit_until - time.monotonic()
+        if remaining <= 0:
+            return
         time.sleep(remaining)
 
 
@@ -520,14 +525,16 @@ def _list_forum_posts(
 
 _DISCORD_MESSAGE_MAX_CHARS = 2000
 _FENCE_CLOSE = "\n```"
+# A reopened fence keeps its language tag only when the tag is short; otherwise it reopens bare.
+_MAX_REOPEN_CHARS = 40
 
 
 def _message_chunks(content: str, limit: int = _DISCORD_MESSAGE_MAX_CHARS) -> list[str]:
-    """Split ``content`` into Discord-sized chunks without changing it.
+    """Split ``content`` into chunks of at most ``limit`` characters without changing it.
 
     Splits after a newline when one is in reach (else a space, else hard at the limit) and keeps
-    every byte, so indentation and blank lines survive. A split inside a code fence closes it at
-    the chunk end and reopens it with the same language tag in the next chunk.
+    every character, so indentation and blank lines survive. A split inside a code fence closes it
+    at the chunk end and reopens it (with its language tag, if short) in the next chunk.
     """
     if len(content) <= limit:
         return [content]
@@ -535,10 +542,11 @@ def _message_chunks(content: str, limit: int = _DISCORD_MESSAGE_MAX_CHARS) -> li
     remaining = content
     reopen = ""  # fence opener to prepend when the previous chunk ended inside a code block
     while remaining:
-        budget = limit - len(reopen) - len(_FENCE_CLOSE)
         if len(reopen) + len(remaining) <= limit:
             chunks.append(reopen + remaining)
             break
+        # Always consume at least one character so the loop terminates.
+        budget = max(1, limit - len(reopen) - len(_FENCE_CLOSE))
         region = remaining[:budget]
         split_at = region.rfind("\n") + 1
         if split_at < budget // 2:
@@ -549,8 +557,8 @@ def _message_chunks(content: str, limit: int = _DISCORD_MESSAGE_MAX_CHARS) -> li
         chunk = reopen + body
         opener = _open_fence_after(chunk)
         if opener is not None:
-            chunk += _FENCE_CLOSE if not chunk.endswith("\n") else _FENCE_CLOSE.lstrip("\n")
-            reopen = opener + "\n"
+            chunk += _FENCE_CLOSE[1:] if chunk.endswith("\n") else _FENCE_CLOSE
+            reopen = (opener if len(opener) <= _MAX_REOPEN_CHARS else "```") + "\n"
         else:
             reopen = ""
         chunks.append(chunk)
@@ -558,12 +566,21 @@ def _message_chunks(content: str, limit: int = _DISCORD_MESSAGE_MAX_CHARS) -> li
 
 
 def _open_fence_after(text: str) -> Optional[str]:
-    """The opening fence line (e.g. ```` ```python ````) left open at the end of ``text``, if any."""
+    """The opening fence line (e.g. ```` ```python ````) left open at the end of ``text``, if any.
+
+    A fence opens on a line starting with three or more backticks and closes only on a line of
+    backticks at least as long as the opener, with nothing else on it (CommonMark).
+    """
     opener: Optional[str] = None
     for line in text.split("\n"):
         stripped = line.strip()
-        if stripped.startswith("```"):
-            opener = None if opener is not None else stripped
+        if not stripped.startswith("```"):
+            continue
+        ticks = len(stripped) - len(stripped.lstrip("`"))
+        if opener is None:
+            opener = stripped
+        elif stripped == "`" * ticks and ticks >= len(opener) - len(opener.lstrip("`")):
+            opener = None
     return opener
 
 
@@ -577,9 +594,16 @@ def _load_post_channels_config() -> Optional[set[str]]:
     Fails closed: an unreadable config or an unsupported value raises instead of unrestricting."""
     try:
         from hermes_cli.config import load_config
-        raw = (load_config().get("discord") or {}).get("post_channels")
+        from hermes_cli.config_read_errors import FailedConfigRead
+        config = load_config()
     except Exception as exc:
         raise _PostScopeConfigError(f"Could not read discord.post_channels; refusing to post: {exc}") from exc
+    if isinstance(config, FailedConfigRead):
+        # A fallback after a failed read holds defaults (empty = unrestricted), not the user's limit.
+        raise _PostScopeConfigError(
+            f"Could not read config.yaml, so discord.post_channels is unknown; refusing to post: "
+            f"{config.read_error}")
+    raw = ((config or {}).get("discord") or {}).get("post_channels")
     if raw is None or raw == "" or raw == []:
         return None
     if isinstance(raw, str):
