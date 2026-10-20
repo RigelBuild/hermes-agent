@@ -1598,8 +1598,13 @@ DEFAULT_CONFIG = {
         # discord / discord_admin tools: allowed actions (comma string or YAML list; empty = all,
         # subject to bot intents; unknown names dropped with a warning): list_guilds, server_info,
         # list_channels, channel_info, list_roles, member_info, search_members, fetch_messages,
-        # list_pins, pin_message, unpin_message, create_thread, add_role, remove_role.
+        # list_pins, pin_message, unpin_message, create_thread, list_forum_posts, create_forum_post,
+        # post_message, add_role, remove_role.
         "server_actions": "",
+        # Channels the create_forum_post / post_message actions may post to (comma string or YAML
+        # list of channel IDs; a thread/forum post counts via its parent). Empty = any channel the
+        # bot can post in.
+        "post_channels": "",
         # DEPRECATED no-op (uploads are always cached; messaging auth is the gate). Kept so existing
         # configs don't error. Env: DISCORD_ALLOW_ANY_ATTACHMENT.
         "allow_any_attachment": False,

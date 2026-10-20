@@ -54,10 +54,41 @@ def _get_bot_token() -> Optional[str]:
     return (get_secret("DISCORD_BOT_TOKEN", "") or "").strip() or None
 
 
+_RATE_LIMIT_RETRIES = 2
+_RATE_LIMIT_MAX_WAIT_SECONDS = 10.0
+
+
+def _rate_limit_wait(error: "DiscordAPIError") -> Optional[float]:
+    """Seconds to wait before retrying a 429, or ``None`` when the wait is unknown or too long."""
+    try:
+        retry_after = float(json.loads(error.body).get("retry_after"))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if retry_after < 0 or retry_after > _RATE_LIMIT_MAX_WAIT_SECONDS:
+        return None
+    return retry_after
+
+
 def _discord_request(
     method: str, path: str, token: str, params: Optional[dict[str, str]] = None,
     body: Optional[dict[str, Any]] = None, timeout: int = 15) -> Any:
-    """Make a request to the Discord REST API."""
+    """Make a request to the Discord REST API, waiting out short 429 rate limits."""
+    for attempt in range(_RATE_LIMIT_RETRIES + 1):
+        try:
+            return _discord_request_once(method, path, token, params=params, body=body, timeout=timeout)
+        except DiscordAPIError as error:
+            wait = _rate_limit_wait(error) if error.status == 429 else None
+            if wait is None or attempt == _RATE_LIMIT_RETRIES:
+                raise
+            logger.info("Discord rate limited %s %s; retrying in %.2fs", method, path, wait)
+            time.sleep(wait)
+    raise AssertionError("unreachable")
+
+
+def _discord_request_once(
+    method: str, path: str, token: str, params: Optional[dict[str, str]] = None,
+    body: Optional[dict[str, Any]] = None, timeout: int = 15) -> Any:
+    """Make one request to the Discord REST API."""
     url = f"{DISCORD_API_BASE}{path}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
@@ -442,6 +473,7 @@ def _list_forum_posts(
     filtered.sort(key=lambda thread: _thread_created_at(thread)[0], reverse=True)
     posts = []
     result_limit = max(1, int(_limit_param(limit, 50)))
+    has_more = has_more or len(filtered) > result_limit
     for thread in filtered[:result_limit]:
         _, created_at = _thread_created_at(thread)
         posts.append({
@@ -452,8 +484,44 @@ def _list_forum_posts(
     return json.dumps({"posts": posts, "count": len(posts), "has_more": has_more})
 
 
+_DISCORD_MESSAGE_MAX_CHARS = 2000
+
+
 def _message_chunks(content: str) -> list[str]:
-    return [content[index:index + 2000] for index in range(0, len(content), 2000)]
+    """Split at newlines/spaces, keeping code fences balanced in every chunk (gateway splitter)."""
+    from gateway.platforms.base import BasePlatformAdapter
+    return BasePlatformAdapter.truncate_message(content, _DISCORD_MESSAGE_MAX_CHARS)
+
+
+def _load_post_channels_config() -> Optional[set[str]]:
+    """``discord.post_channels`` (comma string or list of channel IDs), or ``None`` when unset."""
+    try:
+        from hermes_cli.config import load_config
+        raw = (load_config().get("discord") or {}).get("post_channels")
+    except Exception as exc:
+        logger.debug("discord: could not load post_channels (%s); not restricting.", exc)
+        return None
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, (str, int)):
+        raw = str(raw).split(",")
+    if not isinstance(raw, (list, tuple)):
+        logger.warning("discord.post_channels: unexpected type %s; ignoring.", type(raw).__name__)
+        return None
+    return {str(item).strip() for item in raw if str(item).strip()}
+
+
+def _require_post_scope(token: str, channel_id: str, channel: Optional[dict[str, Any]] = None) -> None:
+    """Refuse posts outside ``discord.post_channels``; a thread counts via its parent channel."""
+    allowed = _load_post_channels_config()
+    if allowed is None or str(channel_id) in allowed:
+        return
+    if channel is None:
+        channel = _discord_request("GET", f"/channels/{channel_id}", token) or {}
+    if str(channel.get("parent_id") or "") in allowed:
+        return
+    raise ValueError(
+        f"Channel {channel_id} is outside discord.post_channels; allowed: {', '.join(sorted(allowed)) or '<none>'}")
 
 
 def _allowed_mentions() -> dict[str, Any]:
@@ -481,7 +549,12 @@ def _allowed_mentions() -> dict[str, Any]:
 def _send_message_chunks(
     token: str, channel_id: str, content: str, allowed_mentions: Optional[dict[str, Any]] = None,
 ) -> list[str]:
-    chunks = _message_chunks(content)
+    return _send_chunks(token, channel_id, _message_chunks(content), allowed_mentions)
+
+
+def _send_chunks(
+    token: str, channel_id: str, chunks: list[str], allowed_mentions: Optional[dict[str, Any]] = None,
+) -> list[str]:
     mentions = allowed_mentions if allowed_mentions is not None else _allowed_mentions()
     message_ids = []
     for index, chunk in enumerate(chunks, start=1):
@@ -527,11 +600,11 @@ def _validate_applied_tags(applied_tags: Optional[list[str]]) -> None:
         raise ValueError("A forum post can have at most five applied_tags.")
 
 
-def _forum_post_body(name: str, content: str, applied_tags: Optional[list[str]]) -> dict[str, Any]:
+def _forum_post_body(name: str, starter: str, applied_tags: Optional[list[str]]) -> dict[str, Any]:
     _validate_applied_tags(applied_tags)
     body: dict[str, Any] = {
         "name": name,
-        "message": {"content": _message_chunks(content)[0], "allowed_mentions": _allowed_mentions()},
+        "message": {"content": starter, "allowed_mentions": _allowed_mentions()},
         "auto_archive_duration": 1440,
     }
     if applied_tags:
@@ -545,15 +618,14 @@ def _create_forum_post(
 ) -> str:
     """Create a tagged forum thread with a starter message, then append long content."""
     _require_forum_post_text(name, content)
+    _require_post_scope(token, channel_id)
     chunks = _message_chunks(content)
-    body = _forum_post_body(name, content, applied_tags)
+    body = _forum_post_body(name, chunks[0], applied_tags)
     thread = _discord_request("POST", f"/channels/{channel_id}/threads", token, body=body)
     starter = thread.get("message") or {}
     try:
         message_ids = (
-            _send_message_chunks(
-                token, thread["id"], "".join(chunks[1:]), allowed_mentions=body["message"]["allowed_mentions"],
-            )
+            _send_chunks(token, thread["id"], chunks[1:], allowed_mentions=body["message"]["allowed_mentions"])
             if len(chunks) > 1 else []
         )
     except Exception as exc:
@@ -575,6 +647,7 @@ def _create_forum_post(
 def _post_message(token: str, channel_id: str, content: str, **_kwargs: Any) -> str:
     """Post message chunks to a channel/thread, reopening an archived thread first."""
     channel = _discord_request("GET", f"/channels/{channel_id}", token)
+    _require_post_scope(token, channel_id, channel)
     if (channel.get("thread_metadata") or {}).get("archived"):
         try:
             _discord_request("PATCH", f"/channels/{channel_id}", token, body={"archived": False})
@@ -623,8 +696,8 @@ _ACTION_MANIFEST = [
     ("delete_message", _delete_message, "(channel_id, message_id)", "delete a message"),
     ("create_thread", _create_thread, "(channel_id, name)", "create a public thread; optional message_id anchor"),
     ("list_forum_posts", _list_forum_posts, "(channel_id)", "find forum posts by title; use for daily find-or-create workflows; response has_more flags archive scan truncation"),
-    ("create_forum_post", _create_forum_post, "(channel_id, name, content)", "create a forum post with starter message; optional applied_tags for required forum tags; use for daily forum workflows"),
-    ("post_message", _post_message, "(channel_id, content)", "post into a channel or forum post; use for daily forum workflows"),
+    ("create_forum_post", _create_forum_post, "(channel_id, name, content)", "create a forum post with starter message; optional applied_tags for required forum tags; use for daily forum workflows; limited by discord.post_channels"),
+    ("post_message", _post_message, "(channel_id, content)", "post into a channel or forum post; use for daily forum workflows; limited by discord.post_channels"),
     ("add_role", _add_role, "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", _remove_role, "(guild_id, user_id, role_id)", "remove a role"),
 ]
