@@ -324,8 +324,14 @@ def admission_display(payload):
     return card
 
 
+# Not route identity: the reply anchor, and Discord auto-thread naming state the session store keeps
+# on its origin but a committed human envelope never carries. Comparing them refused every wake in a
+# bot-created thread.
+_NON_ROUTE_FIELDS = frozenset({'message_id', 'auto_thread_created', 'auto_thread_initial_name'})
+
+
 def _route_identity(source):
-    return {key: value for key, value in source.to_dict().items() if key != 'message_id'}
+    return {key: value for key, value in source.to_dict().items() if key not in _NON_ROUTE_FIELDS}
 
 
 def committed_route_envelope(authority, entry):
