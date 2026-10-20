@@ -36,9 +36,10 @@ _FLAGS_MESSAGE_CONTENT = (1 << 18) | (1 << 19)
 
 
 class DiscordAPIError(Exception):
-    def __init__(self, status: int, body: str):
+    def __init__(self, status: int, body: str, headers: Optional[dict[str, str]] = None):
         self.status = status
         self.body = body
+        self.headers = {k.lower(): v for k, v in (headers or {}).items()}
         super().__init__(f"Discord API error {status}: {body}")
 
 
@@ -56,28 +57,61 @@ def _get_bot_token() -> Optional[str]:
 
 _RATE_LIMIT_RETRIES = 2
 _RATE_LIMIT_MAX_WAIT_SECONDS = 10.0
+# A global 429 limits every request this bot makes, so later requests in this process wait it out
+# too instead of each discovering the limit on its own.
+_global_rate_limit_until = 0.0
+_global_rate_limit_lock = threading.Lock()
 
 
 def _rate_limit_wait(error: "DiscordAPIError") -> Optional[float]:
-    """Seconds to wait before retrying a 429, or ``None`` when the wait is unknown or too long."""
+    """Seconds to wait before retrying a 429, or ``None`` when the wait is unknown or too long.
+
+    Uses the JSON ``retry_after``, else the ``Retry-After`` / ``X-RateLimit-Reset-After`` headers."""
+    retry_after: Optional[float] = None
     try:
         retry_after = float(json.loads(error.body).get("retry_after"))
     except (TypeError, ValueError, AttributeError):
-        return None
-    if retry_after < 0 or retry_after > _RATE_LIMIT_MAX_WAIT_SECONDS:
+        for header in ("retry-after", "x-ratelimit-reset-after"):
+            try:
+                retry_after = float(error.headers[header])
+                break
+            except (KeyError, TypeError, ValueError):
+                continue
+    if retry_after is None or retry_after < 0 or retry_after > _RATE_LIMIT_MAX_WAIT_SECONDS:
         return None
     return retry_after
+
+
+def _is_global_rate_limit(error: "DiscordAPIError") -> bool:
+    if error.headers.get("x-ratelimit-global", "").lower() == "true":
+        return True
+    try:
+        return bool(json.loads(error.body).get("global"))
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def _wait_for_global_rate_limit() -> None:
+    with _global_rate_limit_lock:
+        remaining = _global_rate_limit_until - time.monotonic()
+    if remaining > 0:
+        time.sleep(remaining)
 
 
 def _discord_request(
     method: str, path: str, token: str, params: Optional[dict[str, str]] = None,
     body: Optional[dict[str, Any]] = None, timeout: int = 15) -> Any:
     """Make a request to the Discord REST API, waiting out short 429 rate limits."""
+    global _global_rate_limit_until
     for attempt in range(_RATE_LIMIT_RETRIES + 1):
+        _wait_for_global_rate_limit()
         try:
             return _discord_request_once(method, path, token, params=params, body=body, timeout=timeout)
         except DiscordAPIError as error:
             wait = _rate_limit_wait(error) if error.status == 429 else None
+            if error.status == 429 and wait is not None and _is_global_rate_limit(error):
+                with _global_rate_limit_lock:
+                    _global_rate_limit_until = max(_global_rate_limit_until, time.monotonic() + wait)
             if wait is None or attempt == _RATE_LIMIT_RETRIES:
                 raise
             logger.info("Discord rate limited %s %s; retrying in %.2fs", method, path, wait)
@@ -111,7 +145,7 @@ def _discord_request_once(
             error_body = too_large.body
         except Exception:
             error_body = ""
-        raise DiscordAPIError(e.code, error_body) from e
+        raise DiscordAPIError(e.code, error_body, dict(e.headers.items()) if e.headers else None) from e
 
 
 _CHANNEL_TYPE_NAMES = {
@@ -485,41 +519,96 @@ def _list_forum_posts(
 
 
 _DISCORD_MESSAGE_MAX_CHARS = 2000
+_FENCE_CLOSE = "\n```"
 
 
-def _message_chunks(content: str) -> list[str]:
-    """Split at newlines/spaces, keeping code fences balanced in every chunk (gateway splitter)."""
-    from gateway.platforms.base import BasePlatformAdapter
-    return BasePlatformAdapter.truncate_message(content, _DISCORD_MESSAGE_MAX_CHARS)
+def _message_chunks(content: str, limit: int = _DISCORD_MESSAGE_MAX_CHARS) -> list[str]:
+    """Split ``content`` into Discord-sized chunks without changing it.
+
+    Splits after a newline when one is in reach (else a space, else hard at the limit) and keeps
+    every byte, so indentation and blank lines survive. A split inside a code fence closes it at
+    the chunk end and reopens it with the same language tag in the next chunk.
+    """
+    if len(content) <= limit:
+        return [content]
+    chunks: list[str] = []
+    remaining = content
+    reopen = ""  # fence opener to prepend when the previous chunk ended inside a code block
+    while remaining:
+        budget = limit - len(reopen) - len(_FENCE_CLOSE)
+        if len(reopen) + len(remaining) <= limit:
+            chunks.append(reopen + remaining)
+            break
+        region = remaining[:budget]
+        split_at = region.rfind("\n") + 1
+        if split_at < budget // 2:
+            split_at = region.rfind(" ") + 1
+        if split_at < 1:
+            split_at = budget
+        body, remaining = remaining[:split_at], remaining[split_at:]
+        chunk = reopen + body
+        opener = _open_fence_after(chunk)
+        if opener is not None:
+            chunk += _FENCE_CLOSE if not chunk.endswith("\n") else _FENCE_CLOSE.lstrip("\n")
+            reopen = opener + "\n"
+        else:
+            reopen = ""
+        chunks.append(chunk)
+    return chunks
+
+
+def _open_fence_after(text: str) -> Optional[str]:
+    """The opening fence line (e.g. ```` ```python ````) left open at the end of ``text``, if any."""
+    opener: Optional[str] = None
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            opener = None if opener is not None else stripped
+    return opener
+
+
+class _PostScopeConfigError(ValueError):
+    """``discord.post_channels`` is set but cannot be read; posting fails closed."""
 
 
 def _load_post_channels_config() -> Optional[set[str]]:
-    """``discord.post_channels`` (comma string or list of channel IDs), or ``None`` when unset."""
+    """``discord.post_channels`` (comma string or list of channel IDs), or ``None`` when unset.
+
+    Fails closed: an unreadable config or an unsupported value raises instead of unrestricting."""
     try:
         from hermes_cli.config import load_config
         raw = (load_config().get("discord") or {}).get("post_channels")
     except Exception as exc:
-        logger.debug("discord: could not load post_channels (%s); not restricting.", exc)
-        return None
+        raise _PostScopeConfigError(f"Could not read discord.post_channels; refusing to post: {exc}") from exc
     if raw is None or raw == "" or raw == []:
         return None
-    if isinstance(raw, (str, int)):
-        raw = str(raw).split(",")
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    elif isinstance(raw, int) and not isinstance(raw, bool):
+        raw = [raw]
     if not isinstance(raw, (list, tuple)):
-        logger.warning("discord.post_channels: unexpected type %s; ignoring.", type(raw).__name__)
-        return None
+        raise _PostScopeConfigError(
+            f"discord.post_channels must be a channel ID list or comma string, not {type(raw).__name__}; "
+            "refusing to post.")
     return {str(item).strip() for item in raw if str(item).strip()}
 
 
-def _require_post_scope(token: str, channel_id: str, channel: Optional[dict[str, Any]] = None) -> None:
-    """Refuse posts outside ``discord.post_channels``; a thread counts via its parent channel."""
+_THREAD_CHANNEL_TYPES = frozenset({10, 11, 12})  # announcement, public and private threads
+
+
+def _require_post_scope(
+    token: str, channel_id: str, channel: Optional[dict[str, Any]] = None, *, allow_thread_parent: bool = True,
+) -> None:
+    """Refuse posts outside ``discord.post_channels``. Only a thread (forum post) inherits its
+    parent's permission; a channel under an allowed category does not."""
     allowed = _load_post_channels_config()
     if allowed is None or str(channel_id) in allowed:
         return
-    if channel is None:
-        channel = _discord_request("GET", f"/channels/{channel_id}", token) or {}
-    if str(channel.get("parent_id") or "") in allowed:
-        return
+    if allow_thread_parent:
+        if channel is None:
+            channel = _discord_request("GET", f"/channels/{channel_id}", token) or {}
+        if channel.get("type") in _THREAD_CHANNEL_TYPES and str(channel.get("parent_id") or "") in allowed:
+            return
     raise ValueError(
         f"Channel {channel_id} is outside discord.post_channels; allowed: {', '.join(sorted(allowed)) or '<none>'}")
 
@@ -618,7 +707,7 @@ def _create_forum_post(
 ) -> str:
     """Create a tagged forum thread with a starter message, then append long content."""
     _require_forum_post_text(name, content)
-    _require_post_scope(token, channel_id)
+    _require_post_scope(token, channel_id, allow_thread_parent=False)
     chunks = _message_chunks(content)
     body = _forum_post_body(name, chunks[0], applied_tags)
     thread = _discord_request("POST", f"/channels/{channel_id}/threads", token, body=body)

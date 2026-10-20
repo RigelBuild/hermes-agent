@@ -923,8 +923,8 @@ class TestDiscordForumActions:
         assert calls[1][2]["allowed_mentions"] == mentions
         starter, rest = thread_body["message"]["content"], calls[1][2]["content"]
         assert len(starter) <= 2000 and len(rest) <= 2000
-        assert starter.endswith("(1/2)") and rest.endswith("(2/2)")
-        assert starter.removesuffix(" (1/2)").endswith("line of text")  # split on a line boundary
+        assert starter.endswith("line of text\n")  # split after a newline
+        assert starter + rest == content  # nothing added or stripped
 
     def test_message_chunks_keep_code_fences_balanced(self):
         from tools.discord_tool import _message_chunks
@@ -934,7 +934,17 @@ class TestDiscordForumActions:
         assert len(chunks) > 1
         assert all(len(chunk) <= 2000 for chunk in chunks)
         assert all(chunk.count("```") % 2 == 0 for chunk in chunks)
+        assert all(chunk.startswith("```python\n") for chunk in chunks)
         assert _message_chunks("short") == ["short"]
+
+    def test_message_chunks_preserve_indentation_across_splits(self):
+        from tools.discord_tool import _message_chunks
+
+        content = "".join(f"- item {i}\n    nested detail {i}\n" for i in range(150))
+        chunks = _message_chunks(content)
+        assert len(chunks) > 1
+        assert "".join(chunks) == content
+        assert all(len(chunk) <= 2000 for chunk in chunks)
 
     def test_post_channels_scope_limits_post_targets(self, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
@@ -943,8 +953,11 @@ class TestDiscordForumActions:
             lambda: {"discord": {"server_actions": "", "post_channels": ["forum"]}},
         )
         channels = {
-            "/channels/post-in-forum": {"id": "post-in-forum", "parent_id": "forum", "thread_metadata": {}},
-            "/channels/elsewhere": {"id": "elsewhere", "parent_id": "other"},
+            "/channels/post-in-forum": {
+                "id": "post-in-forum", "type": 11, "parent_id": "forum", "thread_metadata": {}},
+            "/channels/elsewhere": {"id": "elsewhere", "type": 11, "parent_id": "other"},
+            # A text channel under an allowlisted category must not inherit the category's scope.
+            "/channels/text-under-forum": {"id": "text-under-forum", "type": 0, "parent_id": "forum"},
         }
 
         def request(method, path, token, **kwargs):
@@ -961,10 +974,16 @@ class TestDiscordForumActions:
             denied = json.loads(discord_core(action="post_message", channel_id="elsewhere", content="hi"))
             denied_forum = json.loads(discord_core(
                 action="create_forum_post", channel_id="elsewhere", name="n", content="hi"))
+            denied_text = json.loads(discord_core(
+                action="post_message", channel_id="text-under-forum", content="hi"))
+            denied_thread_as_forum = json.loads(discord_core(
+                action="create_forum_post", channel_id="post-in-forum", name="n", content="hi"))
         assert ok["success"] is True
         assert created["success"] is True
         assert "post_channels" in denied["error"]
         assert "post_channels" in denied_forum["error"]
+        assert "post_channels" in denied_text["error"]
+        assert "post_channels" in denied_thread_as_forum["error"]
         posted_paths = [c.args[1] for c in mock_request.call_args_list if c.args[0] == "POST"]
         assert all("elsewhere" not in path for path in posted_paths)
 
@@ -974,6 +993,22 @@ class TestDiscordForumActions:
 
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"discord": {"post_channels": value}})
         assert _load_post_channels_config() is None
+
+    def test_post_channels_fails_closed(self, monkeypatch):
+        from tools.discord_tool import _load_post_channels_config
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"discord": {"post_channels": {"a": 1}}})
+        with pytest.raises(ValueError, match="refusing to post"):
+            _load_post_channels_config()
+
+        def broken():
+            raise OSError("unreadable")
+
+        monkeypatch.setattr("hermes_cli.config.load_config", broken)
+        with pytest.raises(ValueError, match="refusing to post"):
+            _load_post_channels_config()
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"discord": {"post_channels": 123}})
+        assert _load_post_channels_config() == {"123"}
 
     def test_rest_message_mentions_follow_profile_config(self, monkeypatch):
         from tools.discord_tool import _allowed_mentions
@@ -1077,6 +1112,34 @@ class TestDiscordForumActions:
         with patch("tools.discord_tool._discord_request_once", side_effect=once):
             assert discord_tool._discord_request("POST", "/x", "tok") == {"id": "ok"}
         assert sleeps == [0.5]
+
+    def test_global_rate_limit_from_headers_delays_later_requests(self, monkeypatch):
+        from tools import discord_tool
+
+        clock = [100.0]
+        sleeps = []
+        monkeypatch.setattr(discord_tool.time, "monotonic", lambda: clock[0])
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            clock[0] += seconds
+
+        monkeypatch.setattr(discord_tool.time, "sleep", sleep)
+        monkeypatch.setattr(discord_tool, "_global_rate_limit_until", 0.0)
+        error = DiscordAPIError(429, "", {"Retry-After": "2", "X-RateLimit-Global": "true"})
+        assert discord_tool._rate_limit_wait(error) == 2.0
+        responses = [error, {"id": "ok"}]
+
+        def once(*_args, **_kwargs):
+            item = responses.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        with patch("tools.discord_tool._discord_request_once", side_effect=once):
+            assert discord_tool._discord_request("POST", "/x", "tok") == {"id": "ok"}
+        assert discord_tool._global_rate_limit_until == 102.0
+        assert sleeps == [2.0]  # the retry waits once; the global gate is already past
 
     def test_discord_request_gives_up_on_long_or_repeated_rate_limits(self, monkeypatch):
         from tools import discord_tool
