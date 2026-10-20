@@ -699,7 +699,10 @@ receipt (the agent's next turn is the report) unless the launching turn is still
 — then the injection only queues a follow-up, so the concise receipt goes out immediately.
 
 The idle completion watcher also drains `watch_match` / `watch_disabled`; no user follow-up is
-required. Notify-off drains these without waking. Transport failures are retried; unavailable
+required. Notify-off drains these without waking. Transport failures are retried; a watch event
+the session authority refuses for a reason about the event itself (`admission_conflict`,
+`invalid_params`, `permission_denied`, `profile_mismatch`) is dropped with one ERROR log, while
+owner-state refusals are retried; unavailable
 durable completion owners/transports do not spend delivery attempts. Profile-namespaced process
 events keep their owning adapter, including raw progress/final notices. Adapter acceptance is
 at-least-once admission, not proof that a model turn or final outbound reply completed. API-server
