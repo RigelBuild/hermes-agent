@@ -716,3 +716,308 @@ class TestModelToolsIntegration:
         assert discord_admin_tool is not None, "discord_admin should be in the schema"
         actions = discord_admin_tool["function"]["parameters"]["properties"]["action"]["enum"]
         assert actions == ["list_guilds", "server_info"]
+
+
+class TestDiscordForumActions:
+    @staticmethod
+    def _allow_actions(monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {"discord": {"server_actions": ""}},
+        )
+
+    def test_list_forum_posts_filters_deduplicates_and_sorts(self, monkeypatch):
+        from tools.discord_tool import _build_schema
+
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        self._allow_actions(monkeypatch)
+        requests = []
+        thread_a = {
+            "id": "20", "name": "Daily Update", "parent_id": "forum",
+            "thread_metadata": {"archived": True, "create_timestamp": "2025-01-01T00:00:00Z"},
+            "message_count": 2,
+        }
+        thread_b = {
+            "id": "30", "name": "daily standup", "parent_id": "forum",
+            "thread_metadata": {"archived": False, "create_timestamp": "2025-01-02T00:00:00Z"},
+            "message_count": 3,
+        }
+        thread_wrong_parent = {**thread_b, "id": "99", "parent_id": "other"}
+
+        def request(method, path, token, **kwargs):
+            requests.append((method, path, kwargs))
+            if path == "/channels/forum":
+                return {"guild_id": "guild"}
+            if path == "/guilds/guild/threads/active":
+                return {"threads": [thread_b, thread_wrong_parent]}
+            if path == "/channels/forum/threads/archived/public":
+                return {"threads": [thread_a, {**thread_b, "thread_metadata": {"archived": True}}], "has_more": False}
+            raise AssertionError(path)
+
+        with patch("tools.discord_tool._discord_request", side_effect=request):
+            result = json.loads(discord_core(
+                action="list_forum_posts", channel_id="forum", query="DAILY", limit=2,
+            ))
+
+        assert result["count"] == 2
+        assert result["posts"] == [
+            {
+                "id": "30", "name": "daily standup", "archived": False,
+                "created_at": "2025-01-02T00:00:00Z", "message_count": 3,
+            },
+            {
+                "id": "20", "name": "Daily Update", "archived": True,
+                "created_at": "2025-01-01T00:00:00Z", "message_count": 2,
+            },
+        ]
+        assert all(post["id"] != "99" for post in result["posts"])
+        assert [req[1] for req in requests] == [
+            "/channels/forum", "/guilds/guild/threads/active", "/channels/forum/threads/archived/public",
+        ]
+        schema = _build_schema(list(_CORE_ACTIONS), tool_name="discord")
+        assert {"list_forum_posts", "create_forum_post", "post_message"}.issubset(
+            schema["parameters"]["properties"]["action"]["enum"]
+        )
+
+    def test_list_forum_posts_paginates_archives_and_applies_limit(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        self._allow_actions(monkeypatch)
+        older = {
+            "id": "21", "name": "Daily older", "parent_id": "forum",
+            "thread_metadata": {
+                "archived": True, "create_timestamp": "2025-01-01T00:00:00Z",
+                "archive_timestamp": "2025-01-03T00:00:00Z",
+            },
+        }
+        newer = {
+            "id": "22", "name": "Daily newer", "parent_id": "forum",
+            "thread_metadata": {
+                "archived": True, "create_timestamp": "2025-01-02T00:00:00Z",
+                "archive_timestamp": "2025-01-02T00:00:00Z",
+            },
+        }
+        calls = []
+
+        def request(method, path, token, **kwargs):
+            calls.append((path, kwargs.get("params")))
+            if path == "/channels/forum":
+                return {"guild_id": "guild"}
+            if path == "/guilds/guild/threads/active":
+                return {"threads": []}
+            if kwargs.get("params", {}).get("before"):
+                return {"threads": [newer], "has_more": False}
+            return {"threads": [older], "has_more": True}
+
+        with patch("tools.discord_tool._discord_request", side_effect=request):
+            result = json.loads(discord_core(
+                action="list_forum_posts", channel_id="forum", query="daily", limit=1,
+            ))
+
+        assert result["count"] == 1
+        assert result["posts"][0]["id"] == "22"
+        assert calls[-1][1] == {"limit": "100", "before": "2025-01-03T00:00:00Z"}
+        assert result["has_more"] is False
+
+    def test_list_forum_posts_reports_timestamp_tie_truncation(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        self._allow_actions(monkeypatch)
+        page_threads = [
+            {
+                "id": str(index), "name": f"Daily {index}", "parent_id": "forum",
+                "thread_metadata": {
+                    "archived": True, "create_timestamp": f"2025-01-0{index}T00:00:00Z",
+                    "archive_timestamp": "2025-01-03T00:00:00Z" if index in (99, 100)
+                    else f"2025-01-0{index}T00:00:00Z",
+                },
+            }
+            for index in range(1, 101)
+        ]
+
+        def request(method, path, token, **kwargs):
+            if path == "/channels/forum":
+                return {"guild_id": "guild"}
+            if path == "/guilds/guild/threads/active":
+                return {"threads": []}
+            return {"threads": page_threads, "has_more": True}
+
+        with patch("tools.discord_tool._discord_request", side_effect=request) as mock_request:
+            result = json.loads(discord_core(action="list_forum_posts", channel_id="forum"))
+        assert result["has_more"] is True
+        assert result["count"] == 50
+        assert mock_request.call_count == 3  # A shared page-boundary timestamp cannot advance safely.
+
+    def test_list_forum_posts_bounds_archive_scan(self, monkeypatch):
+        from tools import discord_tool
+
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        self._allow_actions(monkeypatch)
+        monkeypatch.setattr(discord_tool, "_MAX_ARCHIVED_THREAD_PAGES", 2)
+        archive_calls = []
+
+        def request(method, path, token, **kwargs):
+            if path == "/channels/forum":
+                return {"guild_id": "guild"}
+            if path == "/guilds/guild/threads/active":
+                return {"threads": []}
+            archive_calls.append(kwargs.get("params"))
+            page_number = len(archive_calls)
+            thread = {
+                "id": str(page_number), "name": f"Daily {page_number}", "parent_id": "forum",
+                "thread_metadata": {
+                    "archived": True, "create_timestamp": f"2025-01-0{page_number}T00:00:00Z",
+                    "archive_timestamp": f"2025-01-0{page_number}T00:00:00Z",
+                },
+            }
+            return {"threads": [thread], "has_more": True}
+
+        with patch("tools.discord_tool._discord_request", side_effect=request):
+            result = json.loads(discord_core(action="list_forum_posts", channel_id="forum", limit=1))
+        assert len(archive_calls) == 2
+        assert result["count"] == 1
+        assert result["has_more"] is True
+
+    def test_create_forum_post_splits_starter_and_remainder(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        self._allow_actions(monkeypatch)
+        calls = []
+
+        def request(method, path, token, **kwargs):
+            calls.append((method, path, kwargs.get("body")))
+            if path == "/channels/forum/threads":
+                return {"id": "thread-1", "name": "2025-01-01", "message": {"id": "starter-1"}}
+            return {"id": f"message-{len(calls)}"}
+
+        content = "a" * 2001
+        with patch("tools.discord_tool._discord_request", side_effect=request):
+            result = json.loads(discord_core(
+                action="create_forum_post", channel_id="forum", name="2025-01-01", content=content,
+            ))
+
+        assert result == {
+            "success": True, "thread_id": "thread-1", "name": "2025-01-01",
+            "starter_message_id": "starter-1", "additional_message_ids": ["message-2"],
+        }
+        assert calls == [
+            ("POST", "/channels/forum/threads", {
+                "name": "2025-01-01", "message": {
+                    "content": "a" * 2000, "allowed_mentions": {"parse": ["users"], "replied_user": True},
+                }, "auto_archive_duration": 1440,
+            }),
+            ("POST", "/channels/thread-1/messages", {
+                "content": "a", "allowed_mentions": {"parse": ["users"], "replied_user": True},
+            }),
+        ]
+
+    def test_rest_message_mentions_follow_profile_config(self, monkeypatch):
+        from tools.discord_tool import _allowed_mentions
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"allow_mentions": {
+                "everyone": True, "roles": True, "users": False, "replied_user": False,
+            }}},
+        )
+        with patch("tools.discord_tool.get_secret", return_value=None):
+            assert _allowed_mentions() == {"parse": ["everyone", "roles"], "replied_user": False}
+
+    def test_create_forum_post_supports_required_tags(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        self._allow_actions(monkeypatch)
+        with patch("tools.discord_tool._discord_request", return_value={
+            "id": "thread-1", "name": "daily", "message": {"id": "starter-1"},
+        }) as request:
+            discord_core(
+                action="create_forum_post", channel_id="forum", name="daily", content="text",
+                applied_tags=["123456789012345678"],
+            )
+        assert request.call_args.kwargs["body"]["applied_tags"] == ["123456789012345678"]
+
+    def test_chunk_failures_report_partial_delivery(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        self._allow_actions(monkeypatch)
+
+        def fail_second_chunk(method, path, token, **kwargs):
+            if path == "/channels/forum/threads":
+                return {"id": "thread-1", "name": "daily", "message": {"id": "starter-1"}}
+            raise DiscordAPIError(500, "failed")
+
+        with patch("tools.discord_tool._discord_request", side_effect=fail_second_chunk):
+            created = json.loads(discord_core(
+                action="create_forum_post", channel_id="forum", name="daily", content="x" * 2001,
+            ))
+        assert "thread-1" in created["error"]
+        assert "starter-1" in created["error"]
+        assert "partial" in created["error"].lower()
+
+        def fail_after_one_message(method, path, token, **kwargs):
+            if method == "GET":
+                return {"id": "thread", "thread_metadata": {"archived": False}}
+            if len([call for call in calls if call[0] == "POST"]) == 1:
+                raise DiscordAPIError(500, "failed")
+            calls.append((method, path))
+            return {"id": "sent-1"}
+
+        calls = []
+        with patch("tools.discord_tool._discord_request", side_effect=fail_after_one_message):
+            posted = json.loads(discord_core(
+                action="post_message", channel_id="thread", content="y" * 2001,
+            ))
+        assert "sent-1" in posted["error"]
+        assert "partial" in posted["error"].lower()
+
+    def test_post_message_unarchives_and_splits_long_content(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        self._allow_actions(monkeypatch)
+        calls = []
+
+        def request(method, path, token, **kwargs):
+            calls.append((method, path, kwargs.get("body")))
+            if method == "GET":
+                return {"id": "thread", "type": 11, "thread_metadata": {"archived": True}}
+            if method == "PATCH":
+                return {"id": "thread", "thread_metadata": {"archived": False}}
+            return {"id": f"message-{len(calls)}"}
+
+        with patch("tools.discord_tool._discord_request", side_effect=request):
+            result = json.loads(discord_core(
+                action="post_message", channel_id="thread", content="b" * 2001,
+            ))
+
+        assert result == {"success": True, "message_ids": ["message-3", "message-4"]}
+        assert calls == [
+            ("GET", "/channels/thread", None),
+            ("PATCH", "/channels/thread", {"archived": False}),
+            ("POST", "/channels/thread/messages", {
+                "content": "b" * 2000, "allowed_mentions": {"parse": ["users"], "replied_user": True},
+            }),
+            ("POST", "/channels/thread/messages", {
+                "content": "b", "allowed_mentions": {"parse": ["users"], "replied_user": True},
+            }),
+        ]
+
+    def test_new_actions_validate_required_params_and_name_limit(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        self._allow_actions(monkeypatch)
+        with patch("tools.discord_tool._discord_request") as request:
+            missing = json.loads(discord_core(
+                action="create_forum_post", channel_id="forum", name="today",
+            ))
+            too_long = json.loads(discord_core(
+                action="create_forum_post", channel_id="forum", name="x" * 101, content="text",
+            ))
+        assert "content" in missing["error"]
+        assert "100 characters" in too_long["error"]
+        empty = json.loads(discord_core(
+            action="create_forum_post", channel_id="forum", name="today", content="",
+        ))
+        invalid_tags = json.loads(discord_core(
+            action="create_forum_post", channel_id="forum", name="today", content="text",
+            applied_tags=["not-a-snowflake"],
+        ))
+        too_many_tags = json.loads(discord_core(
+            action="create_forum_post", channel_id="forum", name="today", content="text",
+            applied_tags=["123456789012345678"] * 6,
+        ))
+        assert "content" in empty["error"]
+        assert "positive 64-bit" in invalid_tags["error"]
+        assert "five" in too_many_tags["error"]
+        request.assert_not_called()

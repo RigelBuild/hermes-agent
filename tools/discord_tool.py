@@ -12,6 +12,7 @@ import json
 import logging
 import threading
 import time
+from datetime import UTC, datetime
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 DISCORD_API_BASE = "https://discord.com/api/v10"
 _DISCORD_RESPONSE_BODY_MAX_BYTES = 4 * 1024 * 1024
 _DISCORD_ERROR_BODY_MAX_BYTES = 64 * 1024
+_MAX_ARCHIVED_THREAD_PAGES = 10
 
 # Application flag bits (GET /applications/@me → "flags"); the *_LIMITED bit is the
 # <100-guild variant of the same intent.
@@ -369,6 +371,221 @@ def _create_thread(
     return json.dumps({"success": True, "thread_id": thread["id"], "name": thread.get("name")})
 
 
+def _thread_created_at(thread: dict[str, Any]) -> tuple[int, str]:
+    """Creation time in epoch milliseconds and ISO form, using the snowflake when needed."""
+    metadata = thread.get("thread_metadata") or {}
+    created = metadata.get("create_timestamp")
+    if created:
+        try:
+            parsed = datetime.fromisoformat(created)
+            millis = int(parsed.timestamp() * 1000)
+            return millis, created
+        except (AttributeError, TypeError, ValueError):
+            pass
+    try:
+        millis = (int(thread["id"]) >> 22) + 1420070400000
+        created = datetime.fromtimestamp(millis / 1000, tz=UTC).isoformat().replace("+00:00", "Z")
+        return millis, created
+    except (KeyError, TypeError, ValueError, OverflowError, OSError):
+        return 0, ""
+
+
+def _list_forum_posts(
+    token: str, channel_id: str, query: str = "", limit: int = 50, **_kwargs: Any,
+) -> str:
+    """List active and archived forum threads, newest first."""
+    channel = _discord_request("GET", f"/channels/{channel_id}", token)
+    guild_id = channel.get("guild_id")
+    active = _discord_request("GET", f"/guilds/{guild_id}/threads/active", token)
+    threads = list(active.get("threads", []))
+    archived: list[dict[str, Any]] = []
+    before = None
+    has_more = False
+    for _ in range(_MAX_ARCHIVED_THREAD_PAGES):
+        params = {"limit": "100"}
+        if before:
+            params["before"] = before
+        page = _discord_request(
+            "GET", f"/channels/{channel_id}/threads/archived/public", token, params=params,
+        )
+        page_threads = page.get("threads", [])
+        archived.extend(page_threads)
+        if not page.get("has_more") or not page_threads:
+            has_more = False
+            break
+        next_before = (page_threads[-1].get("thread_metadata") or {}).get("archive_timestamp")
+        if not next_before or next_before == before:
+            has_more = True
+            break
+        # Discord paginates archives by timestamp. If the page boundary timestamp
+        # is shared by another thread, the cursor cannot reliably include all ties.
+        # Report possible truncation instead of silently returning an incomplete list.
+        if any(
+            (thread.get("thread_metadata") or {}).get("archive_timestamp") == next_before
+            for thread in page_threads[:-1]
+        ):
+            has_more = True
+            break
+        before = next_before
+        has_more = True
+    else:
+        has_more = True
+
+    by_id: dict[str, dict[str, Any]] = {}
+    for thread in [*threads, *archived]:
+        if thread.get("parent_id") == channel_id:
+            by_id.setdefault(str(thread.get("id", "")), thread)
+    filtered = [
+        thread for thread in by_id.values()
+        if query.casefold() in str(thread.get("name", "")).casefold()
+    ]
+    filtered.sort(key=lambda thread: _thread_created_at(thread)[0], reverse=True)
+    posts = []
+    result_limit = max(1, int(_limit_param(limit, 50)))
+    for thread in filtered[:result_limit]:
+        _, created_at = _thread_created_at(thread)
+        posts.append({
+            "id": thread.get("id"), "name": thread.get("name"),
+            "archived": bool((thread.get("thread_metadata") or {}).get("archived", False)),
+            "created_at": created_at or None, "message_count": thread.get("message_count", 0),
+        })
+    return json.dumps({"posts": posts, "count": len(posts), "has_more": has_more})
+
+
+def _message_chunks(content: str) -> list[str]:
+    return [content[index:index + 2000] for index in range(0, len(content), 2000)]
+
+
+def _allowed_mentions() -> dict[str, Any]:
+    """Resolve the current profile's Discord mention policy, defaulting to safe mentions."""
+    try:
+        from hermes_cli.config import load_config
+        discord_cfg = load_config().get("discord") or {}
+    except Exception as exc:
+        logger.debug("discord: could not load mention settings (%s); using safe defaults.", exc, exc_info=True)
+        discord_cfg = {}
+    configured = discord_cfg.get("allow_mentions")
+    configured = configured if isinstance(configured, dict) else {}
+    defaults = {"everyone": False, "roles": False, "users": True, "replied_user": True}
+    settings = {}
+    for key, default in defaults.items():
+        env_value = get_secret(f"DISCORD_ALLOW_MENTION_{key.upper()}", None)
+        value = env_value if env_value is not None else configured.get(key, default)
+        settings[key] = value if isinstance(value, bool) else str(value).strip().lower() in {"true", "1", "yes", "on"}
+    return {
+        "parse": [kind for kind in ("everyone", "roles", "users") if settings[kind]],
+        "replied_user": settings["replied_user"],
+    }
+
+
+def _send_message_chunks(
+    token: str, channel_id: str, content: str, allowed_mentions: Optional[dict[str, Any]] = None,
+) -> list[str]:
+    chunks = _message_chunks(content)
+    mentions = allowed_mentions if allowed_mentions is not None else _allowed_mentions()
+    message_ids = []
+    for index, chunk in enumerate(chunks, start=1):
+        try:
+            message = _discord_request(
+                "POST", f"/channels/{channel_id}/messages", token,
+                body={"content": chunk, "allowed_mentions": mentions},
+            )
+        except Exception as exc:
+            sent = ", ".join(message_ids) if message_ids else "none"
+            status = exc.status if isinstance(exc, DiscordAPIError) else 502
+            raw_error = exc.body if isinstance(exc, DiscordAPIError) else str(exc)
+            raise DiscordAPIError(
+                status,
+                f"Partial delivery: sent message IDs {sent}; failed chunk {index}/{len(chunks)}. "
+                f"Retrying may duplicate sent messages. Raw error: {raw_error}",
+            ) from exc
+        message_ids.append(message["id"])
+    return message_ids
+
+
+def _require_forum_post_text(name: str, content: str) -> None:
+    if not isinstance(name, str) or not name or len(name) > 100:
+        raise ValueError("Forum post name must be between 1 and 100 characters.")
+    if not isinstance(content, str) or not content:
+        raise ValueError("Forum post content must not be empty.")
+
+
+def _validate_applied_tags(applied_tags: Optional[list[str]]) -> None:
+    if applied_tags is None or applied_tags == []:
+        return
+    if not isinstance(applied_tags, list) or any(
+        not isinstance(tag, str)
+        or not tag.isascii()
+        or not tag.isdigit()
+        or len(tag) > 20
+        or int(tag) == 0
+        or int(tag) >= 2**64
+        for tag in applied_tags
+    ):
+        raise ValueError("applied_tags must be a list of positive 64-bit Discord forum tag snowflake IDs.")
+    if len(applied_tags) > 5:
+        raise ValueError("A forum post can have at most five applied_tags.")
+
+
+def _forum_post_body(name: str, content: str, applied_tags: Optional[list[str]]) -> dict[str, Any]:
+    _validate_applied_tags(applied_tags)
+    body: dict[str, Any] = {
+        "name": name,
+        "message": {"content": _message_chunks(content)[0], "allowed_mentions": _allowed_mentions()},
+        "auto_archive_duration": 1440,
+    }
+    if applied_tags:
+        body["applied_tags"] = applied_tags
+    return body
+
+
+def _create_forum_post(
+    token: str, channel_id: str, name: str, content: str,
+    applied_tags: Optional[list[str]] = None, **_kwargs: Any,
+) -> str:
+    """Create a tagged forum thread with a starter message, then append long content."""
+    _require_forum_post_text(name, content)
+    chunks = _message_chunks(content)
+    body = _forum_post_body(name, content, applied_tags)
+    thread = _discord_request("POST", f"/channels/{channel_id}/threads", token, body=body)
+    starter = thread.get("message") or {}
+    try:
+        message_ids = (
+            _send_message_chunks(
+                token, thread["id"], "".join(chunks[1:]), allowed_mentions=body["message"]["allowed_mentions"],
+            )
+            if len(chunks) > 1 else []
+        )
+    except Exception as exc:
+        status = exc.status if isinstance(exc, DiscordAPIError) else 502
+        detail = exc.body if isinstance(exc, DiscordAPIError) else str(exc)
+        raise DiscordAPIError(
+            status,
+            f"Partial forum post created: thread_id={thread['id']}, "
+            f"starter_message_id={starter.get('id')}. {detail}",
+        ) from exc
+    return json.dumps({
+        "success": True, "thread_id": thread["id"], "name": thread.get("name"),
+        "starter_message_id": starter.get("id"), "additional_message_ids": message_ids,
+    })
+
+
+
+
+def _post_message(token: str, channel_id: str, content: str, **_kwargs: Any) -> str:
+    """Post message chunks to a channel/thread, reopening an archived thread first."""
+    channel = _discord_request("GET", f"/channels/{channel_id}", token)
+    if (channel.get("thread_metadata") or {}).get("archived"):
+        try:
+            _discord_request("PATCH", f"/channels/{channel_id}", token, body={"archived": False})
+        except DiscordAPIError as exc:
+            raise DiscordAPIError(
+                exc.status, f"Could not unarchive thread before posting: {exc.body}",
+            ) from exc
+    message_ids = _send_message_chunks(token, channel_id, content)
+    return json.dumps({"success": True, "message_ids": message_ids})
+
+
 def _mutation(method: str, path: str, message: str):
     """Body-less write action: ``path``/``message`` are format templates over the action kwargs."""
     def _action(token: str, **kw: Any) -> str:
@@ -405,6 +622,9 @@ _ACTION_MANIFEST = [
     ("unpin_message", _unpin_message, "(channel_id, message_id)", "unpin a message"),
     ("delete_message", _delete_message, "(channel_id, message_id)", "delete a message"),
     ("create_thread", _create_thread, "(channel_id, name)", "create a public thread; optional message_id anchor"),
+    ("list_forum_posts", _list_forum_posts, "(channel_id)", "find forum posts by title; use for daily find-or-create workflows; response has_more flags archive scan truncation"),
+    ("create_forum_post", _create_forum_post, "(channel_id, name, content)", "create a forum post with starter message; optional applied_tags for required forum tags; use for daily forum workflows"),
+    ("post_message", _post_message, "(channel_id, content)", "post into a channel or forum post; use for daily forum workflows"),
     ("add_role", _add_role, "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", _remove_role, "(guild_id, user_id, role_id)", "remove a role"),
 ]
@@ -413,9 +633,11 @@ _REQUIRED_PARAMS: dict[str, list[str]] = {
     name: [p.strip() for p in sig.strip("()").split(",") if p.strip()]
     for name, _fn, sig, _desc in _ACTION_MANIFEST}
 
-# Two tools share one action table: ``discord`` (core, the participation trio every bot
+# Two tools share one action table: ``discord`` (core participation actions every bot
 # user wants) and ``discord_admin`` (everything else).
-_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread"})
+_CORE_ACTION_NAMES = frozenset({
+    "fetch_messages", "search_members", "create_thread", "list_forum_posts", "create_forum_post", "post_message",
+})
 _CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
 _ADMIN_ACTIONS = {k: v for k, v in _ACTIONS.items() if k not in _CORE_ACTION_NAMES}
 
@@ -478,13 +700,15 @@ _SCHEMA_PROPERTIES: dict[str, Any] = {
     "user_id": {"type": "string", "description": "Discord user ID."},
     "role_id": {"type": "string", "description": "Discord role ID."},
     "message_id": {"type": "string", "description": "Discord message ID."},
-    "query": {"type": "string", "description": "Member name prefix to search for (search_members)."},
-    "name": {"type": "string", "description": "New thread name (create_thread)."},
+    "query": {"type": "string", "description": "Member prefix (search_members) or case-insensitive forum-post title substring (list_forum_posts)."},
+    "name": {"type": "string", "description": "New thread/forum post name (maximum 100 characters for create_forum_post)."},
+    "content": {"type": "string", "description": "Message text (create_forum_post or post_message); longer text is split into 2000-character messages."},
+    "applied_tags": {"type": "array", "items": {"type": "string"}, "maxItems": 5, "description": "Optional forum tag IDs (create_forum_post); required when the forum channel enforces REQUIRE_TAG."},
     "limit": {
         "type": "integer",
         "minimum": 1,
         "maximum": 100,
-        "description": "Max results (default 50). Applies to fetch_messages, search_members.",
+        "description": "Max results (default 50). Applies to fetch_messages, search_members, list_forum_posts.",
     },
     "before": {"type": "string", "description": "Snowflake ID for reverse pagination (fetch_messages)."},
     "after": {"type": "string", "description": "Snowflake ID for forward pagination (fetch_messages)."},
@@ -581,7 +805,7 @@ def check_discord_tool_requirements() -> bool:
 # ── handlers ─────────────────────────────────────────────────────────────────
 _HANDLER_DEFAULTS = {
     "guild_id": "", "channel_id": "", "user_id": "", "role_id": "", "message_id": "", "query": "",
-    "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
+    "name": "", "content": "", "applied_tags": None, "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
 
 
 def _run_discord_action(action: str, valid_actions: dict[str, Any], tool_label: str, **params: Any) -> str:
@@ -605,6 +829,8 @@ def _run_discord_action(action: str, valid_actions: dict[str, Any], tool_label: 
         return tool_error(f"Missing required parameters for '{action}': {', '.join(missing)}")
     try:
         return action_fn(token=token, **kwargs)
+    except ValueError as e:
+        return tool_error(str(e))
     except DiscordAPIError as e:
         logger.warning("Discord API error in %s action '%s': %s", tool_label, action, e)
         return tool_error(_enrich_403(action, e.body) if e.status == 403 else str(e))
