@@ -280,28 +280,37 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
 })()"""
 
 
-def build_fill_js(fills: list[dict[str, Any]], expected_origin: str, nonce: str = "") -> str:
+def build_fill_js(fills: list[dict[str, Any]], expected_origin: str, nonce: str = "",
+                  saved_origins: tuple[str, ...] = (), kind: str = "login") -> str:
     """Build a JS expression that fills the selected controls and reports only a count. The
     returned expression never echoes the values back.
 
-    ``expected_origin`` is asserted against ``window.location.origin`` synchronously inside the SAME
-    evaluated script, immediately before any write. If the page navigated between inspection and fill
-    (TOCTOU), the script writes nothing and returns ``{"refused": "origin_changed", "found": <actual>}``:
+    The pre-checked ``expected_origin`` is asserted against ``window.location.origin`` immediately before any write.
+    If the page navigated between inspection and fill (TOCTOU), the script writes nothing and returns ``{"refused": "origin_changed", "found": <actual>}``:
     proof scope equals mutation scope (#88706). Targets resolve by the ``<nonce>:<index>`` stamp of
     THIS inspection; a ``current-password`` fill additionally requires ``type=password``; ``<select>``
     controls (country, state, expiry month) match an option by value or visible text. No marker is
     left on filled controls so later model-driven DOM reads cannot address them deterministically.
     """
+    from agent.vault_store import origin_match_rule
+
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
     )
+    origin_rules = json.dumps([origin_match_rule(origin, kind) for origin in saved_origins])
     return (_FILL_JS_TEMPLATE.replace("__EXPECTED_ORIGIN__", json.dumps(expected_origin))
+            .replace("__ORIGIN_RULES__", origin_rules)
             .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce)))
 
 
 _FILL_JS_TEMPLATE = """(() => {
   const expectedOrigin = __EXPECTED_ORIGIN__;
-  if (window.location.origin !== expectedOrigin) {
+  const originRules = __ORIGIN_RULES__;
+  const current = new URL(window.location.origin);
+  const allowed = current.origin === expectedOrigin || originRules.some((rule) =>
+    current.origin === rule.origin || (rule.allow_subdomains && current.protocol === "https:" &&
+      (current.port || "443") === String(rule.port) && current.hostname.toLowerCase().endsWith("." + rule.host)));
+  if (!allowed) {
     return JSON.stringify({ refused: "origin_changed", found: window.location.origin });
   }
   const fills = __FILLS__;

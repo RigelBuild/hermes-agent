@@ -36,6 +36,7 @@ from agent.vault_store import (
     VaultError,
     VaultStore,
     normalize_origin,
+    origin_matches,
     scrub_secret_from_text,
 )
 
@@ -143,6 +144,38 @@ class TestVaultStore:
         assert normalize_origin("http://site.test:80") == "http://site.test"
         with pytest.raises(VaultError):
             normalize_origin("example.com")
+
+    @pytest.mark.parametrize(
+        ("page", "saved", "kind", "allowed"),
+        [
+            pytest.param("https://dashboard.missionlane.com", "https://missionlane.com", "login", True,
+                         id="login-subdomain"),
+            pytest.param("https://nb.fidelity.com", "https://fidelity.com", "login", True,
+                         id="login-multi-label-subdomain"),
+            pytest.param("https://missionlane.com.evil.com", "https://missionlane.com", "login", False,
+                         id="lookalike-suffix"),
+            pytest.param("https://evilmissionlane.com", "https://missionlane.com", "login", False,
+                         id="lookalike-prefix"),
+            pytest.param("http://dashboard.missionlane.com", "https://missionlane.com", "login", False,
+                         id="http-page"),
+            pytest.param("https://dashboard.missionlane.com:444", "https://missionlane.com", "login", False,
+                         id="port-mismatch"),
+            pytest.param("https://dashboard.missionlane.com:8443", "https://missionlane.com:8443", "login", True,
+                         id="matching-custom-port"),
+            pytest.param("https://tenant.com", "https://com", "login", False,
+                         id="public-suffix-com"),
+            pytest.param("https://tenant.co.uk", "https://co.uk", "login", False,
+                         id="public-suffix-co-uk"),
+            pytest.param("https://tenant.github.io", "https://github.io", "login", False,
+                         id="public-suffix-private-github-io"),
+            pytest.param("https://dashboard.shop.example", "https://shop.example", "payment", False,
+                         id="payment-exact-only"),
+            pytest.param("https://shop.example", "https://shop.example", "payment", True,
+                         id="payment-exact-origin"),
+        ],
+    )
+    def test_origin_matches_1password_login_subdomain_rule(self, page, saved, kind, allowed):
+        assert origin_matches(page, saved, kind) is allowed
 
     def test_scrub_secret_from_text(self):
         secret = {"password": "hunter22x", "identifier": "me@x.io"}
@@ -306,6 +339,34 @@ class TestBrowserVaultTools:
             allowed_origins=("https://amazon.co.uk", "https://www.amazon.co.uk",
                              "https://eu.account.amazon.com"))
 
+    def test_fill_allows_login_on_an_https_subdomain_of_a_saved_origin(self, store):
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://missionlane.com")
+        controls = [
+            {"autocomplete": "current-password", "formIndex": 0, "index": 0, "label": "", "name": "pw", "type": "password"},
+        ]
+        secret_exprs = []
+
+        def fake_eval(task_id, expression):
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://dashboard.missionlane.com"), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+        out = json.loads(raw)
+        assert out["success"] is True
+        assert out["origin"] == "https://dashboard.missionlane.com"
+        assert len(secret_exprs) == 1
+        assert "missionlane.com" in secret_exprs[0]
+        assert "allow_subdomains" in secret_exprs[0]
+
     def test_fill_allowed_on_every_saved_origin_of_a_multi_website_item(self):
         """A manager item with several saved websites fills on each of them
         (exact match only), and the in-page origin assert pins the origin
@@ -353,8 +414,8 @@ class TestBrowserVaultTools:
         assert out["filled_fields"] == 1
 
     def test_fill_still_refused_on_origin_not_saved_on_the_item(self):
-        """Multi-website items widen nothing: an unsaved origin — even a sibling
-        subdomain — is still refused (fail-closed regression)."""
+        """Multi-website items widen only to HTTPS subdomains of a saved site: an
+        unrelated site is still refused (fail-closed regression)."""
         from tools import browser_vault_tool
 
         meta = self._manager_meta()
@@ -372,7 +433,7 @@ class TestBrowserVaultTools:
                 return "s3cret-pw"
 
         with patch("agent.vault_backends.backend_for_handle", return_value=_ManagerBackend()), \
-             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://payments.amazon.co.uk"):
+             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://amazon-login.co.uk"):
             out = json.loads(browser_vault_tool.browser_vault_fill("op:multi"))
         assert out["success"] is False
         assert out["error_type"] == "origin_mismatch"

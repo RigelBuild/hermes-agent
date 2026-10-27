@@ -151,6 +151,50 @@ def normalize_origin(url_or_origin: str) -> str:
     return f"{scheme}://{host}:{port}"
 
 
+#: Multi-label public suffixes from the PSL that real login items could plausibly be saved under.
+#: Single-label TLDs are refused by the "." check, so only shared multi-label suffixes are listed.
+_SHARED_SUFFIXES = frozenset({
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au", "co.nz", "org.nz", "net.nz",
+    "co.jp", "ne.jp", "or.jp", "co.kr", "or.kr", "co.in", "net.in", "org.in", "co.za", "org.za",
+    "com.br", "net.br", "org.br", "com.mx", "com.ar", "com.cn", "net.cn", "org.cn", "com.hk",
+    "com.sg", "com.tw", "com.tr", "co.il", "co.id", "com.my", "com.ph", "com.vn",
+    "github.io", "gitlab.io", "herokuapp.com", "vercel.app", "netlify.app", "pages.dev",
+    "workers.dev", "web.app", "firebaseapp.com", "appspot.com", "azurewebsites.net",
+    "cloudfront.net", "amazonaws.com", "blogspot.com", "fly.dev", "onrender.com", "ngrok.io",
+    "ngrok-free.app", "repl.co", "glitch.me", "surge.sh", "now.sh",
+})
+
+
+def origin_match_rule(saved_origin: str, kind: str) -> dict[str, Any]:
+    """Build the origin rule used by both the Python check and in-page guard."""
+    normalized = normalize_origin(saved_origin)
+    saved = urlsplit(normalized)
+    host = saved.hostname or ""
+    allow_subdomains = False
+    if kind == "login" and saved.scheme == "https":
+        # A bare TLD, IP or shared suffix (co.uk, github.io) must never act as a parent site.
+        allow_subdomains = ("." in host and host not in _SHARED_SUFFIXES
+                            and not host.replace(".", "").isdigit() and ":" not in host)
+    return {"origin": normalized, "host": host, "port": saved.port or _DEFAULT_PORTS.get(saved.scheme),
+            "allow_subdomains": allow_subdomains}
+
+
+def origin_matches(page_origin: str, saved_origin: str, kind: str) -> bool:
+    """Match an exact saved origin, or a safe HTTPS login subdomain."""
+    try:
+        page_normalized = normalize_origin(page_origin)
+        rule = origin_match_rule(saved_origin, kind)
+        page = urlsplit(page_normalized)
+    except (TypeError, ValueError, VaultError):
+        return False
+    if page_normalized == rule["origin"]:
+        return True
+    return bool(rule["allow_subdomains"] and page.scheme == "https"
+                and (page.port or _DEFAULT_PORTS.get(page.scheme)) == rule["port"]
+                and (page.hostname or "").endswith("." + rule["host"]))
+
+
 @dataclass(frozen=True)
 class VaultItemMeta:
     """Metadata-only view of a vault item. Never contains secret values.
@@ -168,9 +212,7 @@ class VaultItemMeta:
     identifier_type: Optional[str] = None
     identifier: Optional[str] = None
     has_otp: bool = False  # a TOTP seed is stored: 2FA codes can be minted without asking the user
-    # Every origin the password manager bound to this item (manager backends only;
-    # ``origin`` is the first/primary one). Fill matching stays exact-origin against
-    # this list — no wildcard or subdomain inference is ever derived from it.
+    # Saved manager origins are exact targets; login fills may also use safe HTTPS subdomains.
     allowed_origins: tuple = ()
 
     def to_dict(self) -> dict[str, Any]:

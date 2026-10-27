@@ -265,9 +265,10 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             value = result_obj.get("description") or result_obj.get("unserializableValue")
         return {"ok": True, "result": value, "result_type": result_type}
 
-    def focus_page(self, origin: str, *, accept: Optional[str] = None, timeout: float = 10.0) -> dict[str, Any]:
-        """Re-attach the supervisor's page session to an open page target on ``origin``
-        (``scheme://host[:port]``). The initial attach picks the FIRST page target, but tools
+    def focus_page(self, origin: str, *, accept: Optional[str] = None, match_kind: Optional[str] = None,
+                   timeout: float = 10.0) -> dict[str, Any]:
+        """Re-attach to a page target on ``origin``; login focus can also match safe HTTPS subdomains.
+        The initial attach picks the FIRST page target, but tools
         that open their own tabs (browser_exec) put the login form somewhere else. With
         ``accept`` (a JS expression) the first same-origin tab where it evaluates truthy wins,
         so a login and a checkout tab on one site resolve to the right one. Returns
@@ -284,15 +285,15 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             return sid
 
         async def _focus() -> dict[str, Any]:
-            from agent.vault_store import normalize_origin
+            from agent.vault_store import normalize_origin, origin_matches
             targets = (await self._cdp("Target.getTargets", timeout=timeout)).get("result", {}).get("targetInfos", [])
             candidates = []
             for t in targets:
                 url = str(t.get("url") or "")
                 try:
-                    # origin="" = any http(s) page (used to FIND the login tab before its origin is known)
+                    # Empty origin finds any page; login focus can also match safe HTTPS subdomains.
                     if t.get("type") == "page" and url.startswith(("http://", "https://")) \
-                            and (not origin or normalize_origin(url) == origin):
+                            and (not origin or origin_matches(normalize_origin(url), origin, match_kind or "")):
                         candidates.append((t["targetId"], url))
                 except Exception:
                     continue

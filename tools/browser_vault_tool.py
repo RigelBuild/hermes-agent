@@ -10,8 +10,8 @@ paid per request) and available wherever a browser is. Its actions:
 - ``fill``  → server-side fill of the CURRENT page from a vault
   handle: the password field for logins, card fields for payment items (after
   the user confirms), address fields for address items. The secret is
-  resolved locally, the page origin must EXACTLY match the item's bound
-  origin (pre-checked AND re-asserted synchronously inside the fill script),
+  resolved locally, the page origin must match a saved origin; logins also allow
+  safe HTTPS subdomains (pre-checked and pinned synchronously inside the fill script),
   the field is chosen by the ported login-control classifier, injection runs
   exclusively over the supervisor CDP WebSocket (never argv), and the tool
   result reports only ``{filled_fields, kind, origin, success}`` — the
@@ -208,8 +208,12 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
         supervisor = None
     if supervisor is None:
         return None
-    focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
-    return (origin or focused.get("url")) if focused.get("ok") else None
+    focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind), match_kind=kind)
+    if not focused.get("ok"):
+        return None
+    from agent.vault_store import normalize_origin
+
+    return normalize_origin(str(focused.get("url") or ""))
 
 
 # ---------------------------------------------------------------------------
@@ -457,9 +461,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
 
     # ── Origin binding pre-check (cheap early exit; the authoritative check
     # runs synchronously inside the fill script itself) ──────────────────────
-    # Manager items can bind several websites (e.g. amazon.co.uk + www.amazon.co.uk);
-    # every saved origin is a valid fill target. Matching stays exact-origin —
-    # nothing wildcard/parent-domain is ever inferred.
+    # Saved manager origins remain valid; login items also match safe HTTPS subdomains.
     allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
     page_origin = None
     for candidate in allowed:
@@ -471,15 +473,16 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         return json.dumps(
             {"success": False, "error": "Could not determine the current page origin. Navigate to the login page first."}
         )
-    if page_origin not in allowed:
+    from agent.vault_store import origin_matches
+
+    if not any(origin_matches(page_origin, saved_origin, meta.kind) for saved_origin in allowed):
         return json.dumps(
             {
                 "success": False,
                 "error_type": "origin_mismatch",
                 "error": (
-                    f"Refused: current page origin ({page_origin}) does not match "
-                    f"the vault item's bound origin(s) ({', '.join(allowed)}). Vault fills "
-                    "only run on the exact origin(s) the credential was saved for."
+                    f"Refused: current page origin ({page_origin}) does not match a saved "
+                    f"origin or an HTTPS subdomain of a saved login site ({', '.join(allowed)})."
                 ),
             }
         )
@@ -533,7 +536,8 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
 
     try:
         fill_result = _eval_js_secret(
-            effective_task_id, build_fill_js(fills, expected_origin=page_origin, nonce=nonce)
+            effective_task_id, build_fill_js(fills, expected_origin=page_origin, nonce=nonce,
+                                             saved_origins=tuple(allowed), kind=meta.kind)
         )
     except Exception as exc:
         # Strip any secret material from exception text before surfacing.
@@ -599,8 +603,9 @@ BROWSER_VAULT_SCHEMA = {
         "entering the conversation. "
         "Actions: list (call first: saved logins/cards/addresses as handles; logins carry the identifier you type "
         "yourself with the browser's input tool; locked password managers appear under `locked`); fill (handle: "
-        "the password for a login, card fields after the user confirms, address fields; refused unless the page "
-        "origin matches the item); save_login (nothing saved for this site: the user enters it in a masked prompt, "
+        "the password for a login, card fields after the user confirms, address fields; login fills also allow HTTPS "
+        "subdomains of the saved site; payment/address fills still require exact origins); save_login (nothing "
+        "saved for this site: the user enters it in a masked prompt, "
         "Hermes saves and fills it); enter_code (a one-time/2FA code after the password: generated from a saved "
         "authenticator key or asked of the user; no_code_field means approve on their device); unlock (backend: "
         "ask the user to unlock 1Password/Bitwarden). Never type, ask for or repeat a password, card number, CVC "
