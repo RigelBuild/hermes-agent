@@ -138,12 +138,36 @@ def test_malformed_list_string_platform_toolsets_warns_then_falls_back(caplog):
 
 def test_discord_toolsets_do_not_leak_to_other_platforms():
     """Layer 4 (guard): discord/discord_admin are platform-restricted — they
-    must never appear on a non-discord platform even when that platform is
-    explicitly configured."""
+    must never appear on a messaging platform other than Discord, even when that
+    platform is explicitly configured (cron may opt in to core ``discord``; see below)."""
     config = {"platform_toolsets": {"telegram": ["hermes-telegram", "discord"]}}
     enabled = _get_platform_tools(config, "telegram")
     assert "discord" not in enabled
     assert "discord_admin" not in enabled
+
+
+def test_discord_toolset_allowed_in_cron_when_configured():
+    """Cron jobs post into Discord forums with the core ``discord`` tool (scoped by
+    ``discord.post_channels``), so an explicit cron list keeps it; ``discord_admin`` stays out."""
+    config = {"platform_toolsets": {"cron": ["terminal", "discord", "discord_admin"]}}
+    enabled = _get_platform_tools(config, "cron")
+    assert "discord" in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_discord_toolset_not_implicit_in_cron():
+    """Cron gets ``discord`` only as an explicit opt-in, never from an unconfigured default."""
+    enabled = _get_platform_tools({}, "cron")
+    assert "discord" not in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_discord_toolsets_configure_on_discord_platform():
+    """A platform-less UI toggles discord toolsets on Discord, not on cron (sorts first)."""
+    from hermes_cli.tools_config import _toolset_configuration_platform
+    assert _toolset_configuration_platform("discord") == "discord"
+    assert _toolset_configuration_platform("discord_admin") == "discord"
+    assert _toolset_configuration_platform("web") == "cli"
 
 
 

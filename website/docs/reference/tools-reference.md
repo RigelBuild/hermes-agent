@@ -360,7 +360,7 @@ The single `video_generate` tool covers both modalities — pass `image_url` to 
 
 ## `discord` toolset
 
-Registered on the `hermes-discord` platform toolset (gateway only). Uses the same bot token as the messaging adapter.
+Registered on the `hermes-discord` platform toolset. Cron jobs can opt in to the core `discord` toolset in `platform_toolsets.cron`; there it is limited to `list_forum_posts`, `create_forum_post`, `post_message`, and `fetch_messages` inside `discord.post_channels`, and refuses everything when that list is unset. `discord_admin` stays Discord-only. Uses the same bot token as the messaging adapter.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
