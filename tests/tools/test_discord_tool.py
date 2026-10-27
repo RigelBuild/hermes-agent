@@ -1238,3 +1238,55 @@ class TestDiscordForumActions:
         assert "positive 64-bit" in invalid_tags["error"]
         assert "five" in too_many_tags["error"]
         request.assert_not_called()
+
+
+class TestCronScope:
+    """Cron jobs run unattended over untrusted input: there the tool only does the forum
+    workflow inside ``discord.post_channels``."""
+
+    @pytest.fixture
+    def cron(self, monkeypatch):
+        from gateway.session_context import _VAR_MAP
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        token = _VAR_MAP["HERMES_CRON_SESSION"].set("1")
+        yield
+        _VAR_MAP["HERMES_CRON_SESSION"].reset(token)
+
+    @patch("tools.discord_tool._load_post_channels_config", return_value={"500"})
+    @patch("tools.discord_tool._discord_request")
+    def test_actions_outside_forum_workflow_refused(self, mock_req, _cfg, cron):
+        for action, extra in (("create_thread", {"name": "x"}), ("search_members", {"guild_id": "1", "query": "a"})):
+            result = json.loads(discord_core(action=action, channel_id="500", **extra))
+            assert "not available in cron" in result["error"], action
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._load_post_channels_config", return_value={"500"})
+    @patch("tools.discord_tool._discord_request")
+    def test_read_outside_post_channels_refused(self, mock_req, _cfg, cron):
+        mock_req.return_value = {"id": "900", "type": 0}
+        result = json.loads(discord_core(action="fetch_messages", channel_id="900"))
+        assert "outside discord.post_channels" in result["error"]
+        assert all("/messages" not in str(c) for c in mock_req.call_args_list)
+
+    @patch("tools.discord_tool._load_post_channels_config", return_value={"500"})
+    @patch("tools.discord_tool._discord_request")
+    def test_thread_under_allowed_forum_passes(self, mock_req, _cfg, cron):
+        mock_req.side_effect = lambda method, path, *a, **k: (
+            {"id": "700", "type": 11, "parent_id": "500"} if path == "/channels/700" else [])
+        result = json.loads(discord_core(action="fetch_messages", channel_id="700"))
+        assert "error" not in result
+
+    @patch("tools.discord_tool._load_post_channels_config", return_value=None)
+    @patch("tools.discord_tool._discord_request")
+    def test_unset_post_channels_fails_closed(self, mock_req, _cfg, cron):
+        result = json.loads(discord_core(action="list_forum_posts", channel_id="500"))
+        assert "post_channels is not set" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._load_post_channels_config", return_value={"500"})
+    @patch("tools.discord_tool._discord_request")
+    def test_non_cron_session_unchanged(self, mock_req, _cfg, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "t1", "name": "x"}
+        result = json.loads(discord_core(action="create_thread", channel_id="900", name="x"))
+        assert result.get("success") is True

@@ -989,6 +989,30 @@ def check_discord_tool_requirements() -> bool:
 
 
 # ── handlers ─────────────────────────────────────────────────────────────────
+# Cron jobs run unattended over untrusted input, so there the tool only reads and posts inside
+# ``discord.post_channels`` (a listed channel or a thread under one) for the forum workflow.
+_CRON_ACTIONS = frozenset({"list_forum_posts", "create_forum_post", "post_message", "fetch_messages"})
+
+
+def _in_cron_session() -> bool:
+    from gateway.session_context import get_session_env
+    from utils import is_truthy_value
+    return is_truthy_value(get_session_env("HERMES_CRON_SESSION", ""))
+
+
+def _require_cron_scope(token: str, action: str, channel_id: str) -> None:
+    """In a cron session, refuse actions outside the forum workflow and any channel outside
+    ``discord.post_channels``; an unset allowlist refuses everything (fail closed)."""
+    if not _in_cron_session():
+        return
+    if action not in _CRON_ACTIONS:
+        raise ValueError(
+            f"Action '{action}' is not available in cron jobs; allowed: {', '.join(sorted(_CRON_ACTIONS))}")
+    if _load_post_channels_config() is None:
+        raise ValueError("discord.post_channels is not set; cron jobs may not use the discord tool")
+    _require_post_scope(token, channel_id)
+
+
 _HANDLER_DEFAULTS = {
     "guild_id": "", "channel_id": "", "user_id": "", "role_id": "", "message_id": "", "query": "",
     "name": "", "content": "", "applied_tags": None, "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
@@ -1014,6 +1038,7 @@ def _run_discord_action(action: str, valid_actions: dict[str, Any], tool_label: 
     if missing:
         return tool_error(f"Missing required parameters for '{action}': {', '.join(missing)}")
     try:
+        _require_cron_scope(token, action, kwargs.get("channel_id") or "")
         return action_fn(token=token, **kwargs)
     except ValueError as e:
         return tool_error(str(e))
