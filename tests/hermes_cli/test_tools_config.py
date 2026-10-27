@@ -146,6 +146,22 @@ def test_discord_toolsets_do_not_leak_to_other_platforms():
     assert "discord_admin" not in enabled
 
 
+def test_discord_toolset_allowed_in_cron_when_configured():
+    """Cron jobs post into Discord forums with the core ``discord`` tool (scoped by
+    ``discord.post_channels``), so an explicit cron list keeps it; ``discord_admin`` stays out."""
+    config = {"platform_toolsets": {"cron": ["terminal", "discord", "discord_admin"]}}
+    enabled = _get_platform_tools(config, "cron")
+    assert "discord" in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_discord_toolset_not_implicit_in_cron():
+    """Cron gets ``discord`` only as an explicit opt-in, never from an unconfigured default."""
+    enabled = _get_platform_tools({}, "cron")
+    assert "discord" not in enabled
+    assert "discord_admin" not in enabled
+
+
 
 
 
