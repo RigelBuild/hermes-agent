@@ -402,7 +402,7 @@ group_sessions_per_user: true     # Isolate sessions per user in shared channels
 
 #### `discord.post_channels`
 
-Channel IDs (YAML list or comma-separated string) where the `discord` tool's `create_forum_post` and `post_message` actions may post. `create_forum_post` needs the forum's own ID in the list. `post_message` also accepts a thread or forum post whose parent is listed; a channel under a listed category does not count. Empty means any channel the bot can post in. If the setting can't be read or has an unsupported type, both actions refuse to post.
+Channel IDs (YAML list or comma-separated string) where the `discord` tool's `create_forum_post` and `post_message` actions may post. `create_forum_post` needs the forum's own ID in the list. `post_message` also accepts a thread or forum post whose parent is listed; a channel under a listed category does not count. Empty means any channel the bot can post in. If the setting can't be read or has an unsupported type, both actions refuse to post. In cron jobs the tool is limited to `list_forum_posts`, `create_forum_post`, `post_message` and `fetch_messages` inside this list (a listed channel or a thread under one), and an empty or unset list refuses every action.
 
 #### `discord.require_mention`
 

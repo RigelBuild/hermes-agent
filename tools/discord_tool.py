@@ -622,10 +622,13 @@ _THREAD_CHANNEL_TYPES = frozenset({10, 11, 12})  # announcement, public and priv
 
 def _require_post_scope(
     token: str, channel_id: str, channel: Optional[dict[str, Any]] = None, *, allow_thread_parent: bool = True,
+    allowed: Optional[set[str]] = None,
 ) -> None:
     """Refuse posts outside ``discord.post_channels``. Only a thread (forum post) inherits its
-    parent's permission; a channel under an allowed category does not."""
-    allowed = _load_post_channels_config()
+    parent's permission; a channel under an allowed category does not. Pass ``allowed`` to check
+    against a snapshot the caller already validated."""
+    if allowed is None:
+        allowed = _load_post_channels_config()
     if allowed is None or str(channel_id) in allowed:
         return
     if allow_thread_parent:
@@ -1008,9 +1011,10 @@ def _require_cron_scope(token: str, action: str, channel_id: str) -> None:
     if action not in _CRON_ACTIONS:
         raise ValueError(
             f"Action '{action}' is not available in cron jobs; allowed: {', '.join(sorted(_CRON_ACTIONS))}")
-    if _load_post_channels_config() is None:
+    allowed = _load_post_channels_config()
+    if not allowed:
         raise ValueError("discord.post_channels is not set; cron jobs may not use the discord tool")
-    _require_post_scope(token, channel_id)
+    _require_post_scope(token, channel_id, allowed=allowed)
 
 
 _HANDLER_DEFAULTS = {

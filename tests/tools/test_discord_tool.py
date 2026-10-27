@@ -1290,3 +1290,28 @@ class TestCronScope:
         mock_req.return_value = {"id": "t1", "name": "x"}
         result = json.loads(discord_core(action="create_thread", channel_id="900", name="x"))
         assert result.get("success") is True
+
+
+class TestCronScopeSnapshot:
+    @pytest.fixture
+    def cron(self, monkeypatch):
+        from gateway.session_context import _VAR_MAP
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        token = _VAR_MAP["HERMES_CRON_SESSION"].set("1")
+        yield
+        _VAR_MAP["HERMES_CRON_SESSION"].reset(token)
+
+    @patch("tools.discord_tool._discord_request")
+    def test_allowlist_read_once(self, mock_req, cron):
+        """A later read returning None (unrestricted) must not widen the cron scope."""
+        mock_req.return_value = {"id": "900", "type": 0}
+        with patch("tools.discord_tool._load_post_channels_config", side_effect=[{"500"}, None, None]):
+            result = json.loads(discord_core(action="fetch_messages", channel_id="900"))
+        assert "outside discord.post_channels" in result["error"]
+
+    @patch("tools.discord_tool._load_post_channels_config", return_value=set())
+    @patch("tools.discord_tool._discord_request")
+    def test_empty_post_channels_fails_closed(self, mock_req, _cfg, cron):
+        result = json.loads(discord_core(action="post_message", channel_id="500", content="x"))
+        assert "post_channels is not set" in result["error"]
+        mock_req.assert_not_called()
