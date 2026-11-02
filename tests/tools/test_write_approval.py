@@ -214,6 +214,130 @@ def _review_stages_remove(shape):
     return store, staged["pending_id"]
 
 
+def _run_unattended_destructive(action="remove", shape="single"):
+    from tools.memory_tool import MemoryStore, memory_tool
+    from tools.skill_provenance import reset_current_write_origin, set_current_write_origin
+
+    store = MemoryStore()
+    store.load_from_disk()
+    for entry in (_KEPT, _REVIEWED):
+        assert store.add("memory", entry)["success"]
+    origin = set_current_write_origin("background_review")
+    operation = {"action": action, "old_text": "Staging DB"}
+    if action == "patch":
+        operation["content"] = "Staging DB updated"
+    try:
+        if shape == "single":
+            result = json.loads(memory_tool(
+                action=action, old_text=operation["old_text"],
+                content=operation.get("content"), store=store))
+        else:
+            result = json.loads(memory_tool(operations=[operation], store=store))
+    finally:
+        reset_current_write_origin(origin)
+    return store, result
+
+
+def _run_unattended_remove(shape="single"):
+    return _run_unattended_destructive("remove", shape)
+
+
+@pytest.mark.parametrize("action", ["patch", "remove"])
+def test_background_review_destructive_defaults_to_stage(hermes_home, monkeypatch, action):
+    from hermes_cli import config as cfg
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from tools.memory_tool import _background_review_destructive_mode
+
+    assert DEFAULT_CONFIG["memory"]["background_review_destructive"] == "stage"
+    monkeypatch.setattr(cfg, "load_config_readonly", lambda: {"memory": {}})
+    assert _background_review_destructive_mode() == "stage"
+    store, result = _run_unattended_destructive(action)
+    assert result["staged"] is True, result
+    assert store.memory_entries == [_KEPT, _REVIEWED]
+
+
+@pytest.mark.parametrize("action", ["patch", "remove"])
+def test_background_review_destructive_unknown_value_defaults_to_stage(hermes_home, monkeypatch, action):
+    from hermes_cli import config as cfg
+    from tools.memory_tool import _background_review_destructive_mode
+
+    monkeypatch.setattr(
+        cfg, "load_config_readonly",
+        lambda: {"memory": {"background_review_destructive": "delete"}},
+    )
+    assert _background_review_destructive_mode() == "stage"
+    store, result = _run_unattended_destructive(action)
+    assert result["staged"] is True, result
+    assert store.memory_entries == [_KEPT, _REVIEWED]
+
+
+def test_background_review_destructive_config_load_failure_defaults_to_stage(hermes_home, monkeypatch):
+    from hermes_cli import config as cfg
+    from tools.memory_tool import _background_review_destructive_mode
+
+    def fail_config_load():
+        raise RuntimeError("config unavailable")
+
+    monkeypatch.setattr(cfg, "load_config_readonly", fail_config_load)
+    assert _background_review_destructive_mode() == "stage"
+    store, result = _run_unattended_remove()
+    assert result["staged"] is True, result
+    assert store.memory_entries == [_KEPT, _REVIEWED]
+
+
+@pytest.mark.parametrize("shape", ["single", "batch"])
+@pytest.mark.parametrize("action", ["patch", "remove"])
+def test_background_review_destructive_apply_bypasses_only_review_gate(hermes_home, monkeypatch, shape, action):
+    from hermes_cli import config as cfg
+    from tools import write_approval as wa
+
+    _set_approval("memory", False)
+    monkeypatch.setattr(
+        cfg, "load_config_readonly",
+        lambda: {"memory": {"background_review_destructive": "apply"}},
+    )
+    store, result = _run_unattended_destructive(action, shape)
+
+    assert result["success"] is True and not result.get("staged"), result
+    expected = [_KEPT, _REVIEWED.replace("Staging DB", "Staging DB updated")] if action == "patch" else [_KEPT]
+    assert store.memory_entries == expected
+    assert wa.pending_count("memory") == 0
+
+
+@pytest.mark.parametrize("shape", ["single", "batch"])
+@pytest.mark.parametrize("action", ["patch", "remove"])
+def test_background_review_destructive_apply_keeps_write_approval_gate(hermes_home, monkeypatch, shape, action):
+    from hermes_cli import config as cfg
+    from tools import write_approval as wa
+
+    _set_approval("memory", True)
+    monkeypatch.setattr(
+        cfg, "load_config_readonly",
+        lambda: {"memory": {"background_review_destructive": "apply"}},
+    )
+    store, result = _run_unattended_destructive(action, shape)
+
+    assert result["staged"] is True, result
+    assert store.memory_entries == [_KEPT, _REVIEWED]
+    assert wa.pending_count("memory") == 1
+
+
+def test_unknown_background_review_policy_stages_destructive_write(hermes_home, monkeypatch):
+    from hermes_cli import config as cfg
+    from tools import write_approval as wa
+
+    _set_approval("memory", False)
+    monkeypatch.setattr(
+        cfg, "load_config_readonly",
+        lambda: {"memory": {"background_review_destructive": "unexpected"}},
+    )
+    store, result = _run_unattended_remove()
+
+    assert result["staged"] is True, result
+    assert store.memory_entries == [_KEPT, _REVIEWED]
+    assert wa.pending_count("memory") == 1
+
+
 @pytest.mark.parametrize("shape", ["single", "batch"])
 def test_approve_refuses_staged_remove_whose_entry_changed(hermes_home, shape):
     """Approval re-ran the staged old_text search against the file as it is THEN, so it

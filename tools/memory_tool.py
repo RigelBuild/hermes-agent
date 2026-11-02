@@ -178,12 +178,10 @@ def destructive_ops(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _background_delete_gate(store, action, operations, target="memory", content=None,
                             old_text=None) -> Optional[str]:
-    """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
-    stays available (it is all any review prompt asks for), while ``patch``/``remove`` —
-    single or inside a batch — are never applied unattended. The op is staged in the pending
-    store instead of merely denied: the fork's own review summary is never published back, so
-    a plain denial would drop the consolidation request with no surfacing path at all. A
-    staging failure fails closed to a plain denial."""
+    """Stage unattended background-review ``patch``/``remove`` unless config opts into apply.
+
+    Staging keeps the change reviewable because the fork's summary is not published; staging
+    failures fail closed to a plain denial. The independent write-approval gate still applies."""
     from tools.skill_provenance import is_unattended_review
 
     if not is_unattended_review():
@@ -192,6 +190,8 @@ def _background_delete_gate(store, action, operations, target="memory", content=
                if operations is not None else
                {"action": action, "target": target, "content": content, "old_text": old_text})
     if not destructive_ops(payload):
+        return None
+    if _background_review_destructive_mode() == "apply":
         return None
     detail = ("; ".join(_batch_op_line(op) for op in operations) if operations is not None
               else _batch_op_line({"action": action, "content": content, "old_text": old_text}))
@@ -217,6 +217,11 @@ def _background_delete_gate(store, action, operations, target="memory", content=
         return tool_error(
             "Background review may not delete memory entries ('patch'/'remove', including in a "
             "batch); 'add' is still available.", success=False)
+
+
+def _background_review_destructive_mode() -> str:
+    """Return the destructive unattended-review mode, defaulting to stage on config errors."""
+    return "apply" if get_builtin_memory_config().get("background_review_destructive") == "apply" else "stage"
 
 
 def memory_tool(action: str | None = None, target: str = "memory", content: str | None = None, old_text: str | None = None,
