@@ -532,6 +532,15 @@ class WebSocketRelayTransport:
         """The negotiated descriptor for one fronted platform (per-chat caps), or None."""
         return self._descriptors_by_platform.get(platform)
 
+    def admission_ready(self, platform: str) -> bool:
+        """True when connected and the platform's hello (descriptor and bot id) has arrived."""
+        return (
+            not self._closing
+            and self._ws is not None
+            and self.descriptor_for_platform(platform) is not None
+            and self._bot_id_for(platform) is not None
+        )
+
     @property
     def auth_revoked(self) -> bool:
         """True once the connector closed 4401 AFTER a successful handshake — the

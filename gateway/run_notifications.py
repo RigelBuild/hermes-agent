@@ -1058,7 +1058,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             return False
         transport = getattr(adapter, '_transport', None)
         if (isinstance(transport, WebSocketRelayTransport) and not transport.auth_revoked
-                and (transport._closing or transport._ws is None)):
+                and source is not None and not transport.admission_ready(platform)):
             return False
         if not adapter_supports_push(adapter):
             ensure = getattr(adapter, "_ensure_session_db", None)

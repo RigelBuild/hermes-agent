@@ -17,6 +17,7 @@ import json
 import pytest
 import pytest_asyncio
 
+from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.ws_transport import WebSocketRelayTransport, WEBSOCKETS_AVAILABLE
 
 pytestmark = pytest.mark.skipif(not WEBSOCKETS_AVAILABLE, reason="websockets not installed")
@@ -107,6 +108,27 @@ async def test_handshake_negotiates_descriptor(server):
         assert hello["botId"] == "appShared"
     finally:
         await t.disconnect()
+
+
+def test_admission_ready_requires_live_socket_descriptor_and_bot_identity():
+    transport = WebSocketRelayTransport("ws://unused", "discord", "bot")
+    transport._ws = object()
+    descriptor = CapabilityDescriptor.from_json(json.dumps(DESCRIPTOR))
+    transport._descriptors_by_platform["discord"] = descriptor
+
+    transport._closing = True
+    assert not transport.admission_ready("discord")
+    transport._closing = False
+    # A new dial clears the descriptor map until the next hello response.
+    transport._descriptors_by_platform.clear()
+    assert not transport.admission_ready("discord")
+    transport._descriptors_by_platform["discord"] = descriptor
+    identities = transport._identities
+    transport._identities = [("telegram", "other-bot")]
+    assert not transport.admission_ready("discord")
+
+    transport._identities = identities
+    assert transport.admission_ready("discord")
 
 
 @pytest.mark.asyncio
@@ -428,6 +450,7 @@ async def test_provisional_4401_never_starts_a_second_dialer_while_the_superviso
         return ws
 
     monkeypatch.setattr(mod.websockets, "connect", fake_connect)
+
     t = WebSocketRelayTransport(
         "ws://unused", "discord", "bot", reconnect=True,
         reconnect_backoff_s=0, reconnect_max_backoff_s=0,

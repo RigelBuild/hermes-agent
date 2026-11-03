@@ -428,7 +428,23 @@ async def test_durable_completion_waits_for_relay_reconnect_without_spending_att
                 ).fetchone() == (None,)
 
         transport._ws = MagicMock()
+        assert await runner._completion_delivery_ready(event) is False
+        assert await runner._deliver_completion_notification('completed result', event) is False
+        row = ad.get_durable_delegation(event['delegation_id'])
+        assert row is not None
+        assert (row['delivery_state'], row['delivery_attempts']) == ('pending', 0)
+
+        transport._descriptors_by_platform = {'discord': descriptor}
         assert await runner._completion_delivery_ready(event) is True
+        transport._closing = True
+        assert await runner._completion_delivery_ready(event) is False
+        assert await runner._deliver_completion_notification('completed result', event) is False
+        row = ad.get_durable_delegation(event['delegation_id'])
+        assert row is not None
+        assert (row['delivery_state'], row['delivery_attempts']) == ('pending', 0)
+        transport._closing = False
+        assert await runner._completion_delivery_ready(event) is True
+
 
         async def accept_connected(*_args, **_kwargs):
             return True
