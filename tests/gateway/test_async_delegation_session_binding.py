@@ -373,7 +373,7 @@ async def test_compression_uncertainty_keeps_durable_completion_retryable(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(('reason', 'expected', 'delivery_state', 'attempts'), [
-    ('admission_conflict', None, 'dropped', 1),
+    ('admission_conflict', False, 'pending', 1),
     ('runtime_draining', False, 'pending', 0),
 ])
 async def test_durable_completion_refusal_settles_by_refusal_kind(
@@ -411,7 +411,7 @@ async def test_durable_completion_refusal_settles_by_refusal_kind(
 
     monkeypatch.setattr(runner, '_inject_watch_notification', refuse)
     try:
-        with caplog.at_level(logging.ERROR, logger='gateway.run'):
+        with caplog.at_level(logging.WARNING, logger='gateway.run'):
             result = await runner._deliver_completion_notification(
                 'completed result', event, sibling_claims=[(sibling, sibling_claim)],
             )
@@ -420,14 +420,29 @@ async def test_durable_completion_refusal_settles_by_refusal_kind(
         sibling_row = ad.get_durable_delegation(sibling['delegation_id'])
         assert primary_row is not None and sibling_row is not None
         assert (primary_row['delivery_state'], primary_row['delivery_attempts']) == (delivery_state, attempts)
-        expected_sibling = ('dropped', 1) if reason == 'admission_conflict' else ('pending', 0)
+        expected_sibling = ('pending', 1) if reason == 'admission_conflict' else ('pending', 0)
         assert (sibling_row['delivery_state'], sibling_row['delivery_attempts']) == expected_sibling
         assert not runner._completion_deliveries_inflight
-        completion_refusals = [record.getMessage() for record in caplog.records
-                               if record.getMessage().startswith('Completion refused, dropping it:')]
-        assert completion_refusals == (
-            ['Completion refused, dropping it: admission_conflict'] if expected is None else []
-        )
+        refusal_prefix = ('Completion refused (attempt spent):' if reason == 'admission_conflict'
+                          else 'Completion not admitted, deferring:')
+        assert [record.getMessage() for record in caplog.records
+                if record.getMessage().startswith(refusal_prefix)] == [f'{refusal_prefix} {reason}']
+        if reason == 'admission_conflict':
+            caplog.clear()
+            for attempt in range(2, ad._MAX_DELIVERY_ATTEMPTS + 1):
+                assert ad.claim_completion_delivery(event['delegation_id'], primary_claim)
+                await runner._deliver_completion_notification('completed result', event)
+                row = ad.get_durable_delegation(event['delegation_id'])
+                assert row is not None
+                expected_state = 'dropped' if attempt == ad._MAX_DELIVERY_ATTEMPTS else 'pending'
+                assert (row['delivery_state'], row['delivery_attempts']) == (expected_state, attempt)
+            assert [record.getMessage() for record in caplog.records
+                    if record.getMessage() == 'Completion refused (attempt spent): admission_conflict'] == [
+                        'Completion refused (attempt spent): admission_conflict'
+                    ] * (ad._MAX_DELIVERY_ATTEMPTS - 1)
+        else:
+            assert [record.getMessage() for record in caplog.records
+                    if record.getMessage().startswith('Completion refused (attempt spent):')] == []
     finally:
         authority.db.close()
 

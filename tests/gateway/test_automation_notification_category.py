@@ -157,10 +157,13 @@ async def test_native_automation_category_roundtrip(tmp_path, monkeypatch, categ
 _SOURCE = dict(chat_id='42', chat_type='dm', user_id='42', user_name='human')
 
 
-async def _native_owner(tmp_path, monkeypatch, human_message_id, **source_overrides):
+async def _native_owner(tmp_path, monkeypatch, human_message_id, *, group_sessions_per_user=None,
+                        **source_overrides):
     from gateway.session_ingress_context import native_callback, register_transport_home
     from plugins.platforms.discord.adapter import DiscordAdapter
     runner, authority = await _authority(tmp_path, monkeypatch)
+    if group_sessions_per_user is not None:
+        runner.config.group_sessions_per_user = group_sessions_per_user
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token='***', typing_indicator=False))
     runner.adapters = {Platform.DISCORD: adapter}
     runner._wire_adapter_handlers(adapter)
@@ -196,13 +199,33 @@ async def test_native_completion_wake_refuses_routing_source_drift(tmp_path, mon
 @pytest.mark.asyncio
 async def test_native_completion_wake_admits_sender_identity_drift(tmp_path, monkeypatch, field):
     from gateway.session_identity import replace_source
-    _runner, authority, adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    source = dict(chat_id='room', chat_type='group', user_id='42', user_name='human')
+    _runner, authority, adapter, _original, metadata = await _native_owner(
+        tmp_path, monkeypatch, 'human-1', group_sessions_per_user=False, **source,
+    )
     try:
-        drifted = replace_source(adapter.build_source(**_SOURCE), **{field: 'other'})
+        drifted = replace_source(adapter.build_source(**source), **{field: 'other'})
         event = MessageEvent(text='notice', source=drifted, internal=True, metadata=dict(metadata))
         receipt = await authority.admit_automation(adapter, event, 'notice')
         row = get_session_admission(authority.db, admission_id=receipt.admission_id)
         assert row is not None and row['status'] == 'queued'
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_native_completion_wake_refuses_user_drift_on_per_user_group(tmp_path, monkeypatch):
+    from gateway.session_identity import replace_source
+    source = dict(chat_id='room', chat_type='group', user_id='42', user_name='human')
+    _runner, authority, adapter, _original, metadata = await _native_owner(
+        tmp_path, monkeypatch, 'human-1', group_sessions_per_user=True, **source,
+    )
+    try:
+        drifted = replace_source(adapter.build_source(**source), user_id='other')
+        event = MessageEvent(text='notice', source=drifted, internal=True, metadata=dict(metadata))
+        with pytest.raises(RuntimeStoreError) as refusal:
+            await authority.admit_automation(adapter, event, 'notice')
+        assert refusal.value.reason == 'admission_conflict'
     finally:
         authority.db.close()
 

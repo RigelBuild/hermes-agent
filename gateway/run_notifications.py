@@ -64,8 +64,8 @@ _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 # Storage causes that clear on their own (one session's lease/compression, not the store): the
 # home-channel notice appends the operator restart tail for every OTHER cause.
 _SELF_CLEARING_STORAGE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease"})
-# Session-authority refusals about the watch event itself (its source, shape or principal), which
-# hold on every retry; the drain requeued them every ~2 s forever. Owner-state refusals stay retryable.
+# Session-authority refusals about the event's source, shape or principal. Watch callers treat them as
+# final; durable callers spend one bounded attempt because a transport permission denial can be transient.
 _FINAL_WAKE_REFUSALS = frozenset({"admission_conflict", "invalid_params", "permission_denied", "profile_mismatch"})
 # Process-watcher retries of a refused completion: ~5 min at the default 5 s check interval.
 _MAX_COMPLETION_INJECTION_ATTEMPTS = 8
@@ -833,7 +833,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
         Routing comes from the queued event, never the active foreground message. Returns
         ``True`` on adapter acceptance, ``False`` on retryable adapter failure, ``None`` with no
-        gateway route or a final refusal (``_FINAL_WAKE_REFUSALS``) that no retry can admit. Not
+        gateway route or a final refusal (``_FINAL_WAKE_REFUSALS``) for ordinary watch callers.
+        Durable callers ask this method to raise refusals so they can settle their claims. Not
         transactional: a crash after acceptance can replay (at-least-once).
         """
         from gateway.wake import WakeNotAccepted, adapter_supports_push, admit_internal_event
@@ -911,9 +912,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 await admit_internal_event(adapter, synth_event)
             return True
         except WakeNotAccepted as exc:
-            # Durable callers log final refusals after settling; ordinary watch callers log here.
+            # Durable callers settle and log their own refusals; ordinary watch callers log here.
             final = str(exc) in _FINAL_WAKE_REFUSALS
-            if not (final and raise_not_accepted):
+            if not raise_not_accepted:
                 (logger.error if final else logger.warning)(
                     "Watch notification %s for %s chat=%s: %s",
                     "refused, dropping it" if final else "not admitted",
@@ -1170,7 +1171,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     async def _deliver_completion_notification(
         self, synth_text: str, evt: dict, *, sibling_claims=(),
     ) -> Optional[bool]:
-        """Acknowledge one admitted batch, refund refusals, or release failed deliveries.
+        """Acknowledge admission, refund owner-state refusals, or release failed deliveries.
 
         True means adapter admission, not model execution; None means deduplicated or
         terminal. False remains retryable. Claims are settled together for every sibling.
@@ -1223,14 +1224,15 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             refused = True
             final_refusal = str(exc) in _FINAL_WAKE_REFUSALS
             if final_refusal:
-                logger.error("Completion refused, dropping it: %s", exc)
-                return None
+                logger.warning("Completion refused (attempt spent): %s", exc)
+                return False
+            logger.warning("Completion not admitted, deferring: %s", exc)
             return False
         finally:
             if identity_claimed and not accepted:
                 with self._completion_delivery_lock:
                     self._completion_deliveries_inflight.discard(identity)
-            operation = ("complete" if accepted else "drop" if final_refusal else
+            operation = ("complete" if accepted else "release" if final_refusal else
                          "defer" if refused or claim.defer else "release")
             if claim.claim_id:
                 self._settle_durable_claim(operation, claim.delegation_id, claim.claim_id)
