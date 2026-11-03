@@ -1,0 +1,68 @@
+name: Rigel CI
+
+# The rigel-release ruleset requires a check named `CI`. Upstream's jobs need
+# Blacksmith runners this fork lacks, so this job runs on GitHub-hosted runners.
+
+on:
+  pull_request:
+    branches: [rigel-release]
+  push:
+    branches: [rigel-release]
+
+concurrency:
+  group: rigel-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  CI:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+
+      - name: Set up locked Python and test dependencies
+        uses: ./.github/actions/setup-pm
+        with:
+          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web"]'
+          test-environment: 'true'
+          prune-python-cache: true
+
+      - name: Install ruff
+        uses: ./.github/actions/retry
+        with:
+          command: python -m scripts.ci.python_packages "$(python -m scripts.code_health --print-pins)"
+
+      - name: ruff check .
+        run: ruff check .
+
+      # The test files the Rigel patch layer adds or changes; add yours here. The full
+      # upstream suite needs 2x32 cores and runs upstream.
+      - name: Run tests
+        run: >-
+          scripts/run_tests.sh
+          tests/agent/test_onepassword_accounts.py
+          tests/agent/test_onepassword_desktop_app.py
+          tests/gateway/relay/test_ws_transport.py
+          tests/gateway/test_async_delegation_session_binding.py
+          tests/gateway/test_automation_notification_category.py
+          tests/gateway/test_discord_prompt_timeout_config.py
+          tests/gateway/test_watch_wake_auto_thread.py
+          tests/hermes_cli/test_tools_config.py
+          tests/tools/test_browser_vault.py
+          tests/tools/test_discord_tool.py
+          tests/tools/test_plugin_approval_review.py
+          tests/tools/test_smart_approval_injection.py
+          tests/tools/test_vault_secret_tool.py
+          tests/tools/test_vault_secret_write.py
+          tests/tools/test_write_approval.py
+        env:
+          HERMES_TEST_FILE_TIMEOUT: 600
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+
+      - name: Check the checkout is clean
+        uses: ./.github/actions/check-clean-worktree
