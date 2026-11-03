@@ -41,9 +41,7 @@ def _relay_connector(adapter, source):
     transport = getattr(adapter, '_transport', None)
     if (not isinstance(transport, WebSocketRelayTransport)
             or not transport._gateway_id or not transport._upgrade_secret
-            or transport.auth_revoked or transport._closing or transport._ws is None
-            or transport.descriptor_for_platform(source.platform.value) is None
-            or transport._bot_id_for(source.platform.value) is None):
+            or transport.auth_revoked or not transport.admission_ready(source.platform.value)):
         raise RuntimeStoreError('permission_denied')
     identity = json.dumps([transport._url, transport._gateway_id, transport._identities],
                           sort_keys=True, separators=(',', ':'))
