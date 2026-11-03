@@ -324,14 +324,16 @@ def admission_display(payload):
     return card
 
 
-# Not route identity: the reply anchor, and Discord auto-thread naming state the session store keeps
-# on its origin but a committed human envelope never carries. Comparing them refused every wake in a
-# bot-created thread.
-_NON_ROUTE_FIELDS = frozenset({'message_id', 'auto_thread_created', 'auto_thread_initial_name'})
+# Display and sender fields drift on renamed threads and shared multi-sender sessions; _owner's
+# session-key check still covers sender identity where it routes.
+_ROUTE_FIELDS = frozenset({
+    'platform', 'chat_id', 'chat_type', 'thread_id', 'chat_id_alt', 'scope_id', 'guild_id',
+    'parent_chat_id', 'profile', 'prospective_thread_id',
+})
 
 
 def _route_identity(source):
-    return {key: value for key, value in source.to_dict().items() if key not in _NON_ROUTE_FIELDS}
+    return {key: value for key, value in source.to_dict().items() if key in _ROUTE_FIELDS}
 
 
 def committed_route_envelope(authority, entry):

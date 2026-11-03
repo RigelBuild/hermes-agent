@@ -157,24 +157,77 @@ async def test_native_automation_category_roundtrip(tmp_path, monkeypatch, categ
 _SOURCE = dict(chat_id='42', chat_type='dm', user_id='42', user_name='human')
 
 
-async def _native_owner(tmp_path, monkeypatch, human_message_id):
+async def _native_owner(tmp_path, monkeypatch, human_message_id, *, group_sessions_per_user=None,
+                        **source_overrides):
     from gateway.session_ingress_context import native_callback, register_transport_home
     from plugins.platforms.discord.adapter import DiscordAdapter
     runner, authority = await _authority(tmp_path, monkeypatch)
+    if group_sessions_per_user is not None:
+        runner.config.group_sessions_per_user = group_sessions_per_user
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token='***', typing_indicator=False))
     runner.adapters = {Platform.DISCORD: adapter}
     runner._wire_adapter_handlers(adapter)
     register_transport_home(runner, None, tmp_path)
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
-    source = adapter.build_source(**_SOURCE)
+    source_args = {**_SOURCE, **source_overrides}
+    source = adapter.build_source(**source_args)
     # The committed human turn keeps its platform reply anchor on the source.
-    human = MessageEvent(text='human', source=adapter.build_source(**_SOURCE, message_id=human_message_id),
+    human = MessageEvent(text='human', source=adapter.build_source(**source_args, message_id=human_message_id),
                          message_id=human_message_id)
     with native_callback(runner, human, tmp_path):
         await authority.admit_native(human)
     route = runner.session_store._generate_session_key(source)
     metadata = {'gateway_session_key': route, 'gateway_session_id': runner.session_store.peek_session_id(route)}
     return runner, authority, adapter, source, metadata
+
+
+@pytest.mark.parametrize('field', ['thread_id', 'parent_chat_id'])
+@pytest.mark.asyncio
+async def test_native_completion_wake_refuses_routing_source_drift(tmp_path, monkeypatch, field):
+    from gateway.session_identity import replace_source
+    _runner, authority, adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    try:
+        source = replace_source(adapter.build_source(**_SOURCE), **{field: 'other'})
+        event = MessageEvent(text='notice', source=source, internal=True, metadata=dict(metadata))
+        with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+            await authority.admit_automation(adapter, event, 'notice')
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.parametrize('field', ['user_name', 'user_id'])
+@pytest.mark.asyncio
+async def test_native_completion_wake_admits_sender_identity_drift(tmp_path, monkeypatch, field):
+    from gateway.session_identity import replace_source
+    source = dict(chat_id='room', chat_type='group', user_id='42', user_name='human')
+    _runner, authority, adapter, _original, metadata = await _native_owner(
+        tmp_path, monkeypatch, 'human-1', group_sessions_per_user=False, **source,
+    )
+    try:
+        drifted = replace_source(adapter.build_source(**source), **{field: 'other'})
+        event = MessageEvent(text='notice', source=drifted, internal=True, metadata=dict(metadata))
+        receipt = await authority.admit_automation(adapter, event, 'notice')
+        row = get_session_admission(authority.db, admission_id=receipt.admission_id)
+        assert row is not None and row['status'] == 'queued'
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_native_completion_wake_refuses_user_drift_on_per_user_group(tmp_path, monkeypatch):
+    from gateway.session_identity import replace_source
+    source = dict(chat_id='room', chat_type='group', user_id='42', user_name='human')
+    _runner, authority, adapter, _original, metadata = await _native_owner(
+        tmp_path, monkeypatch, 'human-1', group_sessions_per_user=True, **source,
+    )
+    try:
+        drifted = replace_source(adapter.build_source(**source), user_id='other')
+        event = MessageEvent(text='notice', source=drifted, internal=True, metadata=dict(metadata))
+        with pytest.raises(RuntimeStoreError) as refusal:
+            await authority.admit_automation(adapter, event, 'notice')
+        assert refusal.value.reason == 'admission_conflict'
+    finally:
+        authority.db.close()
 
 
 @pytest.mark.asyncio
@@ -202,19 +255,6 @@ async def test_native_completion_wake_admits_when_source_differs_only_by_message
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('field', ['user_name', 'user_id', 'thread_id'])
-async def test_native_completion_wake_refuses_other_source_drift(tmp_path, monkeypatch, field):
-    _runner, authority, adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
-    try:
-        drifted = adapter.build_source(**{**_SOURCE, field: '7'})
-        event = MessageEvent(text='notice', source=drifted, internal=True, metadata=dict(metadata))
-        with pytest.raises(RuntimeStoreError, match='admission_conflict'):
-            await authority.admit_automation(adapter, event, 'notice')
-    finally:
-        authority.db.close()
-
-
-@pytest.mark.asyncio
 async def test_native_completion_wake_refuses_another_adapter(tmp_path, monkeypatch):
     from plugins.platforms.discord.adapter import DiscordAdapter
     _runner, authority, _adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
@@ -229,23 +269,20 @@ async def test_native_completion_wake_refuses_another_adapter(tmp_path, monkeypa
 
 @pytest.mark.asyncio
 async def test_refused_watch_wake_logs_the_refusal_code(tmp_path, monkeypatch, caplog):
-    """A refused wake used to requeue silently; the refusal code is what diagnoses it (#138940)."""
     import logging
     from gateway.session_identity import replace_source
-    from gateway.wake import WakeNotAccepted
     runner, authority, _adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human')
     try:
         route = metadata['gateway_session_key']
-        # Point the routing entry at a renamed user: the wake's source no longer matches the commit.
-        runner.session_store._entries[route].origin = replace_source(source, user_name='renamed')
+        # A changed parent route must still refuse the wake.
+        runner.session_store._entries[route].origin = replace_source(source, parent_chat_id='other')
         evt = {'type': 'completion', 'session_id': 'proc_x', 'session_key': route, 'platform': 'discord',
                'chat_id': '42', 'chat_type': 'dm', 'exit_code': 0, 'output': 'done', 'started_at': 1.0,
                'parent_session_id': metadata['gateway_session_id']}
-        with caplog.at_level(logging.WARNING, logger='gateway.run'):
-            with pytest.raises(WakeNotAccepted):
-                await runner._inject_watch_notification('[done]', evt, raise_not_accepted=True)
-        assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
-                and 'not admitted' in r.getMessage()] == [
-            'Watch notification not admitted for discord chat=42: admission_conflict']
+        with caplog.at_level(logging.ERROR, logger='gateway.run'):
+            assert await runner._inject_watch_notification('[done]', evt) is None
+        assert [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR
+                and 'refused, dropping it' in r.getMessage()] == [
+            'Watch notification refused, dropping it for discord chat=42: admission_conflict']
     finally:
         authority.db.close()

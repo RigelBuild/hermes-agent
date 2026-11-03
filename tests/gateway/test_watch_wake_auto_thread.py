@@ -37,13 +37,34 @@ async def test_watch_wake_admits_in_a_bot_created_thread(tmp_path, monkeypatch):
         authority.db.close()
 
 
+@pytest.mark.parametrize(('source_overrides', 'origin_updates'), [
+    ({'chat_type': 'thread', 'thread_id': 'thread'}, {'chat_name': 'renamed'}),
+    ({}, {'user_id': 'other', 'user_name': 'other'}),
+    ({'parent_chat_id': 'parent'}, {'chat_name': 'renamed'}),
+])
+@pytest.mark.asyncio
+async def test_watch_wake_admits_after_nonrouting_source_drift(tmp_path, monkeypatch, source_overrides, origin_updates):
+    runner, authority, _adapter, source, metadata = await _native_owner(
+        tmp_path, monkeypatch, 'human', **source_overrides,
+    )
+    try:
+        route = metadata['gateway_session_key']
+        runner.session_store._entries[route].origin = replace_source(source, **origin_updates)
+        assert await runner._inject_watch_notification('[ready]', _watch_event(metadata, 'drift')) is True
+        owner = authority.logical_owner(metadata['gateway_session_id'])
+        assert [row for row in list_session_admissions(authority.db, session_id=owner)
+                if (row['payload'].get('native_text_v1') or {}).get('automation')]
+    finally:
+        authority.db.close()
+
+
 @pytest.mark.asyncio
 async def test_drain_drops_a_finally_refused_watch_event(tmp_path, monkeypatch, caplog):
     runner, authority, _adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human')
     try:
         route = metadata['gateway_session_key']
         # A wake whose source genuinely differs from the committed route is refused on every retry.
-        runner.session_store._entries[route].origin = replace_source(source, user_name='renamed')
+        runner.session_store._entries[route].origin = replace_source(source, parent_chat_id='other')
         pending = queue.Queue()
         pending.put(_watch_event(metadata, 'e1'))
         with caplog.at_level(logging.WARNING, logger='gateway.run'):

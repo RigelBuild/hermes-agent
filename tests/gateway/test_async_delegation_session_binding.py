@@ -8,6 +8,7 @@ Three invariants on the messaging-gateway surface, mirroring the TUI rules:
 3. /new interrupts the old conversation's in-flight async delegations.
 """
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -368,6 +369,157 @@ async def test_compression_uncertainty_keeps_durable_completion_retryable(
         assert row is not None and row["delivery_state"] == "delivered"
         assert await runner._deliver_completion_notification("completed result", event) is None
         assert resolved == ["tip"]
+
+
+@pytest.mark.asyncio
+async def test_durable_completion_waits_for_relay_reconnect_without_spending_attempt(
+    tmp_path, monkeypatch,
+):
+    import sqlite3
+
+    from gateway.config import Platform, PlatformConfig
+    from gateway.relay.adapter import RelayAdapter
+    from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+    from gateway.relay.ws_transport import WebSocketRelayTransport
+    from gateway.wake import WakeNotAccepted
+    from tests.gateway.test_automation_notification_category import _native_owner
+
+    runner, authority, _native_adapter, _source, metadata = await _native_owner(
+        tmp_path, monkeypatch, 'relay-completion-human',
+    )
+    runner.session_store._entries[metadata['gateway_session_key']].origin.delivered_via_upstream_relay = True
+    runner.config.platforms[Platform.RELAY] = PlatformConfig(enabled=True)
+    descriptor = CapabilityDescriptor(
+        contract_version=CONTRACT_VERSION, platform='discord', label='Discord',
+        max_message_length=2000, supports_draft_streaming=False, supports_edit=True,
+        supports_threads=True, markdown_dialect='discord', len_unit='chars',
+    )
+    transport = WebSocketRelayTransport(
+        'ws://127.0.0.1:1/relay', 'discord', 'fixture-bot',
+        gateway_id='fixture-gateway', upgrade_secret='fixture-secret',
+    )
+    runner.adapters = {
+        Platform.RELAY: RelayAdapter(PlatformConfig(enabled=True), descriptor, transport),
+    }
+    event = {
+        'type': 'async_delegation', 'delegation_id': 'relay-reconnect-completion',
+        'session_key': metadata['gateway_session_key'],
+        'parent_session_id': '',
+        'dispatched_at': 1.0, 'status': 'completed', 'summary': 'completed result',
+    }
+    ad._persist_dispatch(event)
+    ad._persist_completion(event, {'status': 'completed', 'summary': event['summary']})
+
+    async def refuse_disconnected(*_args, **_kwargs):
+        raise WakeNotAccepted('permission_denied')
+
+    monkeypatch.setattr(runner, '_inject_watch_notification', refuse_disconnected)
+    try:
+        assert await runner._completion_delivery_ready(event) is False
+        for _ in range(3):
+            assert await runner._deliver_completion_notification('completed result', event) is False
+            row = ad.get_durable_delegation(event['delegation_id'])
+            assert row is not None
+            assert (row['delivery_state'], row['delivery_attempts']) == ('pending', 0)
+            with sqlite3.connect(ad._db_path()) as conn:
+                assert conn.execute(
+                    'SELECT delivery_claim FROM async_delegations WHERE delegation_id=?',
+                    (event['delegation_id'],),
+                ).fetchone() == (None,)
+
+        transport._ws = MagicMock()
+        assert await runner._completion_delivery_ready(event) is True
+
+        async def accept_connected(*_args, **_kwargs):
+            return True
+
+        monkeypatch.setattr(runner, '_inject_watch_notification', accept_connected)
+        assert await runner._deliver_completion_notification('completed result', event) is True
+        row = ad.get_durable_delegation(event['delegation_id'])
+        assert row is not None
+        assert (row['delivery_state'], row['delivery_attempts']) == ('delivered', 1)
+
+        transport._ws = None
+        transport._auth_revoked = True
+        assert await runner._completion_delivery_ready(event) is True
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('reason', 'expected', 'delivery_state', 'attempts'), [
+    ('admission_conflict', False, 'pending', 1),
+    ('runtime_draining', False, 'pending', 0),
+])
+async def test_durable_completion_refusal_settles_by_refusal_kind(
+    tmp_path, monkeypatch, caplog, reason, expected, delivery_state, attempts,
+):
+    from gateway.run_notifications import GatewayNotificationsMixin
+    from gateway.wake import WakeNotAccepted
+    from tests.gateway.test_automation_notification_category import _native_owner
+    runner, authority, _adapter, _source, metadata = await _native_owner(
+        tmp_path, monkeypatch, f'human-{reason}',
+    )
+    event = {
+        'type': 'async_delegation', 'delegation_id': f'refused-{reason}',
+        'session_key': metadata['gateway_session_key'],
+        'parent_session_id': metadata['gateway_session_id'],
+        'dispatched_at': 1.0, 'status': 'completed', 'summary': 'completed result',
+    }
+    sibling = {**event, 'delegation_id': f'sibling-{reason}'}
+    ad._persist_dispatch(event)
+    ad._persist_completion(event, {'status': 'completed', 'summary': event['summary']})
+    ad._persist_dispatch(sibling)
+    ad._persist_completion(sibling, {'status': 'completed', 'summary': sibling['summary']})
+    primary_claim = 'test-primary-claim'
+    sibling_claim = 'test-sibling-claim'
+    assert ad.claim_completion_delivery(event['delegation_id'], primary_claim)
+    assert ad.claim_completion_delivery(sibling['delegation_id'], sibling_claim)
+
+    async def preflight(self, _evt):
+        return self._CompletionClaim(delegation_id=event['delegation_id'], claim_id=primary_claim)
+
+    monkeypatch.setattr(GatewayNotificationsMixin, '_preflight_completion_delivery', preflight)
+
+    async def refuse(*_args, **_kwargs):
+        raise WakeNotAccepted(reason)
+
+    monkeypatch.setattr(runner, '_inject_watch_notification', refuse)
+    try:
+        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+            result = await runner._deliver_completion_notification(
+                'completed result', event, sibling_claims=[(sibling, sibling_claim)],
+            )
+        assert result is expected
+        primary_row = ad.get_durable_delegation(event['delegation_id'])
+        sibling_row = ad.get_durable_delegation(sibling['delegation_id'])
+        assert primary_row is not None and sibling_row is not None
+        assert (primary_row['delivery_state'], primary_row['delivery_attempts']) == (delivery_state, attempts)
+        expected_sibling = ('pending', 1) if reason == 'admission_conflict' else ('pending', 0)
+        assert (sibling_row['delivery_state'], sibling_row['delivery_attempts']) == expected_sibling
+        assert not runner._completion_deliveries_inflight
+        refusal_prefix = ('Completion refused (attempt spent):' if reason == 'admission_conflict'
+                          else 'Completion not admitted, deferring:')
+        assert [record.getMessage() for record in caplog.records
+                if record.getMessage().startswith(refusal_prefix)] == [f'{refusal_prefix} {reason}']
+        if reason == 'admission_conflict':
+            caplog.clear()
+            for attempt in range(2, ad._MAX_DELIVERY_ATTEMPTS + 1):
+                assert ad.claim_completion_delivery(event['delegation_id'], primary_claim)
+                await runner._deliver_completion_notification('completed result', event)
+                row = ad.get_durable_delegation(event['delegation_id'])
+                assert row is not None
+                expected_state = 'dropped' if attempt == ad._MAX_DELIVERY_ATTEMPTS else 'pending'
+                assert (row['delivery_state'], row['delivery_attempts']) == (expected_state, attempt)
+            assert [record.getMessage() for record in caplog.records
+                    if record.getMessage() == 'Completion refused (attempt spent): admission_conflict'] == [
+                        'Completion refused (attempt spent): admission_conflict'
+                    ] * (ad._MAX_DELIVERY_ATTEMPTS - 1)
+        else:
+            assert [record.getMessage() for record in caplog.records
+                    if record.getMessage().startswith('Completion refused (attempt spent):')] == []
+    finally:
+        authority.db.close()
 
 
 def _build_delegate_chain(db, parent, case):
