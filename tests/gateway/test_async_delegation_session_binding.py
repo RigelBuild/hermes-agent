@@ -372,6 +372,81 @@ async def test_compression_uncertainty_keeps_durable_completion_retryable(
 
 
 @pytest.mark.asyncio
+async def test_durable_completion_waits_for_relay_reconnect_without_spending_attempt(
+    tmp_path, monkeypatch,
+):
+    import sqlite3
+
+    from gateway.config import Platform, PlatformConfig
+    from gateway.relay.adapter import RelayAdapter
+    from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+    from gateway.relay.ws_transport import WebSocketRelayTransport
+    from gateway.wake import WakeNotAccepted
+    from tests.gateway.test_automation_notification_category import _native_owner
+
+    runner, authority, _native_adapter, _source, metadata = await _native_owner(
+        tmp_path, monkeypatch, 'relay-completion-human',
+    )
+    runner.session_store._entries[metadata['gateway_session_key']].origin.delivered_via_upstream_relay = True
+    runner.config.platforms[Platform.RELAY] = PlatformConfig(enabled=True)
+    descriptor = CapabilityDescriptor(
+        contract_version=CONTRACT_VERSION, platform='discord', label='Discord',
+        max_message_length=2000, supports_draft_streaming=False, supports_edit=True,
+        supports_threads=True, markdown_dialect='discord', len_unit='chars',
+    )
+    transport = WebSocketRelayTransport(
+        'ws://127.0.0.1:1/relay', 'discord', 'fixture-bot',
+        gateway_id='fixture-gateway', upgrade_secret='fixture-secret',
+    )
+    runner.adapters = {
+        Platform.RELAY: RelayAdapter(PlatformConfig(enabled=True), descriptor, transport),
+    }
+    event = {
+        'type': 'async_delegation', 'delegation_id': 'relay-reconnect-completion',
+        'session_key': metadata['gateway_session_key'],
+        'parent_session_id': '',
+        'dispatched_at': 1.0, 'status': 'completed', 'summary': 'completed result',
+    }
+    ad._persist_dispatch(event)
+    ad._persist_completion(event, {'status': 'completed', 'summary': event['summary']})
+
+    async def refuse_disconnected(*_args, **_kwargs):
+        raise WakeNotAccepted('permission_denied')
+
+    monkeypatch.setattr(runner, '_inject_watch_notification', refuse_disconnected)
+    try:
+        assert await runner._completion_delivery_ready(event) is False
+        for _ in range(3):
+            assert await runner._deliver_completion_notification('completed result', event) is False
+            row = ad.get_durable_delegation(event['delegation_id'])
+            assert row is not None
+            assert (row['delivery_state'], row['delivery_attempts']) == ('pending', 0)
+            with sqlite3.connect(ad._db_path()) as conn:
+                assert conn.execute(
+                    'SELECT delivery_claim FROM async_delegations WHERE delegation_id=?',
+                    (event['delegation_id'],),
+                ).fetchone() == (None,)
+
+        transport._ws = MagicMock()
+        assert await runner._completion_delivery_ready(event) is True
+
+        async def accept_connected(*_args, **_kwargs):
+            return True
+
+        monkeypatch.setattr(runner, '_inject_watch_notification', accept_connected)
+        assert await runner._deliver_completion_notification('completed result', event) is True
+        row = ad.get_durable_delegation(event['delegation_id'])
+        assert row is not None
+        assert (row['delivery_state'], row['delivery_attempts']) == ('delivered', 1)
+
+        transport._ws = None
+        transport._auth_revoked = True
+        assert await runner._completion_delivery_ready(event) is True
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(('reason', 'expected', 'delivery_state', 'attempts'), [
     ('admission_conflict', False, 'pending', 1),
     ('runtime_draining', False, 'pending', 0),

@@ -1036,6 +1036,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
     async def _completion_delivery_ready(self, evt: dict) -> bool:
         """Unavailable owners/transports must not spend a durable delivery attempt."""
+        from gateway.relay.ws_transport import WebSocketRelayTransport
         from gateway.wake import adapter_supports_push
 
         parent_session_id = str(evt.get("parent_session_id") or "").strip()
@@ -1054,6 +1055,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if adapter is not None and adapter_supports_push(adapter):
                 return False
         if adapter is None:
+            return False
+        transport = getattr(adapter, '_transport', None)
+        if (isinstance(transport, WebSocketRelayTransport) and not transport.auth_revoked
+                and (transport._closing or transport._ws is None)):
             return False
         if not adapter_supports_push(adapter):
             ensure = getattr(adapter, "_ensure_session_db", None)
