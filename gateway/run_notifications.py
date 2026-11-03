@@ -911,13 +911,13 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 await admit_internal_event(adapter, synth_event)
             return True
         except WakeNotAccepted as exc:
-            # Durable callers refund the claim; ordinary watch callers requeue a refusal about the
-            # owner's state and drop one about the event, which no retry can admit.
-            final = str(exc) in _FINAL_WAKE_REFUSALS and not raise_not_accepted
-            (logger.error if final else logger.warning)(
-                "Watch notification %s for %s chat=%s: %s",
-                "refused, dropping it" if final else "not admitted",
-                platform_name, source.chat_id, exc)
+            # Durable callers log final refusals after settling; ordinary watch callers log here.
+            final = str(exc) in _FINAL_WAKE_REFUSALS
+            if not (final and raise_not_accepted):
+                (logger.error if final else logger.warning)(
+                    "Watch notification %s for %s chat=%s: %s",
+                    "refused, dropping it" if final else "not admitted",
+                    platform_name, source.chat_id, exc)
             if raise_not_accepted:
                 raise
             return None if final else False
@@ -1189,6 +1189,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         identity = self._completion_delivery_identity(evt)
         claim = self._CompletionClaim()
         accepted = identity_claimed = refused = False
+        final_refusal = False
         try:
             claim = await self._preflight_completion_delivery(evt)
             if not claim.proceed:
@@ -1218,14 +1219,19 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 with self._completion_delivery_lock:
                     self._mark_completions_delivered_locked((identity,))
             return True
-        except WakeNotAccepted:
+        except WakeNotAccepted as exc:
             refused = True
+            final_refusal = str(exc) in _FINAL_WAKE_REFUSALS
+            if final_refusal:
+                logger.error("Completion refused, dropping it: %s", exc)
+                return None
             return False
         finally:
             if identity_claimed and not accepted:
                 with self._completion_delivery_lock:
                     self._completion_deliveries_inflight.discard(identity)
-            operation = "complete" if accepted else "defer" if refused or claim.defer else "release"
+            operation = ("complete" if accepted else "drop" if final_refusal else
+                         "defer" if refused or claim.defer else "release")
             if claim.claim_id:
                 self._settle_durable_claim(operation, claim.delegation_id, claim.claim_id)
             for sibling, claim_id in sibling_claims:

@@ -8,6 +8,7 @@ Three invariants on the messaging-gateway surface, mirroring the TUI rules:
 3. /new interrupts the old conversation's in-flight async delegations.
 """
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -368,6 +369,67 @@ async def test_compression_uncertainty_keeps_durable_completion_retryable(
         assert row is not None and row["delivery_state"] == "delivered"
         assert await runner._deliver_completion_notification("completed result", event) is None
         assert resolved == ["tip"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('reason', 'expected', 'delivery_state', 'attempts'), [
+    ('admission_conflict', None, 'dropped', 1),
+    ('runtime_draining', False, 'pending', 0),
+])
+async def test_durable_completion_refusal_settles_by_refusal_kind(
+    tmp_path, monkeypatch, caplog, reason, expected, delivery_state, attempts,
+):
+    from gateway.run_notifications import GatewayNotificationsMixin
+    from gateway.wake import WakeNotAccepted
+    from tests.gateway.test_automation_notification_category import _native_owner
+    runner, authority, _adapter, _source, metadata = await _native_owner(
+        tmp_path, monkeypatch, f'human-{reason}',
+    )
+    event = {
+        'type': 'async_delegation', 'delegation_id': f'refused-{reason}',
+        'session_key': metadata['gateway_session_key'],
+        'parent_session_id': metadata['gateway_session_id'],
+        'dispatched_at': 1.0, 'status': 'completed', 'summary': 'completed result',
+    }
+    sibling = {**event, 'delegation_id': f'sibling-{reason}'}
+    ad._persist_dispatch(event)
+    ad._persist_completion(event, {'status': 'completed', 'summary': event['summary']})
+    ad._persist_dispatch(sibling)
+    ad._persist_completion(sibling, {'status': 'completed', 'summary': sibling['summary']})
+    primary_claim = 'test-primary-claim'
+    sibling_claim = 'test-sibling-claim'
+    assert ad.claim_completion_delivery(event['delegation_id'], primary_claim)
+    assert ad.claim_completion_delivery(sibling['delegation_id'], sibling_claim)
+
+    async def preflight(self, _evt):
+        return self._CompletionClaim(delegation_id=event['delegation_id'], claim_id=primary_claim)
+
+    monkeypatch.setattr(GatewayNotificationsMixin, '_preflight_completion_delivery', preflight)
+
+    async def refuse(*_args, **_kwargs):
+        raise WakeNotAccepted(reason)
+
+    monkeypatch.setattr(runner, '_inject_watch_notification', refuse)
+    try:
+        with caplog.at_level(logging.ERROR, logger='gateway.run'):
+            result = await runner._deliver_completion_notification(
+                'completed result', event, sibling_claims=[(sibling, sibling_claim)],
+            )
+        assert result is expected
+        primary_row = ad.get_durable_delegation(event['delegation_id'])
+        sibling_row = ad.get_durable_delegation(sibling['delegation_id'])
+        assert primary_row is not None and sibling_row is not None
+        assert (primary_row['delivery_state'], primary_row['delivery_attempts']) == (delivery_state, attempts)
+        expected_sibling = ('dropped', 1) if reason == 'admission_conflict' else ('pending', 0)
+        assert (sibling_row['delivery_state'], sibling_row['delivery_attempts']) == expected_sibling
+        assert not runner._completion_deliveries_inflight
+        completion_refusals = [record.getMessage() for record in caplog.records
+                               if record.getMessage().startswith('Completion refused, dropping it:')]
+        assert completion_refusals == (
+            ['Completion refused, dropping it: admission_conflict'] if expected is None else []
+        )
+    finally:
+        authority.db.close()
 
 
 def _build_delegate_chain(db, parent, case):
