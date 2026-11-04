@@ -92,6 +92,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
     add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
     add_column_if_missing(conn, "executions", "progress_at", "progress_at TEXT")
+    add_column_if_missing(conn, "executions", "fire_claim_by", "fire_claim_by TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_occurrence "
         "ON executions(job_id, scheduled_instant) WHERE status='completed'"
@@ -245,6 +246,18 @@ def set_execution_occurrence(execution_id: str, instant: Optional[str]) -> None:
         )
         if cur.rowcount != 1:
             raise RuntimeError("Cron occurrence could not be bound before dispatch")
+
+
+def set_execution_claim(execution_id: str, claim_token: str) -> bool:
+    """Record the store fire-claim token that owns this attempt; recovery restores only under it.
+    False when the row is not this process's claimed attempt (recovery then never restores it)."""
+    with _transaction() as conn:
+        cur = conn.execute(
+            "UPDATE executions SET fire_claim_by=? WHERE id=? AND status='claimed' "
+            "AND process_id=? AND pid=?",
+            (claim_token, execution_id, _PROCESS_ID, os.getpid()),
+        )
+        return cur.rowcount == 1
 
 
 def mark_execution_handoff_pending(execution_id: str) -> Optional[dict[str, Any]]:
@@ -520,11 +533,12 @@ def _settle_recovered_unknown(record: dict[str, Any]) -> None:
     execution_id, job_id = record["id"], record["job_id"]
     if record.get("started_at"):
         error = _UNKNOWN_STARTED
-    elif not record.get("scheduled_instant"):
+    elif not record.get("scheduled_instant") or not record.get("fire_claim_by"):
         error = _UNKNOWN_NOT_RESTORED
     else:
         try:
-            restored = restore_unstarted_occurrence(job_id, record["scheduled_instant"])
+            restored = restore_unstarted_occurrence(
+                job_id, record["scheduled_instant"], record["fire_claim_by"])
             error = _UNKNOWN_REDISPATCHED if restored else _UNKNOWN_NOT_RESTORED
         except Exception:
             logger.warning("Could not restore the occurrence of unknown cron execution %s",

@@ -39,6 +39,17 @@ S.enter_cron_execution = lambda *a, **k: os._exit(75)
 S.tick(verbose=False, sync=True)
 """
 
+# Dies right after a provider (webhook) fire claimed the job and created its row.
+_DIE_AFTER_PROVIDER_CLAIM = """
+import os, sys
+sys.path.insert(0, sys.argv[1])
+from cron.jobs import load_jobs
+from cron.scheduler_provider import InProcessCronScheduler
+job_id = load_jobs()[0]["id"]
+assert InProcessCronScheduler().claim_fire(job_id) is not None
+os._exit(75)
+"""
+
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
@@ -183,12 +194,12 @@ def _dead_pid() -> int:
     return int(proc.stdout.strip())
 
 
-def _orphan(E, job_id, *, scheduled_instant=None) -> str:
+def _orphan(E, job_id, *, scheduled_instant=None, claim_token=None) -> str:
     """A claimed, never-started row whose owner process is provably gone."""
     row = E.create_execution(job_id, source="builtin", scheduled_instant=scheduled_instant)
     with E._transaction() as conn:
-        conn.execute("UPDATE executions SET process_id='dead-owner', pid=?, process_started_at=NULL "
-                     "WHERE id=?", (_dead_pid(), row["id"]))
+        conn.execute("UPDATE executions SET process_id='dead-owner', pid=?, process_started_at=NULL, "
+                     "fire_claim_by=? WHERE id=?", (_dead_pid(), claim_token, row["id"]))
     return row["id"]
 
 
@@ -200,7 +211,7 @@ def test_restore_failure_still_opens_incident(env, monkeypatch):
         raise OSError("jobs store unwritable")
 
     monkeypatch.setattr(J, "restore_unstarted_occurrence", boom)
-    lost = _orphan(E, job_id, scheduled_instant=env["slot"])
+    lost = _orphan(E, job_id, scheduled_instant=env["slot"], claim_token="dead-owner-token")
     assert E.recover_interrupted_executions() == 1
     assert E.get_execution(lost)["status"] == "unknown"
 
@@ -288,3 +299,69 @@ def test_payload_only_edit_keeps_the_restore_and_runs_the_edited_job(env, monkey
     S.tick(verbose=False, sync=True)
     assert env["fires"]() == 1
     assert J.get_job(job_id)["name"] == "renamed"
+
+
+def test_restored_one_minute_retry_dying_again_restores_the_same_occurrence(env, monkeypatch):
+    """The retry consumes the restored pending_slot before its claim; the claim must still bind
+    the occurrence the tick dispatches, so a second pre-start death is restorable too."""
+    S, J, E = env["S"], env["J"], env["E"]
+    job_id = env["job_id"]
+    _rewrite_job(J, job_id, schedule=J.parse_schedule("every 1m"))
+
+    env["die"](_DIE_BEFORE_START)
+    first = E.latest_execution(job_id)
+    env["die"](_DIE_BEFORE_START)  # recovers + restores the first, then the retry dies too
+    retry = E.latest_execution(job_id)
+    assert retry["id"] != first["id"] and retry["started_at"] is None
+    assert retry["scheduled_instant"] == first["scheduled_instant"]
+
+    _restart(S, monkeypatch)
+    S.tick(verbose=False, sync=True)
+    assert E.get_execution(retry["id"])["status"] == "unknown"
+    assert env["fires"]() == 1, "the twice-lost occurrence must still run exactly once"
+    assert E.latest_execution(job_id)["scheduled_instant"] == first["scheduled_instant"]
+
+
+def test_same_instant_replacement_claim_is_not_restored_over(env):
+    """A replacement claim for the same instant, taken after the owner died but before
+    recovery, belongs to another execution: recovery must leave it and its count alone."""
+    J, E = env["J"], env["E"]
+    job_id = env["job_id"]
+    slot = env["slot"]
+    _rewrite_job(J, job_id, schedule={"kind": "once", "run_at": slot, "display": "once"},
+                 next_run_at=slot, repeat={"times": 1, "completed": 0})
+
+    env["die"](_DIE_BEFORE_START)
+    lost = E.latest_execution(job_id)
+    assert lost["started_at"] is None
+    assert J.claim_job_for_fire(job_id, claim_ttl_seconds=0) is True
+    replacement = J.get_job(job_id)["fire_claim"]
+    _rewrite_job(J, job_id, fire_claim=dict(replacement, dispatch_counted=True))  # passed claim_dispatch
+    before = J.get_job(job_id)
+    assert before["fire_claim"]["scheduled_at"] == lost["scheduled_instant"]
+
+    assert E.recover_interrupted_executions() == 1
+    after = J.get_job(job_id)
+    assert after["fire_claim"] == before["fire_claim"], "the replacement claim must survive"
+    assert after["repeat"] == before["repeat"], "its dispatch count must be unchanged"
+    assert after.get("run_claim") == before.get("run_claim")
+    incidents = _incidents_for(job_id)
+    assert len(incidents) == 1 and "not restorable" in incidents[0]["error"]
+
+
+def test_provider_fire_dying_before_start_is_restored(env, monkeypatch):
+    """The provider claim path records the claim token on its row, so recovery can fence on it."""
+    S, J, E = env["S"], env["J"], env["E"]
+    job_id = env["job_id"]
+
+    env["die"](_DIE_AFTER_PROVIDER_CLAIM)
+    lost = E.latest_execution(job_id)
+    assert lost["started_at"] is None
+    assert lost["fire_claim_by"] == J.get_job(job_id)["fire_claim"]["by"]
+
+    _restart(S, monkeypatch)
+    S.tick(verbose=False, sync=True)
+    assert E.get_execution(lost["id"])["status"] == "unknown"
+    assert env["fires"]() == 1, "the provider's never-started occurrence must run once"
+    incidents = _incidents_for(job_id)
+    assert len(incidents) == 1 and "was re-dispatched" in incidents[0]["error"]

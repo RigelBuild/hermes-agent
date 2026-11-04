@@ -436,9 +436,10 @@ What recovery does next depends on whether the attempt had started:
   claimed: the next tick fires it under the usual late / catch-up rules, and the
   new attempt keeps the original scheduled instant. A one-shot fires once on
   the next tick, even if its grace window has passed in the meantime. This
-  happens only while the job's fire claim still owns that occurrence. If the
-  job's schedule, next run time or enabled/paused state was changed since
-  (edit of the schedule, pause, resume, run-now), or it was claimed again, the
+  happens only while the job's fire claim is still the lost attempt's own claim
+  for that occurrence (the attempt records its claim token). If the job's
+  schedule, next run time or enabled/paused state was changed since (edit of
+  the schedule, pause, resume, run-now), or another fire claimed it, the
   old slot is not restored. An edit to only the prompt, script or delivery
   target does not cancel it: the restored run uses the edited job.
 
