@@ -2605,6 +2605,10 @@ def claim_dispatch(job_id: str) -> bool:
             return False
         # Claim this dispatch before the side effect runs.
         repeat["completed"] = completed + 1
+        claim = job.get("fire_claim")
+        if isinstance(claim, dict):
+            # Lets recovery undo exactly this count if the attempt never starts.
+            claim["dispatch_counted"] = True
         save_jobs(jobs)
         logger.debug("Job '%s': claimed dispatch %d/%d", label, repeat["completed"], times)
         return True
@@ -2772,11 +2776,11 @@ def claim_job_for_fire(
         # Per-acquisition token: a process may legitimately reclaim its own stale lease, and the
         # previous runner must not heartbeat the new claim merely because hostname + PID match.
         job["fire_claim"] = {"at": now.isoformat(), "by": f"{_machine_id()}:{uuid.uuid4().hex}"}
-        # The occurrence this claim owns (the due instant, else the tick's pending slot); an
-        # explicit rewrite drops it, so recovery never restores a superseded slot.
+        # The occurrence this claim owns: the tick's pending slot first (at one-minute cadence the
+        # advanced next_run_at is already within the skew), else the due instant.
         pending = job.get("pending_slot")
-        owned = instant or (None if manual_fire or not isinstance(pending, dict)
-                            else scheduled_instant(pending.get("scheduled_at")))
+        owned = (scheduled_instant(pending.get("scheduled_at"))
+                 if isinstance(pending, dict) and not manual_fire else None) or instant
         if owned:
             job["fire_claim"]["scheduled_at"] = owned
         # Claimed: the occurrence is now owned by a run (its ledger row + fire claim carry it).
@@ -3230,24 +3234,33 @@ def drop_claimed_occurrence(job: dict[str, Any]) -> None:
 
 
 def restore_unstarted_occurrence(job_id: str, instant: str) -> bool:
-    """Re-stamp a recurring occurrence whose dead owner claimed but never started it as an unclaimed
-    ``pending_slot``, so the next due scan restores it via ``_restore_unclaimed_slot``. Returns
-    whether it was stamped: only while the job's fire claim still owns exactly this occurrence
-    (no rewrite or newer claim since), and never over another pending slot."""
+    """Put an occurrence whose dead owner claimed but never started it back on the schedule, only
+    while the job's fire claim still owns exactly this occurrence (no rewrite or newer claim since).
+    Recurring: re-stamp it as an unclaimed ``pending_slot`` for ``_restore_unclaimed_slot``.
+    One-shot: release the stale claims and undo its dispatch count so it fires once."""
     from cron.occurrences import pending_slot_stamp, scheduled_instant
 
     def apply(jobs, _i, job):
-        if job.get("schedule", {}).get("kind") not in {"cron", "interval"} or job.get("pending_slot"):
-            return False
+        kind = job.get("schedule", {}).get("kind")
         claim = job.get("fire_claim")
         owned = claim.get("scheduled_at") if isinstance(claim, dict) else None
-        if owned is None or owned != scheduled_instant(instant):
+        if owned is None or owned != scheduled_instant(instant) or job.get("pending_slot"):
             return False
-        now = _hermes_now()
-        # Store in the scheduler's zone: a UTC string would trip the timezone-shift repair and skip.
-        slot = datetime.fromisoformat(instant).astimezone(now.tzinfo).isoformat()
-        job["pending_slot"] = pending_slot_stamp(slot, now)
-        drop_claimed_occurrence(job)
+        if kind == "once":
+            if claim.get("dispatch_counted"):
+                repeat = job.get("repeat") or {}
+                repeat["completed"] = max(0, int(repeat.get("completed") or 0) - 1)
+            job["fire_claim"] = None
+            # The outage marker lets the never-started run through the expired-one-shot guard.
+            job["run_claim"] = {"outage": True}
+        elif kind in {"cron", "interval"}:
+            now = _hermes_now()
+            # Store in the scheduler's zone: a UTC string would trip the timezone-shift repair.
+            slot = datetime.fromisoformat(instant).astimezone(now.tzinfo).isoformat()
+            job["pending_slot"] = pending_slot_stamp(slot, now)
+            drop_claimed_occurrence(job)
+        else:
+            return False
         save_jobs(jobs)
         return True
 

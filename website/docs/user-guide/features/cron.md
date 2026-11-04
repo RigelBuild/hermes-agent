@@ -431,12 +431,16 @@ What recovery does next depends on whether the attempt had started:
 - **Started** (`started_at` is set): the attempt stays an audit record and is
   never rerun automatically, because its side effects may already have happened.
 - **Never started** (claimed, then the owner died before the run began): its
-  scheduled occurrence goes back on the schedule once, exactly like an
-  occurrence the scheduler advanced past but never claimed. The next tick fires
-  it under the usual late / catch-up rules, and the new attempt keeps the
-  original scheduled instant. This happens only while the job's fire claim
-  still owns that occurrence. If the job was edited, paused, resumed, run
-  manually or claimed again since, the old slot is not restored.
+  scheduled occurrence goes back on the schedule once. A recurring job's slot
+  is restored exactly like an occurrence the scheduler advanced past but never
+  claimed: the next tick fires it under the usual late / catch-up rules, and the
+  new attempt keeps the original scheduled instant. A one-shot fires once on
+  the next tick, even if its grace window has passed in the meantime. This
+  happens only while the job's fire claim still owns that occurrence. If the
+  job's schedule, next run time or enabled/paused state was changed since
+  (edit of the schedule, pause, resume, run-now), or it was claimed again, the
+  old slot is not restored. An edit to only the prompt, script or delivery
+  target does not cancel it: the restored run uses the edited job.
 
 Each such `unknown` attempt also opens or refreshes a [failure
 incident](#failure-incidents-alert-once-remind-on-a-cooldown-acknowledge) with a fixed message per outcome: started and not

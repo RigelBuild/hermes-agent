@@ -222,3 +222,69 @@ def test_same_category_unknowns_share_one_incident(env):
     incidents = _incidents_for(job_id)
     assert len(incidents) == 1, "the same loss category must dedupe into one incident"
     assert "not restorable" in incidents[0]["error"]
+
+
+def _rewrite_job(J, job_id, **fields):
+    stored = J.load_jobs()
+    next(r for r in stored if r["id"] == job_id).update(fields)
+    J.save_jobs(stored)
+
+
+def test_one_minute_job_restores_the_due_occurrence_not_the_next(env, monkeypatch):
+    """At one-minute cadence the advanced next_run_at is within the claim skew of now."""
+    S, J, E = env["S"], env["J"], env["E"]
+    job_id = env["job_id"]
+    _rewrite_job(J, job_id, schedule=J.parse_schedule("every 1m"))
+
+    env["die"](_DIE_BEFORE_START)
+    lost = E.latest_execution(job_id)
+    assert lost["started_at"] is None
+    from cron.occurrences import scheduled_instant
+    assert lost["scheduled_instant"] == scheduled_instant(env["slot"])
+
+    _restart(S, monkeypatch)
+    S.tick(verbose=False, sync=True)
+    assert env["fires"]() == 1, "the due one-minute occurrence must be restored and run once"
+    incidents = _incidents_for(job_id)
+    assert len(incidents) == 1 and "was re-dispatched" in incidents[0]["error"]
+
+
+@pytest.mark.parametrize("restart_after_grace", [False, True])
+def test_never_started_oneshot_runs_once_after_restart(env, monkeypatch, restart_after_grace):
+    S, J, E = env["S"], env["J"], env["E"]
+    job_id = env["job_id"]
+    slot = env["slot"]
+    _rewrite_job(J, job_id, schedule={"kind": "once", "run_at": slot, "display": "once"},
+                 next_run_at=slot, repeat={"times": 1, "completed": 0})
+
+    env["die"](_DIE_BEFORE_START)
+    lost = E.latest_execution(job_id)
+    assert lost["started_at"] is None
+
+    if restart_after_grace:
+        real_now = J._hermes_now
+        monkeypatch.setattr(J, "_hermes_now", lambda: real_now() + timedelta(minutes=10))
+    _restart(S, monkeypatch)
+    S.tick(verbose=False, sync=True)
+    assert E.get_execution(lost["id"])["status"] == "unknown"
+    assert env["fires"]() == 1, "a claimed-but-never-started one-shot must run once"
+    incidents = _incidents_for(job_id)
+    assert len(incidents) == 1 and "was re-dispatched" in incidents[0]["error"]
+
+    _restart(S, monkeypatch)
+    S.tick(verbose=False, sync=True)
+    assert env["fires"]() == 1, "and never twice"
+
+
+def test_payload_only_edit_keeps_the_restore_and_runs_the_edited_job(env, monkeypatch):
+    """Only schedule/lifecycle rewrites cancel the restore; a payload edit runs on the slot."""
+    S, J = env["S"], env["J"]
+    job_id = env["job_id"]
+
+    env["die"](_DIE_BEFORE_START)
+    J.update_job(job_id, {"name": "renamed"})
+
+    _restart(S, monkeypatch)
+    S.tick(verbose=False, sync=True)
+    assert env["fires"]() == 1
+    assert J.get_job(job_id)["name"] == "renamed"
