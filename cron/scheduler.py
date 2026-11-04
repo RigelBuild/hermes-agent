@@ -3424,6 +3424,7 @@ def _run_one_job_body(
             from cron.executions import give_up_execution
             from cron.scheduler_authority import pause_for_unknown
             pause_for_unknown(job["id"], execution_id, str(e))
+            # Records the unknown row and its incident via the shared settlement; never re-run.
             give_up_execution(execution_id, reason=str(e))
             logger.error("Cron %s paused with unverified admission: %s", job["id"], e)
             return False

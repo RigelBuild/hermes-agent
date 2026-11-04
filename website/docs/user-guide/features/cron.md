@@ -446,9 +446,14 @@ What recovery does next depends on whether the attempt had started:
 Each such `unknown` attempt also opens or refreshes a [failure
 incident](#failure-incidents-alert-once-remind-on-a-cooldown-acknowledge) with a fixed message per outcome: started and not
 rerun, never started and re-dispatched, never started and not restorable, or
-never started and the restore failed. Repeats of the same outcome group into
-one incident. The execution ID is in the scheduler log line. A later
-successful run resolves the incident as usual.
+never started and the restore failed. An attempt the scheduler gave up on
+because its admission could not be verified (the job is paused) opens one too,
+and is never rerun. Repeats of the same outcome group into one incident. The
+execution ID is in the scheduler log line. A later successful run resolves the
+incident as usual. If the scheduler dies part-way through this recovery, the
+next sweep finishes it. Only one process settles a given attempt at a time, and
+replaying a settlement never restores the occurrence twice or reopens an
+incident that a later successful run already resolved.
 
 Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
 `history`). Terminal history is bounded; active attempts are never pruned. The

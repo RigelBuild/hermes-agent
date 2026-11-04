@@ -25,6 +25,10 @@ def test_given_up_fire_leaves_its_attempt_recoverable_not_running(tmp_path, monk
         assert jobs.get_job(job['id'])['state'] == 'paused'
         given_up = executions.get_execution(fire)
         assert given_up['status'] == 'unknown' and 'owner lost' in given_up['error']
+        from cron.incidents import list_incidents
+        incidents = [i for i in list_incidents() if i['job_id'] == job['id']]
+        assert len(incidents) == 1, 'a given-up attempt must open an incident'
+        assert 'not re-run' in incidents[0]['error']
 
         class Peer:
             async def rpc(self, method, **params):

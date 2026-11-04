@@ -2733,15 +2733,17 @@ def claim_job_for_fire(
     ``claim_ttl_seconds`` exists (the TTL lets another fire reclaim after a crash; mark_job_run
     clears the claim). Otherwise stamp ``fire_claim`` and, for recurring jobs, advance
     ``next_run_at`` so a stale re-delivery cannot re-fire. ``scheduled_at`` is the occurrence the
-    caller's ledger row dispatches (the claim then owns exactly it); ``execution_id`` records the
-    claim token on that row first, so restart recovery can fence on the owning claim."""
+    caller's ledger row dispatches (the claim then owns exactly it); ``execution_id`` binds the
+    claim token and occurrence onto that row BEFORE the claim is saved, so a crash in between
+    leaves a restorable row, never a store claim with an unbound one."""
     token = f"{_machine_id()}:{uuid.uuid4().hex}"
-    if execution_id:
-        from cron.executions import set_execution_claim
+
+    def bind_row(owned: Optional[str]) -> None:
+        from cron.executions import bind_execution_claim
 
         # Best-effort: an unbound row is only ever refused restore, never wrongly restored.
         try:
-            if not set_execution_claim(execution_id, token):
+            if not bind_execution_claim(execution_id, token, owned):
                 logger.warning("Cron execution %s is not a claimed attempt of this process; its "
                                "fire claim was not recorded", execution_id)
         except Exception:
@@ -2796,6 +2798,8 @@ def claim_job_for_fire(
         owned = None if manual_fire else (scheduled_instant(scheduled_at) if scheduled_at else instant)
         if owned:
             job["fire_claim"]["scheduled_at"] = owned
+        if execution_id:
+            bind_row(owned)
         # Claimed: the occurrence is now owned by a run (its ledger row + fire claim carry it).
         job.pop("pending_slot", None)
         if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
@@ -3246,15 +3250,20 @@ def drop_claimed_occurrence(job: dict[str, Any]) -> None:
         job["fire_claim"] = {k: v for k, v in claim.items() if k != "scheduled_at"}
 
 
-def restore_unstarted_occurrence(job_id: str, instant: str, claim_token: str) -> bool:
+def restore_unstarted_occurrence(
+    job_id: str, instant: str, claim_token: str, execution_id: Optional[str] = None,
+) -> bool:
     """Put an occurrence whose dead owner claimed but never started it back on the schedule, only
     while the job's fire claim is still that owner's claim (``claim_token``) for exactly this
     occurrence: no rewrite, replacement or newer claim since.
     Recurring: re-stamp it as an unclaimed ``pending_slot`` for ``_restore_unclaimed_slot``.
-    One-shot: release the stale claims and undo its dispatch count so it fires once."""
+    One-shot: release the stale claims and undo its dispatch count so it fires once.
+    The save records ``restored_by=execution_id``; a retry for that execution returns True."""
     from cron.occurrences import pending_slot_stamp, scheduled_instant
 
     def apply(jobs, _i, job):
+        if execution_id and job.get("restored_by") == execution_id:
+            return True  # an earlier settlement of this execution already restored it
         kind = job.get("schedule", {}).get("kind")
         claim = job.get("fire_claim")
         if not isinstance(claim, dict) or claim.get("by") != claim_token:
@@ -3277,6 +3286,8 @@ def restore_unstarted_occurrence(job_id: str, instant: str, claim_token: str) ->
             drop_claimed_occurrence(job)
         else:
             return False
+        if execution_id:
+            job["restored_by"] = execution_id
         save_jobs(jobs)
         return True
 

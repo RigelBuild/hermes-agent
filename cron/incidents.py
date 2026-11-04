@@ -155,13 +155,15 @@ def _classify_failure_type(error: str) -> str:
 
 def upsert_incident(
     job_id: str, error: str, *, job_name: Optional[str] = None, failure_type: Optional[str] = None,
-    output_file: Optional[str] = None,
+    output_file: Optional[str] = None, settles: Optional[tuple[str, str]] = None,
 ) -> tuple[str, bool]:
     """Record (or refresh) the incident for ``job_id`` + ``error``; returns ``(incident_id,
     is_new)``. An existing row for the signature refreshes
     ``last_seen_at``/``error``/``output_file`` and keeps its state — a ``closed`` incident stays
     closed, while a ``resolved`` one (job recovered, then broke the same way again) re-opens as
-    ``detected`` so the operator is alerted once more. A changed error text mints a new incident."""
+    ``detected`` so the operator is alerted once more. A changed error text mints a new incident.
+    ``settles=(execution_id, lease)`` applies the incident only while that execution's recovery
+    lease is held, clearing it in the same commit, so a replayed settlement never re-applies."""
     job_id = str(job_id or "")
     sig = _error_signature(job_id, error)
     stored_error = _redact_error(error)
@@ -171,6 +173,12 @@ def upsert_incident(
     output_file = str(output_file) if output_file is not None else None
 
     with _transaction() as conn:
+        if settles is not None:
+            cur = conn.execute(
+                "UPDATE executions SET recovery_pending=NULL WHERE id=? AND recovery_pending=?",
+                settles)
+            if cur.rowcount != 1:
+                return incident_id, False  # already settled by an earlier commit
         row = conn.execute(
             "SELECT id, state FROM cron_incidents WHERE id=?", (incident_id,)
         ).fetchone()
