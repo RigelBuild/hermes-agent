@@ -342,7 +342,9 @@ def test_fire_due_default_claims_then_runs(monkeypatch):
     )
 
     assert InProcessCronScheduler().fire_due("j1") is True
-    assert claims == [("j1", {"return_job": True})]
+    assert [(jid, {k: v for k, v in kw.items() if k != "execution_id"}) for jid, kw in claims] == [
+        ("j1", {"return_job": True})]
+    assert claims[0][1]["execution_id"], "the claim records its token on the ledger row"
     assert ran == [("j1", "exact-owner")]
 
 
@@ -396,11 +398,14 @@ def test_fire_due_forwards_manual_force_to_store_claim(monkeypatch):
     monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: True)
 
     assert InProcessCronScheduler().fire_due("j1", force=True) is True
-    assert claims == [("j1", {"force": True, "return_job": True})]
+    assert claims[-1][0] == "j1" and claims[-1][1]["execution_id"]
+    assert {k: v for k, v in claims[-1][1].items() if k != "execution_id"} == {
+        "force": True, "return_job": True}
     # An off-tick run-now forwards ``manual`` so the claim does not stamp the next occurrence;
     # the default (webhook / misfire) fire keeps the occurrence stamp.
     assert InProcessCronScheduler().fire_due("j1", manual=True) is True
-    assert claims[-1] == ("j1", {"manual": True, "return_job": True})
+    assert {k: v for k, v in claims[-1][1].items() if k != "execution_id"} == {
+        "manual": True, "return_job": True}
 
 
 def test_fire_due_lost_claim_does_not_run(monkeypatch):

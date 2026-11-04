@@ -7,6 +7,7 @@ to match the claim-time fingerprint is not proof of death. Terminal states are i
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import os
@@ -92,6 +93,9 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
     add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
     add_column_if_missing(conn, "executions", "progress_at", "progress_at TEXT")
+    add_column_if_missing(conn, "executions", "fire_claim_by", "fire_claim_by TEXT")
+    # Unfinished settlement of an unknown row: 'restore' still to try, else the decided outcome.
+    add_column_if_missing(conn, "executions", "recovery_pending", "recovery_pending TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_occurrence "
         "ON executions(job_id, scheduled_instant) WHERE status='completed'"
@@ -233,18 +237,19 @@ def create_execution(
     return record  # type: ignore[return-value]
 
 
-def set_execution_occurrence(execution_id: str, instant: Optional[str]) -> None:
-    """Bind the store-claimed snapshot before a provider hands it to a worker."""
+def bind_execution_claim(execution_id: str, claim_token: str, instant: Optional[str]) -> bool:
+    """Record the fire-claim token (and the occurrence, when given) that owns this attempt, before
+    the job-store claim is saved; recovery restores only under it. False when the row is not this
+    process's claimed attempt (recovery then never restores it)."""
     from cron.occurrences import scheduled_instant
 
     with _transaction() as conn:
         cur = conn.execute(
-            "UPDATE executions SET scheduled_instant=? WHERE id=? AND status='claimed' "
-            "AND handoff_pending=0 AND process_id=? AND pid=?",
-            (scheduled_instant(instant), execution_id, _PROCESS_ID, os.getpid()),
+            "UPDATE executions SET fire_claim_by=?, scheduled_instant=COALESCE(?, scheduled_instant) "
+            "WHERE id=? AND status='claimed' AND handoff_pending=0 AND process_id=? AND pid=?",
+            (claim_token, scheduled_instant(instant), execution_id, _PROCESS_ID, os.getpid()),
         )
-        if cur.rowcount != 1:
-            raise RuntimeError("Cron occurrence could not be bound before dispatch")
+        return cur.rowcount == 1
 
 
 def mark_execution_handoff_pending(execution_id: str) -> Optional[dict[str, Any]]:
@@ -477,7 +482,7 @@ def recover_interrupted_executions() -> int:
             # owner may have stamped progress since, so act only on the snapshot that was judged.
             cur = conn.execute(
                 """UPDATE executions
-                   SET status='unknown', finished_at=?, error=?,
+                   SET status='unknown', finished_at=?, error=?, recovery_pending='restore',
                        handoff_pending=0, handoff_started_at=NULL
                    WHERE id=? AND status=? AND process_id=? AND pid=?
                      AND handoff_pending=?
@@ -494,9 +499,140 @@ def recover_interrupted_executions() -> int:
                     recovered.append(record)
         if changed:
             _prune_unlocked(conn)
+        fresh = {r["id"] for r in recovered}
+        # Unknown rows whose settlement an earlier sweep did not finish (it crashed or was killed).
+        recovered.extend(dict(r) for r in conn.execute(
+            "SELECT * FROM executions WHERE status='unknown' AND recovery_pending IS NOT NULL"
+        ).fetchall() if r["id"] not in fresh)
     for record in recovered:
-        _emit_execution_state(record)
+        if record["id"] in fresh:
+            _emit_execution_state(record)
+        _settle_recovered_unknown(record)
     return changed
+
+
+# Stable per-outcome incident text, keyed by the persisted ``recovery_pending`` outcome.
+_UNKNOWN_OUTCOMES = {
+    "started": ("A cron execution had started before its owner was lost; whether side effects "
+                "ran is unknown, so it was not re-run."),
+    "redispatched": ("A cron execution never started before its owner was lost; its occurrence "
+                     "was re-dispatched."),
+    "not_restored": ("A cron execution never started before its owner was lost; its occurrence "
+                     "was not restorable (no bound slot, or the job was rewritten or re-claimed "
+                     "since), so it was not re-dispatched."),
+    "restore_failed": ("A cron execution never started before its owner was lost; restoring its "
+                       "occurrence failed, so it was not re-dispatched."),
+    "given_up": ("A cron execution's admission could not be verified, so the job was paused; "
+                 "whether side effects ran is unknown, so it was not re-run."),
+}
+
+
+def _swap_recovery_pending(execution_id: str, expected: Optional[str], value: Optional[str]) -> bool:
+    """Compare-and-set the settlement marker; False when another settler changed it first."""
+    with _transaction() as conn:
+        cur = conn.execute(
+            "UPDATE executions SET recovery_pending=? WHERE id=? AND status='unknown' "
+            "AND recovery_pending IS ?", (value, execution_id, expected))
+        return cur.rowcount == 1
+
+
+# A lease whose holder can't be fingerprinted (no start time) is taken over only after this age.
+_UNFINGERPRINTED_LEASE_MAX_AGE_SECONDS = 600
+
+
+def _settling_lease(outcome: str) -> str:
+    pid = os.getpid()
+    return (f"settling:{_PROCESS_ID}:{pid}:{_process_start_time(pid)}:{int(time.time())}:"
+            f"{outcome}")
+
+
+def _lease_outcome(lease: str) -> str:
+    return lease.split(":", 5)[5]
+
+
+def _settling_lease_is_held(process_id: str, pid: int, started: Optional[int],
+                            leased_at: int) -> bool:
+    """Whether a settlement lease's holder may still be settling; only proof of death or a
+    bounded age for an unfingerprinted holder releases it."""
+    if process_id == _PROCESS_ID:
+        return True  # another thread of this process is settling it
+    if pid == os.getpid():
+        return False  # our pid, another process: the holder exited and the pid was reused
+    try:
+        from gateway.status import _pid_exists
+        if not _pid_exists(pid):
+            return False
+    except Exception:
+        pass  # cannot prove death: fall through to the fingerprint or the age bound
+    if started is not None:
+        return _owner_is_live(pid, started)
+    return time.time() - leased_at < _UNFINGERPRINTED_LEASE_MAX_AGE_SECONDS
+
+
+def _unleased_outcome(marker: str) -> Optional[str]:
+    """The outcome a settlement marker carries, or None while a live settler holds its lease."""
+    if not marker.startswith("settling:"):
+        return marker
+    _, process_id, pid, started, leased_at, outcome = marker.split(":", 5)
+    try:
+        held = _settling_lease_is_held(process_id, int(pid),
+                                       None if started == "None" else int(started), int(leased_at))
+    except ValueError:
+        held = False  # unparseable lease: no holder can be identified
+    return None if held else outcome
+
+
+def _settle_recovered_unknown(record: dict[str, Any]) -> None:
+    """Open an incident for an ``unknown`` attempt, and put its occurrence back on the schedule
+    when the sweep found it never started; a started or given-up attempt is never re-run.
+    One settler at a time (a CAS lease on ``recovery_pending``), and resumable: the restore is
+    idempotent per execution, and the incident upsert clears the marker in the same commit."""
+    from cron.incidents import upsert_incident
+    from cron.jobs import restore_unstarted_occurrence
+
+    execution_id, job_id = record["id"], record["job_id"]
+    marker = record.get("recovery_pending") or "restore"
+    outcome = _unleased_outcome(marker)
+    if outcome is None:
+        return
+    lease = _settling_lease(outcome)
+    if not _swap_recovery_pending(execution_id, record.get("recovery_pending"), lease):
+        return  # another settler won the row
+    try:
+        if outcome == "restore":
+            if record.get("started_at"):
+                outcome = "started"
+            elif not record.get("scheduled_instant") or not record.get("fire_claim_by"):
+                outcome = "not_restored"
+            else:
+                try:
+                    restored = restore_unstarted_occurrence(
+                        job_id, record["scheduled_instant"], record["fire_claim_by"], execution_id)
+                    outcome = "redispatched" if restored else "not_restored"
+                except Exception:
+                    logger.warning("Could not restore the occurrence of unknown cron execution %s",
+                                   execution_id, exc_info=True)
+                    outcome = "restore_failed"
+            decided = _settling_lease(outcome)
+            if not _swap_recovery_pending(execution_id, lease, decided):
+                return
+            lease = decided
+        error = _UNKNOWN_OUTCOMES[outcome]
+        # The ID goes to the log; the incident text stays stable so repeats dedupe.
+        logger.warning("Cron execution %s of job %s marked unknown: %s", execution_id, job_id,
+                       error)
+        try:
+            upsert_incident(job_id, error, settles=(execution_id, lease))
+            return
+        except Exception:
+            logger.warning("Could not record an incident for unknown cron execution %s",
+                           execution_id, exc_info=True)
+        # A later sweep retries the incident.
+        _swap_recovery_pending(execution_id, lease, outcome)
+    except BaseException:
+        # Release the lease so this process's next sweep resumes; a killed one is taken over.
+        _swap_recovery_pending(execution_id, lease, _lease_outcome(lease))
+        raise
 
 
 def terminalize_dead_owner(execution_id: str, *, reason: str) -> bool:
@@ -563,7 +699,7 @@ def give_up_execution(execution_id: str, *, reason: str) -> bool:
     with _transaction() as conn:
         cur = conn.execute(
             """UPDATE executions SET status='unknown', finished_at=?, error=?,
-                   handoff_pending=0, handoff_started_at=NULL
+                   recovery_pending='given_up', handoff_pending=0, handoff_started_at=NULL
                WHERE id=? AND status IN ('claimed','running') AND process_id=? AND pid=?""",
             (now, reason, str(execution_id), _PROCESS_ID, os.getpid()))
         if cur.rowcount != 1:
@@ -571,6 +707,8 @@ def give_up_execution(execution_id: str, *, reason: str) -> bool:
         record = _fetch(conn, str(execution_id))
         _prune_unlocked(conn)
     _emit_execution_state(record)
+    if record is not None:
+        _settle_recovered_unknown(record)
     return True
 
 
