@@ -546,7 +546,14 @@ def test_staged_hint_names_the_pending_dir_on_headless_surfaces(hermes_home, mon
     assert "review with /memory pending" not in r["message"], r["message"]
     assert "pending records live in" in r["message"]
     monkeypatch.delenv("HERMES_SESSION_PLATFORM")
-    assert wa.pending_count("memory") == 3
+
+    # A Cotal peer chat cannot run gateway slash commands.
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "cotal")
+    r = _stage_one_memory_write()
+    assert "review with /memory pending" not in r["message"], r["message"]
+    assert "pending records live in" in r["message"]
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM")
+    assert wa.pending_count("memory") == 4
 
 
 def test_staged_hint_keeps_command_for_chat_gateway_platform(hermes_home, monkeypatch):

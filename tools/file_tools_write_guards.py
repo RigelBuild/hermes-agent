@@ -286,6 +286,11 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
     except Exception:
         return blocked.format(why=_APPROVAL_UNAVAILABLE)
 
+    # A mesh turn's notifier posts to the peer agent that started it; a peer can never approve.
+    from tools.approval_context import _is_peer_mesh_approval_context, _no_user_can_answer
+    if _is_peer_mesh_approval_context():
+        return blocked.format(why=_NO_HUMAN)
+
     # Gateway surface: block on the button round-trip when a notify callback
     # is registered for this session. One-operation only — no scope buttons.
     session_key = get_current_session_key()
@@ -322,7 +327,6 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
             return blocked.format(why=_NO_HUMAN)
         # -q (every kanban worker), cron and unattended platforms can have a callback registered that nobody
         # answers: fail closed now, and never auto-approve, whatever approvals.<context>_mode says.
-        from tools.approval_context import _no_user_can_answer
         if _no_user_can_answer():
             return blocked.format(why=_NO_HUMAN)
         # Same observer payload as the gateway branch (#131876), fired like the

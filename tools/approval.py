@@ -26,7 +26,7 @@ from agent.i18n import t
 from tools import approval_context
 from tools.approval_context import (
     _get_session_platform, _is_cron_approval_context,
-    _is_gateway_approval_context, _is_interactive_cli, _is_single_query_approval_context,
+    _is_gateway_approval_context, _is_interactive_cli, _is_peer_mesh_approval_context, _is_single_query_approval_context,
     _is_unattended_platform_approval_context, _resolve_cli_approval_callback, _should_fall_through_to_cli_approval,
     get_current_session_key,
 )
@@ -612,19 +612,24 @@ class _Unattended:
     clause: str     # "why nobody can approve" (lower-case sentence fragment)
     scope: str      # "in cron jobs" — completes "To allow ... {scope}"
     trust: str      # execute_code: "approve only if {trust}"
+    configurable: bool = True  # False: no config value can allow it, so never suggest one
 
     def mode(self) -> str:
         # Looked up on the defining module at call time so tests patching the getters keep working.
         return getattr(approval_context, f"_get_{self.name}_approval_mode")()
 
     def block_message(self, subject: str, *, noun: str, advice: str) -> str:
-        return (f"BLOCKED: {subject} but {self.clause}. {advice} To allow {noun} {self.scope}, set "
-                f"approvals.{self.cfg_key}: approve in config.yaml.")
+        message = f"BLOCKED: {subject} but {self.clause}. {advice}"
+        if not self.configurable:
+            return message
+        return f"{message} To allow {noun} {self.scope}, set approvals.{self.cfg_key}: approve in config.yaml."
 
     @property
     def exec_tail(self) -> str:
-        return (f"{self.clause[0].upper()}{self.clause[1:]}. Use normal tools "
-                f"instead, or set approvals.{self.cfg_key}: approve only if {self.trust}.")
+        clause = f"{self.clause[0].upper()}{self.clause[1:]}. Use normal tools instead"
+        if not self.configurable:
+            return f"{clause}."
+        return f"{clause}, or set approvals.{self.cfg_key}: approve only if {self.trust}."
 
 
 _SINGLE_QUERY_CTX = _Unattended(
@@ -647,6 +652,13 @@ def _unattended_contexts() -> list[_Unattended]:
         contexts.append(_SINGLE_QUERY_CTX)
     if _is_cron_approval_context():
         contexts.append(_CRON_CTX)
+    elif _is_peer_mesh_approval_context():
+        contexts.append(_Unattended(
+            "unattended", "unattended_mode",
+            f"this turn was started by a peer agent over {_get_session_platform()}, and a peer cannot approve; "
+            "ask the user on an attended channel",
+            "", "", configurable=False,
+        ))
     elif _is_unattended_platform_approval_context():
         contexts.append(_Unattended(
             "unattended", "unattended_mode",
@@ -958,7 +970,8 @@ def _presence(approval_callback=None) -> tuple:
     approval_callback = _resolve_cli_approval_callback(approval_callback)
     is_cli, is_gateway = _is_interactive_cli(), _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
-    if _is_single_query_approval_context() or _is_cron_approval_context():
+    if _is_single_query_approval_context() or _is_cron_approval_context() or _is_peer_mesh_approval_context():
+        # A peer-mesh turn has no approver on any surface, including a host CLI (`cli.py --gateway`).
         is_cli = is_gateway = is_ask = False
     elif is_ask and _is_unattended_platform_approval_context() \
             and (_gateway_notify_cb(get_current_session_key()) is None

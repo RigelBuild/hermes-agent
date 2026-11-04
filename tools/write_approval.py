@@ -184,7 +184,8 @@ def _slash_review_surface() -> bool:
     except Exception:
         pass
     platform = (_env("HERMES_SESSION_PLATFORM") or os.environ.get("HERMES_PLATFORM", "")).strip().lower()
-    return platform not in {"webhook", "msgraph_webhook", "api_server"}
+    # cotal: the peer chat cannot run gateway slash commands.
+    return platform not in {"webhook", "msgraph_webhook", "api_server", "cotal"}
 
 
 def _staged(subsystem: str) -> GateDecision:
