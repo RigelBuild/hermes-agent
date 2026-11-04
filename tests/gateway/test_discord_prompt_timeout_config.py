@@ -4,8 +4,7 @@ Previously hardcoded to 300s on ExecApprovalView, SlashConfirmView,
 UpdatePromptView, and ClarifyChoiceView. Now reads
 ``approvals.discord_prompt_timeout`` with the same 300s default, clamped to
 ``[_DISCORD_PROMPT_TIMEOUT_MIN, _DISCORD_PROMPT_TIMEOUT_MAX]`` so a typo
-can't make prompts disappear (too short) or outlive Discord's 15-min
-interaction-token expiry (too long).
+can't make prompts disappear (too short) or stay live for more than a day.
 """
 
 import sys
@@ -78,10 +77,12 @@ def test_value_clamped_to_minimum(monkeypatch):
     assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_MIN
 
 
-def test_values_past_fifteen_minutes_are_honoured_up_to_the_cap(monkeypatch):
-    """Bot-sent prompts outlive the 15-minute interaction token, so 20 minutes must stick."""
+def test_values_up_to_one_day_are_honoured_then_capped(monkeypatch):
+    """Bot-sent prompts outlive the 15-minute interaction token, so a day-long window must stick."""
     _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 1200}})
     assert _read_discord_prompt_timeout() == 1200
+    _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 86400}})
+    assert _read_discord_prompt_timeout() == 86400
     _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 10**6}})
     from plugins.platforms.discord.adapter_config_readers import _DISCORD_PROMPT_TIMEOUT_MAX
-    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_MAX == 3600
+    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_MAX == 86400
