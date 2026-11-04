@@ -172,7 +172,15 @@ def _is_cron_approval_context() -> bool:
 # Programmatic/unattended platforms: no human can answer a prompt and the adapter has no ``send_exec_approval`` /
 # ``/approve`` surface. Governed by ``approvals.unattended_mode`` (default deny), mirroring ``cron_mode`` — never an
 # interactive round-trip that blocks for the full timeout with nobody to answer.
-_UNATTENDED_APPROVAL_PLATFORMS = frozenset({"webhook", "msgraph_webhook", "api_server"})
+_UNATTENDED_APPROVAL_PLATFORMS = frozenset({"webhook", "msgraph_webhook", "api_server", "cotal"})
+# A mesh turn's chat is the peer agent that started it, and a peer can never approve: these platforms are
+# always deny, whatever approvals.unattended_mode says.
+_PEER_MESH_APPROVAL_PLATFORMS = frozenset({"cotal"})
+
+
+def _is_peer_mesh_approval_context() -> bool:
+    """True on a turn started by a peer agent over the mesh (no approver exists, ever)."""
+    return _get_session_platform() in _PEER_MESH_APPROVAL_PLATFORMS
 
 
 def _is_unattended_platform_approval_context() -> bool:
@@ -192,7 +200,7 @@ def _is_unattended_platform_approval_context() -> bool:
 # adapter renders no ``send_exec_approval``/``/approve`` surface and the inbound lane is a
 # fire-and-forget ``POST -> 202`` with no reader. Notifier presence is only a meaningful
 # "someone can answer" discriminator on api_server, whose turn paths choose whether to register one.
-_NOTIFIER_BLIND_APPROVAL_PLATFORMS = frozenset({"webhook", "msgraph_webhook"})
+_NOTIFIER_BLIND_APPROVAL_PLATFORMS = frozenset({"webhook", "msgraph_webhook", "cotal"})
 
 
 def _is_single_query_approval_context() -> bool:
@@ -367,7 +375,9 @@ def _get_single_query_approval_mode() -> str:
 def _get_unattended_approval_mode() -> str:
     """Approval mode for webhook / msgraph_webhook / api_server sessions; default
     deny — an unattended session never silently runs a flagged action unless the
-    operator explicitly trusts it."""
+    operator explicitly trusts it. Peer-mesh turns are always deny."""
+    if _is_peer_mesh_approval_context():
+        return "deny"
     return _binary_approval_mode("unattended_mode")
 
 
