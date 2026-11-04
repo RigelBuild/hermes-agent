@@ -55,3 +55,12 @@ def _read_discord_prompt_timeout() -> int:
     if seconds > _DISCORD_PROMPT_TIMEOUT_MAX:
         return _DISCORD_PROMPT_TIMEOUT_MAX
     return seconds
+
+
+def _read_discord_prompt_timeout_within(backing_seconds: float) -> int:
+    """Prompt timeout capped at the backing wait's lifetime, so a card never outlives the request
+    it answers. ``backing_seconds <= 0`` means the backing wait is unbounded."""
+    seconds = _read_discord_prompt_timeout()
+    if backing_seconds > 0:
+        return min(seconds, max(int(backing_seconds), _DISCORD_PROMPT_TIMEOUT_MIN))
+    return seconds

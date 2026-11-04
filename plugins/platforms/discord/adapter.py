@@ -1201,7 +1201,8 @@ class VoiceReceiver:
 
 
 from plugins.platforms.discord.adapter_config_readers import (
-    _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout, _read_dm_role_auth_guild)
+    _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout,
+    _read_discord_prompt_timeout_within, _read_dm_role_auth_guild)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -6407,6 +6408,7 @@ def _define_discord_view_classes() -> None:
                 embed.set_footer(text=footer)
             self._disable_all()
             await interaction.response.edit_message(embed=embed, view=self)
+            self.stop()
 
         def _localize_buttons(self, **keys_by_attr: str) -> None:
             """Relabel decorator-declared buttons from the catalog (decorators run at import, before
@@ -6525,7 +6527,8 @@ def _define_discord_view_classes() -> None:
         ``GatewayRunner._request_slash_confirm``); clicks call ``tools.slash_confirm.resolve(...)``."""
 
         def __init__(self, session_key: str, confirm_id: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
+            from tools.slash_confirm import DEFAULT_TIMEOUT_SECONDS
+            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout_within(DEFAULT_TIMEOUT_SECONDS))
             self.session_key = session_key
             self.confirm_id = confirm_id
             self._localize_buttons(
@@ -6573,7 +6576,8 @@ def _define_discord_view_classes() -> None:
         ``.update_response`` for the detached update process to pick up."""
 
         def __init__(self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
+            from hermes_cli.update_cmd import GATEWAY_PROMPT_TIMEOUT_S
+            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout_within(GATEWAY_PROMPT_TIMEOUT_S))
             self.session_key = session_key
             self._localize_buttons(yes_btn="platform.discord.prompt.affirm", no_btn="platform.discord.prompt.negate")
 
@@ -6848,7 +6852,8 @@ def _define_discord_view_classes() -> None:
         Single-use: after the first valid click all buttons disable."""
 
         def __init__(self, choices: list[str], clarify_id: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
+            from tools.clarify_gateway import get_clarify_timeout
+            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout_within(get_clarify_timeout()))
             self.choices = list(choices)[:24]
             self.clarify_id = clarify_id
             for index, choice in enumerate(self.choices):
@@ -6909,6 +6914,7 @@ def _define_discord_view_classes() -> None:
                     await interaction.response.defer()
                 except Exception:
                     pass
+            self.stop()
 
         async def _resolve_choice(self, interaction: discord.Interaction, index: int, choice: str) -> None:
             """Resolve the clarify with a chosen option."""

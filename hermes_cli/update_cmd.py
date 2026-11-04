@@ -376,7 +376,10 @@ def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]
 # because a name it pulls from a sibling module no longer exists.
 
 
-def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0) -> str:
+GATEWAY_PROMPT_TIMEOUT_S = 300.0
+
+
+def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = GATEWAY_PROMPT_TIMEOUT_S) -> str:
     """File-based IPC prompt for gateway mode.
 
     Writes a prompt marker file so the gateway can forward the question to the

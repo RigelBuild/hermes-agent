@@ -95,3 +95,24 @@ async def test_on_timeout_disables_and_greys_embed(name):
 async def test_on_timeout_without_message_is_safe():
     for view in _views().values():
         await view.on_timeout()
+
+
+def test_one_day_prompt_timeout_never_outlives_backing_waits(monkeypatch):
+    """Only exec approvals get the full day; other cards expire with the request they answer."""
+    import hermes_cli.config
+    cfg = {"approvals": {"discord_prompt_timeout": 86400}, "agent": {"clarify_timeout": 3600}}
+    monkeypatch.setattr(hermes_cli.config, "read_raw_config", lambda: cfg)
+    monkeypatch.setattr(hermes_cli.config, "load_config", lambda: cfg)
+    views = _views()
+    assert views["exec"].timeout == 86400
+    assert views["slash"].timeout == 300
+    assert views["update"].timeout == 300
+    assert views["clarify"].timeout == 3600
+
+
+@pytest.mark.asyncio
+async def test_resolved_exec_view_is_stopped():
+    view = ExecApprovalView(session_key="s", allowed_user_ids=set())
+    await view._finalize_embed(_interaction(), color=None, footer="done")
+    assert view.resolved is True
+    assert getattr(view, "stopped", False) is True
