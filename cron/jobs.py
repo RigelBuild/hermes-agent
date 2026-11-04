@@ -3214,6 +3214,25 @@ def _restore_unclaimed_slot(job: dict[str, Any], scan: _DueScan) -> Optional[str
     return slot
 
 
+def restore_unstarted_occurrence(job_id: str, instant: str) -> bool:
+    """Re-stamp a recurring occurrence whose dead owner claimed but never started it as an unclaimed
+    ``pending_slot``, so the next due scan restores it via ``_restore_unclaimed_slot``. Returns
+    whether it was stamped; never overwrites another pending slot."""
+    def apply(jobs, _i, job):
+        if job.get("schedule", {}).get("kind") not in {"cron", "interval"} or job.get("pending_slot"):
+            return False
+        from cron.occurrences import pending_slot_stamp
+
+        now = _hermes_now()
+        # Store in the scheduler's zone: a UTC string would trip the timezone-shift repair and skip.
+        slot = datetime.fromisoformat(instant).astimezone(now.tzinfo).isoformat()
+        job["pending_slot"] = pending_slot_stamp(slot, now)
+        save_jobs(jobs)
+        return True
+
+    return _with_job(job_id, apply, False)
+
+
 def _evaluate_due_job(job: dict[str, Any], scan: _DueScan, run_claim_ttl: float) -> bool:
     """Decide whether one enabled, non-terminal job fires this tick, persisting any repairs.
     Ordering matters: recover missing next_run_at, repair timezone shifts, re-arm stale-error

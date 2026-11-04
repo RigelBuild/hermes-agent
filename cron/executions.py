@@ -496,7 +496,31 @@ def recover_interrupted_executions() -> int:
             _prune_unlocked(conn)
     for record in recovered:
         _emit_execution_state(record)
+        _settle_recovered_unknown(record)
     return changed
+
+
+def _settle_recovered_unknown(record: dict[str, Any]) -> None:
+    """Open an incident for a swept ``unknown`` attempt, and put its occurrence back on the
+    schedule when it never started. A started attempt may have run side effects: never re-run."""
+    from cron.incidents import upsert_incident
+    from cron.jobs import restore_unstarted_occurrence
+
+    execution_id, job_id = record["id"], record["job_id"]
+    try:
+        if record.get("started_at"):
+            error = (f"Cron execution {execution_id} had started before its owner was lost; "
+                     "whether side effects ran is unknown, so it was not re-run.")
+        else:
+            instant = record.get("scheduled_instant")
+            redispatched = bool(instant) and restore_unstarted_occurrence(job_id, instant)
+            outcome = ("its occurrence was re-dispatched" if redispatched
+                       else "it had no restorable occurrence and was not re-dispatched")
+            error = (f"Cron execution {execution_id} never started before its owner was lost; "
+                     f"{outcome}.")
+        upsert_incident(job_id, error)
+    except Exception:
+        logger.warning("Could not settle unknown cron execution %s", execution_id, exc_info=True)
 
 
 def terminalize_dead_owner(execution_id: str, *, reason: str) -> bool:
