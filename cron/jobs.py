@@ -2116,6 +2116,7 @@ def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]
             # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
             # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.
             updated.pop("pending_slot", None)
+            drop_claimed_occurrence(updated)
         _fill_missing_next_run(updated)
         _reject_terminal_activation(job, updated, job_id)
         jobs[i] = updated
@@ -2771,6 +2772,13 @@ def claim_job_for_fire(
         # Per-acquisition token: a process may legitimately reclaim its own stale lease, and the
         # previous runner must not heartbeat the new claim merely because hostname + PID match.
         job["fire_claim"] = {"at": now.isoformat(), "by": f"{_machine_id()}:{uuid.uuid4().hex}"}
+        # The occurrence this claim owns (the due instant, else the tick's pending slot); an
+        # explicit rewrite drops it, so recovery never restores a superseded slot.
+        pending = job.get("pending_slot")
+        owned = instant or (None if manual_fire or not isinstance(pending, dict)
+                            else scheduled_instant(pending.get("scheduled_at")))
+        if owned:
+            job["fire_claim"]["scheduled_at"] = owned
         # Claimed: the occurrence is now owned by a run (its ledger row + fire claim carry it).
         job.pop("pending_slot", None)
         if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
@@ -3214,19 +3222,32 @@ def _restore_unclaimed_slot(job: dict[str, Any], scan: _DueScan) -> Optional[str
     return slot
 
 
+def drop_claimed_occurrence(job: dict[str, Any]) -> None:
+    """Forget which occurrence the job's fire claim owns; the claim itself is untouched."""
+    claim = job.get("fire_claim")
+    if isinstance(claim, dict) and "scheduled_at" in claim:
+        job["fire_claim"] = {k: v for k, v in claim.items() if k != "scheduled_at"}
+
+
 def restore_unstarted_occurrence(job_id: str, instant: str) -> bool:
     """Re-stamp a recurring occurrence whose dead owner claimed but never started it as an unclaimed
     ``pending_slot``, so the next due scan restores it via ``_restore_unclaimed_slot``. Returns
-    whether it was stamped; never overwrites another pending slot."""
+    whether it was stamped: only while the job's fire claim still owns exactly this occurrence
+    (no rewrite or newer claim since), and never over another pending slot."""
+    from cron.occurrences import pending_slot_stamp, scheduled_instant
+
     def apply(jobs, _i, job):
         if job.get("schedule", {}).get("kind") not in {"cron", "interval"} or job.get("pending_slot"):
             return False
-        from cron.occurrences import pending_slot_stamp
-
+        claim = job.get("fire_claim")
+        owned = claim.get("scheduled_at") if isinstance(claim, dict) else None
+        if owned is None or owned != scheduled_instant(instant):
+            return False
         now = _hermes_now()
         # Store in the scheduler's zone: a UTC string would trip the timezone-shift repair and skip.
         slot = datetime.fromisoformat(instant).astimezone(now.tzinfo).isoformat()
         job["pending_slot"] = pending_slot_stamp(slot, now)
+        drop_claimed_occurrence(job)
         save_jobs(jobs)
         return True
 

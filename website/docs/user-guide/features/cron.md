@@ -50,10 +50,12 @@ terminal result is handed to the delivery queue without running the agent again;
 and bookkeeping use the original fire identity. Delivery interrupted after a send claim stays
 unknown and is not retried automatically.
 
-An interrupted execution or a prepared fire that cannot be found stays paused for operator review.
-Recovery never creates another admission for it. Paused jobs are not automatically resumed, even
-when their completed result is recovered. `hermes cron run` exits nonzero for a known synchronous
-execution failure; background dispatch is not a terminal success/failure verdict.
+An interrupted admitted execution, or a prepared fire that cannot be found, stays paused for
+operator review. Recovery never creates another admission for it. Paused jobs are not
+automatically resumed, even when their completed result is recovered. This is separate from
+[execution recovery](#execution-history), which restores a scheduled occurrence only when its attempt
+never started. `hermes cron run` exits nonzero for a known synchronous execution failure; background
+dispatch is not a terminal success/failure verdict.
 
 ## Creating scheduled tasks
 
@@ -422,7 +424,26 @@ stale bound (`max(3 × HERMES_CRON_TIMEOUT, script timeout, 2 h)`): the run
 monitor stamps `progress_at` on the attempt while the agent is still calling
 tools or streaming, so a healthy multi-hour job is never reclaimed mid-run, while
 a worker deadlocked on a lock stops stamping and is released once the bound
-passes. Unknown attempts are audit records and are never automatically rerun.
+passes.
+
+What recovery does next depends on whether the attempt had started:
+
+- **Started** (`started_at` is set): the attempt stays an audit record and is
+  never rerun automatically, because its side effects may already have happened.
+- **Never started** (claimed, then the owner died before the run began): its
+  scheduled occurrence goes back on the schedule once, exactly like an
+  occurrence the scheduler advanced past but never claimed. The next tick fires
+  it under the usual late / catch-up rules, and the new attempt keeps the
+  original scheduled instant. This happens only while the job's fire claim
+  still owns that occurrence. If the job was edited, paused, resumed, run
+  manually or claimed again since, the old slot is not restored.
+
+Each such `unknown` attempt also opens or refreshes a [failure
+incident](#failure-incidents-alert-once-remind-on-a-cooldown-acknowledge) with a fixed message per outcome: started and not
+rerun, never started and re-dispatched, never started and not restorable, or
+never started and the restore failed. Repeats of the same outcome group into
+one incident. The execution ID is in the scheduler log line. A later
+successful run resolves the incident as usual.
 
 Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
 `history`). Terminal history is bounded; active attempts are never pruned. The
@@ -1368,7 +1389,7 @@ The referenced jobs' most recent completed outputs are injected above the prompt
 
 Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md`.
 
-Job definitions are plain JSON on disk: they survive `hermes update`, gateway restarts, and machine reboots. A job that was mid-run during a restart is marked `unknown` in the execution ledger — it is not automatically retried, but the job's next scheduled tick fires normally. See [Execution history](#execution-history) for details.
+Job definitions are plain JSON on disk: they survive `hermes update`, gateway restarts, and machine reboots. A job that was mid-run during a restart is marked `unknown` in the execution ledger and opens a failure incident. A run that had already started is not retried automatically; one that was claimed but had not started yet fires once after the restart. The job's next scheduled tick fires normally. See [Execution history](#execution-history) for details.
 
 :::tip
 Ask the agent to manage jobs through the `cronjob_manage` tool, `hermes cron edit`, or `/cron` — not by patching `jobs.json` directly. Direct edits can fail silently when [file write safety](../security.md#file-write-safety) blocks the path (for example when `HERMES_WRITE_SAFE_ROOT` is set), and the [file-mutation verifier](../configuration.md#file-mutation-verifier) footer is the authoritative signal that nothing was saved.

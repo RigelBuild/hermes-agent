@@ -500,6 +500,17 @@ def recover_interrupted_executions() -> int:
     return changed
 
 
+_UNKNOWN_STARTED = ("A cron execution had started before its owner was lost; whether side effects "
+                    "ran is unknown, so it was not re-run.")
+_UNKNOWN_REDISPATCHED = ("A cron execution never started before its owner was lost; its occurrence "
+                         "was re-dispatched.")
+_UNKNOWN_NOT_RESTORED = ("A cron execution never started before its owner was lost; its occurrence "
+                         "was not restorable (no bound slot, or the job was rewritten or re-claimed "
+                         "since), so it was not re-dispatched.")
+_UNKNOWN_RESTORE_FAILED = ("A cron execution never started before its owner was lost; restoring its "
+                           "occurrence failed, so it was not re-dispatched.")
+
+
 def _settle_recovered_unknown(record: dict[str, Any]) -> None:
     """Open an incident for a swept ``unknown`` attempt, and put its occurrence back on the
     schedule when it never started. A started attempt may have run side effects: never re-run."""
@@ -507,20 +518,25 @@ def _settle_recovered_unknown(record: dict[str, Any]) -> None:
     from cron.jobs import restore_unstarted_occurrence
 
     execution_id, job_id = record["id"], record["job_id"]
+    if record.get("started_at"):
+        error = _UNKNOWN_STARTED
+    elif not record.get("scheduled_instant"):
+        error = _UNKNOWN_NOT_RESTORED
+    else:
+        try:
+            restored = restore_unstarted_occurrence(job_id, record["scheduled_instant"])
+            error = _UNKNOWN_REDISPATCHED if restored else _UNKNOWN_NOT_RESTORED
+        except Exception:
+            logger.warning("Could not restore the occurrence of unknown cron execution %s",
+                           execution_id, exc_info=True)
+            error = _UNKNOWN_RESTORE_FAILED
+    # Stable per-category text so repeats dedupe into one incident; the ID goes to the log.
+    logger.warning("Cron execution %s of job %s marked unknown: %s", execution_id, job_id, error)
     try:
-        if record.get("started_at"):
-            error = (f"Cron execution {execution_id} had started before its owner was lost; "
-                     "whether side effects ran is unknown, so it was not re-run.")
-        else:
-            instant = record.get("scheduled_instant")
-            redispatched = bool(instant) and restore_unstarted_occurrence(job_id, instant)
-            outcome = ("its occurrence was re-dispatched" if redispatched
-                       else "it had no restorable occurrence and was not re-dispatched")
-            error = (f"Cron execution {execution_id} never started before its owner was lost; "
-                     f"{outcome}.")
         upsert_incident(job_id, error)
     except Exception:
-        logger.warning("Could not settle unknown cron execution %s", execution_id, exc_info=True)
+        logger.warning("Could not record an incident for unknown cron execution %s", execution_id,
+                       exc_info=True)
 
 
 def terminalize_dead_owner(execution_id: str, *, reason: str) -> bool:

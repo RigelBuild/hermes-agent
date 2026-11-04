@@ -120,9 +120,9 @@ def test_owner_dead_before_start_redispatches_once_with_incident(env, monkeypatc
 
     incidents = _incidents_for(job_id)
     assert len(incidents) == 1
-    assert lost["id"] in incidents[0]["error"]
     assert "never started" in incidents[0]["error"]
-    assert "re-dispatched" in incidents[0]["error"]
+    assert "was re-dispatched" in incidents[0]["error"]
+    assert lost["id"] not in incidents[0]["error"], "signature text must stay stable"
 
     _restart(S, monkeypatch)
     S.tick(verbose=False, sync=True)
@@ -146,6 +146,79 @@ def test_owner_dead_after_start_is_not_redispatched_but_opens_incident(env, monk
 
     incidents = _incidents_for(job_id)
     assert len(incidents) == 1
-    assert lost["id"] in incidents[0]["error"]
     assert "had started" in incidents[0]["error"]
     assert "not re-run" in incidents[0]["error"]
+    assert lost["id"] not in incidents[0]["error"], "signature text must stay stable"
+
+
+@pytest.mark.parametrize("rewrite", ["pause_resume", "schedule_edit"])
+def test_rewrite_after_claim_blocks_restore_but_opens_incident(env, monkeypatch, rewrite):
+    """A schedule or lifecycle rewrite between the claim and the restart supersedes the slot."""
+    S, J, E = env["S"], env["J"], env["E"]
+    job_id = env["job_id"]
+
+    env["die"](_DIE_BEFORE_START)
+    lost = E.latest_execution(job_id)
+    assert lost["started_at"] is None
+    if rewrite == "pause_resume":
+        J.pause_job(job_id)
+        J.resume_job(job_id)
+    else:
+        J.update_job(job_id, {"schedule": J.parse_schedule("every 2h")})
+
+    _restart(S, monkeypatch)
+    S.tick(verbose=False, sync=True)
+    assert E.get_execution(lost["id"])["status"] == "unknown"
+    assert env["fires"]() == 0, "a rewritten job must not resurrect the pre-rewrite slot"
+    assert "pending_slot" not in J.get_job(job_id)
+
+    incidents = _incidents_for(job_id)
+    assert len(incidents) == 1
+    assert "not restorable" in incidents[0]["error"]
+
+
+def _dead_pid() -> int:
+    proc = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"],
+                          capture_output=True, text=True, check=True)
+    return int(proc.stdout.strip())
+
+
+def _orphan(E, job_id, *, scheduled_instant=None) -> str:
+    """A claimed, never-started row whose owner process is provably gone."""
+    row = E.create_execution(job_id, source="builtin", scheduled_instant=scheduled_instant)
+    with E._transaction() as conn:
+        conn.execute("UPDATE executions SET process_id='dead-owner', pid=?, process_started_at=NULL "
+                     "WHERE id=?", (_dead_pid(), row["id"]))
+    return row["id"]
+
+
+def test_restore_failure_still_opens_incident(env, monkeypatch):
+    J, E = env["J"], env["E"]
+    job_id = env["job_id"]
+
+    def boom(*_a, **_k):
+        raise OSError("jobs store unwritable")
+
+    monkeypatch.setattr(J, "restore_unstarted_occurrence", boom)
+    lost = _orphan(E, job_id, scheduled_instant=env["slot"])
+    assert E.recover_interrupted_executions() == 1
+    assert E.get_execution(lost)["status"] == "unknown"
+
+    incidents = _incidents_for(job_id)
+    assert len(incidents) == 1
+    assert "restoring its occurrence failed" in incidents[0]["error"]
+
+
+def test_same_category_unknowns_share_one_incident(env):
+    E = env["E"]
+    job_id = env["job_id"]
+
+    first = _orphan(E, job_id)
+    assert E.recover_interrupted_executions() == 1
+    second = _orphan(E, job_id)
+    assert E.recover_interrupted_executions() == 1
+    assert {E.get_execution(i)["status"] for i in (first, second)} == {"unknown"}
+
+    incidents = _incidents_for(job_id)
+    assert len(incidents) == 1, "the same loss category must dedupe into one incident"
+    assert "not restorable" in incidents[0]["error"]
