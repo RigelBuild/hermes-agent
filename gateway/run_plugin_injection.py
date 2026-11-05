@@ -12,6 +12,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import logging
+import weakref
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -382,9 +383,6 @@ class GatewayPluginInjectionMixin:
             authority = authority_for_home(self, plugin_home)
             if authority is not None:
                 if eligible(self, source):
-                    if not await self._plugin_origin_authorized(
-                            source, plugin_id=plugin_id, plugin_home=plugin_home, target=target):
-                        return False
                     return await admit(self, authority, adapter, source, content=content,
                                        plugin_id=plugin_id, plugin_home=plugin_home)
                 if not self._plugin_injection_authorized(source, plugin_id=plugin_id, target=target):

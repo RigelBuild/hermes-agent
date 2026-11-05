@@ -587,6 +587,7 @@ class SessionAuthority:
             try:
                 if counts[sid] != 1:
                     raise RuntimeStoreError('admission_conflict')
+                refused = []
                 rows = list_session_admissions(self.db, session_id=sid, pending_only=False)
                 native = [row for row in rows if 'native_text_v1' in row['payload']]
                 ref = SessionRef(self.profile_id, sid)
@@ -614,14 +615,7 @@ class SessionAuthority:
                         try:
                             await check(self, ref, row, source=source, adapter=adapter)
                         except PluginOriginRefused:
-                            from functools import partial
-                            from gateway.session_runtime_workers import tracked_write
-                            from hermes_state_runtime import cancel_session_input
-                            cancelled = await tracked_write(self, partial(
-                                cancel_session_input, self.db, epoch=self.epoch,
-                                admission_id=row['admission_id']))
-                            if (cancelled['status'], cancelled['outcome']) == ('terminal', 'cancelled'):
-                                self._settle_cancelled(ref, row['admission_id'])
+                            refused.append(row['admission_id'])
                         continue
                     elif 'local_automation_v1' in row['payload']:
                         from gateway.session_automation import check_local_automation
@@ -633,6 +627,15 @@ class SessionAuthority:
                 self.sessions.setdefault(sid, LiveSession(source, route))
                 if any(row['status'] == 'unknown' for row in rows):
                     raise RuntimeStoreError('unknown_execution')
+                if refused:
+                    from functools import partial
+                    from gateway.session_runtime_workers import tracked_write
+                    from hermes_state_runtime import cancel_session_input
+                    for admission_id in refused:
+                        cancelled = await tracked_write(self, partial(
+                            cancel_session_input, self.db, epoch=self.epoch, admission_id=admission_id))
+                        if (cancelled['status'], cancelled['outcome']) == ('terminal', 'cancelled'):
+                            self._settle_cancelled(ref, admission_id)
                 self._schedule(ref)
                 results[sid] = 'ready'
             except RuntimeStoreError as exc:
@@ -1028,32 +1031,9 @@ class SessionAuthority:
                 if 'local_automation_v1' in first['payload']:
                     from gateway.session_automation import check_local_automation
                     check_local_automation(self, ref, first)
-                elif 'plugin_origin_v1' in first['payload']:
-                    from gateway.plugin_origin_session import check
-                    await check(self, ref, first, source=live.source,
-                                adapter=self.runner._adapter_for_source(live.source))
                 else:
                     from gateway.session_operator import check_local_input
                     check_local_input(self, ref, first)
-                from gateway.session_local_mcp import refreeze_editor_mcp
-                await refreeze_editor_mcp(self, ref, live)
-                from gateway.session_local_recovery import reopen_local_session
-                from gateway.session_runtime_workers import tracked_write
-                from gateway.session_completion_notes import noted_completion
-                if not noted_completion(first):
-                    await tracked_write(self, partial(reopen_local_session, self, ref))
-            if first is not None and 'plugin_origin_v1' in first['payload']:
-                from gateway.plugin_origin_session import PluginOriginRefused, check
-                try:
-                    await check(self, ref, first, source=live.source,
-                                adapter=self.runner._adapter_for_source(live.source))
-                except PluginOriginRefused:
-                    return 'refused', first
-            elif first is not None and live.source.platform != Platform.LOCAL:
-                if set(first['payload']) - {'text', 'native_text_v1', 'api_turn_v1', 'cli_turn_v1',
-                                             'attachments_v1', 'finite', 'unattended', 'surface_v1',
-                                             'display_v1', 'local_automation_v1'}:
-                    raise RuntimeStoreError('permission_denied')
             if first is not None and live.source.platform == Platform.API_SERVER:
                 from gateway.session_api_turn import check_api_turn
                 check_api_turn(self, ref, first['payload'])
@@ -1069,6 +1049,21 @@ class SessionAuthority:
                 from gateway.session_envelope import check_native_route
                 await check_native_route(self.runner, first['payload'], self.physical_target(ref), live.source,
                                          self.runner._adapter_for_source(live.source))
+                current = get_session_admission(self.db, admission_id=first['admission_id'])
+                if current is None or current['status'] != 'queued':
+                    return False, first
+            if (first is not None and live.source.platform not in (Platform.LOCAL, Platform.API_SERVER)
+                    and ({key for key in first['payload'] if key.endswith('_v1')} - {
+                        'attachments_v1', 'api_turn_v1', 'cli_turn_v1', 'display_v1', 'local_automation_v1',
+                        'local_operator_v1', 'native_text_v1', 'plugin_origin_v1', 'surface_v1'})):
+                raise RuntimeStoreError('permission_denied')
+            if first is not None and 'plugin_origin_v1' in first['payload']:
+                from gateway.plugin_origin_session import PluginOriginRefused, check
+                try:
+                    await check(self, ref, first, source=live.source,
+                                adapter=self.runner._adapter_for_source(live.source))
+                except PluginOriginRefused:
+                    return 'refused', first
                 current = get_session_admission(self.db, admission_id=first['admission_id'])
                 if current is None or current['status'] != 'queued':
                     return False, first
@@ -1133,7 +1128,7 @@ class SessionAuthority:
                 await asyncio.sleep(backoff)
                 continue
             backoff = 0.0
-            if row not in {'classic_busy', 'refused'}:
+            if row not in ('classic_busy', 'refused'):
                 return row, first
             if row == 'refused':
                 return row, first
@@ -1167,6 +1162,7 @@ class SessionAuthority:
 
     async def _drain(self, ref):
         from gateway.session_managed_worker import ManagedExecutionUnknown
+        from functools import partial
         live = self.sessions[ref.session_id]
         while True:
             claimed = await self._claim_with_retry(ref, live)

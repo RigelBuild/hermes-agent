@@ -211,6 +211,9 @@ def row_turn_author(policy, row):
     """Who wrote the admitted input, for memory attribution only: the producer's stamp when it
     left one, else the forwarded peer bound into the session policy; never grants anything."""
     payload = row['payload']
+    descriptor = payload.get('plugin_origin_v1')
+    if isinstance(descriptor, dict) and isinstance(descriptor.get('plugin_id'), str):
+        return {'id': f"plugin:{descriptor['plugin_id']}", 'is_bot': True}
     for key in ('local_automation_v1', 'api_turn_v1', 'cli_turn_v1'):
         author = (payload.get(key) or {}).get('turn_author')
         if author is not None:
@@ -237,7 +240,10 @@ async def execute_admission(authority, ref, row):
     live = authority.sessions[ref.session_id]
     native = row['admission_id'] in authority.native_waiters
     authority.native_waiters.discard(row['admission_id'])
-    if 'native_text_v1' in row['payload']:
+    if 'plugin_origin_v1' in row['payload']:
+        from gateway.plugin_origin_session import restore
+        event = restore(authority, ref, row)
+    elif 'native_text_v1' in row['payload']:
         event = restore_native(row['payload'], authority.runner)
     else:
         from gateway.session_ingress_media import restore_attachments
@@ -273,6 +279,10 @@ async def execute_admission(authority, ref, row):
     result_token = execution_result.set(captured)
     token = executing_admission.set(True)
     # This drain, not the handler's unwind, releases the turn's crash marker (see below).
+    plugin_token = None
+    from gateway.plugin_origin_session import narrowed
+    if narrowed(authority, row):
+        plugin_token = plugin_origin_turn.set(True)
     event._turn_marker_handoff = True
     handed = False
     try:
@@ -329,6 +339,8 @@ async def execute_admission(authority, ref, row):
         api_execution.reset(api_token)
         admission_author.reset(author_token)
         viewer_turn.reset(viewer_token)
+        if plugin_token is not None:
+            plugin_origin_turn.reset(plugin_token)
 
 
 async def _execution_scope(authority, home):

@@ -49,7 +49,9 @@ def allowed(plugin_home: Path, plugin_id: str) -> bool:
 
 def origin_sessions_enabled(plugin_home: Path, plugin_id: str) -> bool:
     config = _plugin_config(plugin_home)
-    entry = _plugin_entry(config, plugin_id) if config is not None else None
+    if config is None:
+        return True
+    entry = _plugin_entry(config, plugin_id)
     return bool(entry and entry.get('allow_origin_sessions') is True)
 
 
