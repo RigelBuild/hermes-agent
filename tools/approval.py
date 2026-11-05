@@ -787,64 +787,50 @@ _ACTION_GATE = _GateSpec(
 
 def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: str,
                 pattern_keys: list[str], session_key: str, *,
-                human_present: bool) -> tuple[dict | None, bool]:
-    """Guardian-LLM step -> ``(result, smart_denied_for_owner)``: a result ends the gate;
-    ``smart_denied_for_owner`` means an interactive owner may still override the DENY for this
-    one operation (once/deny only, nothing persists).
-
-    APPROVE approves this command only — pattern-level persistence would let one benign
-    command suppress review of later commands in the same broad detector category. A DENY
-    counts toward the denial breaker even when an owner may override it. ESCALATE follows the
-    normal, potentially persistent manual behavior.
-    """
-    pop_review_note()  # drop any note a previous review on this thread left behind
+                human_present: bool, plugin_origin: bool = False) -> tuple[dict | None, bool]:
+    """Guardian verdict ends the gate or records whether an owner may override a DENY."""
+    pop_review_note()
     verdict = _smart_verdict(command, description, pattern_key, pattern_keys, session_key)
     note = pop_review_note()
     _gate_note.text = _review_line(verdict, note) if verdict != "approve" else ""
     if verdict == "approve":
         _reset_denials(session_key)
         logger.debug(spec.smart_log.format(command=command[:60], description=description, session_key=session_key))
+        if plugin_origin:
+            return None, False
         return {"approved": True, "message": None, "smart_approved": True, "description": description}, False
     if verdict != "deny":
         return None, False
     _record_denial(session_key)
-    if human_present:
-        return None, True
     why = f" Reviewer: {note}" if note else ""
-    return {
-        # Unattended programmatic platforms (webhook/msgraph_webhook/ api_server): respect unattended_mode
-        # config. Resolves instantly — never a pending approval nobody can answer (#37284, #87509).
-        "approved": False,
-        "message": (f"BLOCKED by smart approval: {description}. The command was assessed as genuinely "
-                    f"dangerous.{why} Do NOT retry.{_denial_breaker_addendum(session_key)}"),
-        "smart_denied": True,
-    }, True
+    message = (f"BLOCKED by smart approval: {description}. The command was assessed as genuinely "
+               f"dangerous.{why} Do NOT retry.{_denial_breaker_addendum(session_key)}")
+    if plugin_origin or not human_present:
+        return {"approved": False, "message": message, "smart_denied": True}, True
+    return None, True
 
 
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
-                    is_ask: bool, smart: bool = False, pending_body=None) -> dict:
-    """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
-
-    ``pattern_keys`` are what :func:`_persist_choice` stores on session/always; a smart-DENY
-    owner override reduces every surface to once/deny and persists nothing. ``pending_body`` is a thunk, built only once a human is
-    actually asked, so a smart APPROVE never pays for redacting a large script.
-    """
+                    is_ask: bool, smart: bool = False, pending_body=None,
+                    plugin_origin: bool = False) -> dict:
+    """Ask a human and turn the answer into a gate result."""
     from agent.redact import redact_sensitive_text
 
     smart_denied = False
     if smart:
         _gate_note.text = ""
         result, smart_denied = _smart_gate(spec, command, description, pattern_key, pattern_keys,
-                                           session_key, human_present=is_cli or is_gateway or is_ask)
+                                           session_key, human_present=is_cli or is_gateway or is_ask,
+                                           plugin_origin=plugin_origin)
         if result is not None:
             return result
         if _gate_note.text:
-            # Show the human what the reviewer saw (its verdict and one-sentence reason).
             description = f"{description}\n{_gate_note.text}"
     pending_body = pending_body() if pending_body else None
-    allow_permanent = not smart_denied
+    one_shot = smart_denied or plugin_origin
+    allow_permanent = not one_shot
 
     def deny(template: str, outcome: str, **fmt) -> dict:
         breaker = ""
@@ -857,8 +843,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                        outcome=outcome, noun=spec.noun, **extra)
 
     def grant(choice: str) -> dict:
-        # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
-        if not smart_denied:
+        if not one_shot:
             _persist_choice(session_key, choice, pattern_keys)
         if spec.user_approved:
             return _user_approved(session_key, description)
@@ -867,7 +852,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     if spec.transport:
         attempt = _present_with_selected_transport(
             command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
-            session_key=session_key, allow_session=not smart_denied, allow_permanent=allow_permanent,
+            session_key=session_key, allow_session=not one_shot, allow_permanent=allow_permanent,
             surface=approval_context.gateway_approval_surface() if (is_gateway or is_ask) else "cli",
         )
         choice, denied = _transport_choice(attempt, pattern_key=pattern_key, description=description)
@@ -893,8 +878,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             data = {
                 "command": display_command, "pattern_key": pattern_key,
                 "pattern_keys": pattern_keys, "description": display_description,
-                "allow_permanent": not smart_denied,
-                "allow_session": not smart_denied,
+                "allow_permanent": allow_permanent,
+                "allow_session": not one_shot,
             }
             if smart_denied:
                 data["smart_denied"] = True
@@ -932,7 +917,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 display_command, display_description = command, description
             return _pending_result(
                 spec, session_key, command=display_command, description=display_description, pattern_key=pattern_key,
-                pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied,
+                pattern_keys=pattern_keys, body=pending_body, smart_denied=one_shot,
             )
 
     # CLI interactive: single combined prompt, wrapped in the pre/post plugin hooks.
@@ -944,7 +929,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                        pattern_keys=list(pattern_keys), session_key=session_key, surface="cli")
     approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
     choice = prompt_dangerous_approval(prompt_command, prompt_description, allow_permanent=allow_permanent,
-                                       smart_denied=smart_denied, approval_callback=approval_callback)
+                                       allow_session=not one_shot, smart_denied=smart_denied,
+                                       approval_callback=approval_callback)
     approval_context._fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
     if choice == "timeout":
         return deny(spec.cli_timeout, "timeout")
@@ -977,23 +963,19 @@ def _presence(approval_callback=None) -> tuple:
     render no approval surface and the inbound lane has no reader, so there ``is_ask`` drops
     regardless and the unattended branch resolves from ``approvals.unattended_mode`` instead of
     parking an unanswerable card (#100532)."""
+    plugin_origin = approval_context.is_plugin_origin_turn()
     approval_callback = _resolve_cli_approval_callback(approval_callback)
     is_cli, is_gateway = _is_interactive_cli(), _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
-    if _is_single_query_approval_context() or _is_cron_approval_context() or _is_peer_mesh_approval_context():
-        # A peer-mesh turn has no approver on any surface, including a host CLI (`cli.py --gateway`).
+    if _is_peer_mesh_approval_context():
+        is_cli = is_gateway = is_ask = False
+    elif plugin_origin:
+        is_gateway = True
+    elif _is_single_query_approval_context() or _is_cron_approval_context():
         is_cli = is_gateway = is_ask = False
     elif is_ask and _is_unattended_platform_approval_context() \
             and (_gateway_notify_cb(get_current_session_key()) is None
                  or _get_session_platform() in approval_context._NOTIFIER_BLIND_APPROVAL_PLATFORMS):
-        # start_gateway() sets HERMES_EXEC_ASK process-wide, so an api_server/webhook turn
-        # inside that gateway still reads as "ask" here even though _is_gateway_approval_context()
-        # already excluded the platform. /v1/runs and streaming chat register their notify
-        # callback before the turn runs; a session with none has no surface that can resolve an
-        # approval. webhook/msgraph_webhook are notifier-blind: the generic TurnRunner lane
-        # registers one for every turn while the adapter has no ``send_exec_approval`` and the
-        # POST -> 202 lane has no reader, so a registered callback there answers nothing either
-        # — resolve from approvals.unattended_mode, never a pending no one can answer.
         is_ask = False
     return approval_callback, is_cli, is_gateway, is_ask
 
@@ -1037,16 +1019,12 @@ def _run_approval_gate(
     ``approvals.mode`` is. A DENY blocks without asking; any other verdict still asks the human,
     with the verdict appended to the reason, so the reviewer can never approve on its own.
     """
-    # Hardline blocks are the caller's job BEFORE this gate, so yolo here only skips the recoverable approval layer.
-    # ``approvals.mode: off`` is the third bypass source (the Desktop "Approvals: off" toggle writes it); the shell
-    # guards honour it, so every action routed through this gate (computer_use, plugin rules, SSH-config writes,
-    # dangerous-pattern prompts) must too, or "off" still prompts on those surfaces.
-    if _yolo_active() or approval_context._get_approval_mode() == "off":
-        return _approved()
+    plugin_origin = approval_context.is_plugin_origin_turn()
     session_key = get_current_session_key()
-    if is_approved(session_key, pattern_key):
+    if not plugin_origin and (_yolo_active() or approval_context._get_approval_mode() == "off"):
         return _approved()
-
+    if not plugin_origin and is_approved(session_key, pattern_key):
+        return _approved()
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
     if not is_cli and not is_gateway and not is_ask:
         log_args = (autoapprove_log_prefix, pattern_key, description)
@@ -1101,6 +1079,7 @@ def _run_approval_gate(
         _ACTION_GATE, command=display_target, description=description, pattern_key=pattern_key,
         pattern_keys=[pattern_key], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
+        plugin_origin=plugin_origin,
     )
 
 
@@ -1164,14 +1143,15 @@ def check_dangerous_command(command: str, env_type: str,
     """Detect a dangerous command and handle approval (pattern layer only). ``has_host_access``:
     a Docker sandbox that bind-mounts host paths must not skip approval.
     Returns ``{"approved": True/False, "message": str or None, ...}``."""
+    plugin_origin = approval_context.is_plugin_origin_turn()
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return _user_deny_block(command) or _approved()
     blocked = _floor_block(command)
     if blocked is not None:
         return blocked
-    if _yolo_active():
+    if not plugin_origin and _yolo_active():
         return _approved()
-    if _command_matches_permanent_allowlist(command):
+    if not plugin_origin and _command_matches_permanent_allowlist(command):
         return _approved()
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
@@ -1258,6 +1238,7 @@ def check_all_command_guards(command: str, env_type: str,
     """Run all pre-exec security checks and return a single approval decision. Plugins that
     want to veto or escalate a command do it from ``pre_tool_call``.
     ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow."""
+    plugin_origin = approval_context.is_plugin_origin_turn()
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return _user_deny_block(command) or _approved()
 
@@ -1266,19 +1247,21 @@ def check_all_command_guards(command: str, env_type: str,
         return blocked
 
     from agent.terminal_approval_batch import consume_prepared_guard
-    prepared = consume_prepared_guard(command, env_type, has_host_access)
+    prepared = None if plugin_origin else consume_prepared_guard(command, env_type, has_host_access)
     if prepared is not None:
         return prepared
 
     approval_mode = approval_context._get_approval_mode()
-    if _yolo_active() or approval_mode == "off":
+    if not plugin_origin and (_yolo_active() or approval_mode == "off"):
         return _approved()
-    if _command_matches_permanent_allowlist(command):
+    if not plugin_origin and _command_matches_permanent_allowlist(command):
+        return _approved()
+
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    if not is_dangerous:
         return _approved()
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
-    # Outside CLI/gateway/ask flows we never block on approvals: each
-    # unattended context applies its configured deny/approve mode, else allow.
     if not is_cli and not is_gateway and not is_ask:
         for ctx in _unattended_contexts():
             result = _unattended_deny(command, ctx)
@@ -1286,16 +1269,17 @@ def check_all_command_guards(command: str, env_type: str,
                 return result
         return _approved()
 
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
     session_key = get_current_session_key()
-    if not is_dangerous or is_approved(session_key, pattern_key):
+    if not plugin_origin and is_approved(session_key, pattern_key):
         return _approved()
     return _human_decision(
         _COMMAND_GATE, command=command, description=description,
         pattern_key=pattern_key, pattern_keys=[pattern_key],
         session_key=session_key, approval_callback=approval_callback,
         is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart",
+        plugin_origin=plugin_origin,
     )
+
 
 
 _EXECUTE_CODE_DESCRIPTION = (
@@ -1340,15 +1324,16 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
         return _approved()
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return _approved()
+    plugin_origin = approval_context.is_plugin_origin_turn()
     approval_mode = approval_context._get_approval_mode()
-    if _yolo_active() or approval_mode == "off":
+    if not plugin_origin and (_yolo_active() or approval_mode == "off"):
         return _approved()
 
     # (-q clears the presence flags, but its unattended context resolves first anyway.)
     approval_callback, is_cli, is_gateway, is_ask = _presence()
-    # No user is present to approve arbitrary code in -q / cron / unattended
-    # sessions: the first active context resolves instantly from its mode.
     for ctx in _unattended_contexts():
+        if ctx.name == "unattended" and plugin_origin and not _is_peer_mesh_approval_context():
+            continue
         if ctx.mode() == "deny":
             return _denied(
                 "BLOCKED: execute_code runs arbitrary local Python (including "
@@ -1365,7 +1350,7 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # A gateway-run local CLI/TUI/Desktop session's own turns keep that interactive-CLI rule: the script's terminal()
     # calls reach the session's own prompt per call, so no whole-script prompt. Injected and automation turns keep the
     # gate (cron/-q resolved above; messaging/API unchanged).
-    if (not is_gateway and not is_ask) or _is_local_viewer_turn():
+    if not plugin_origin and ((not is_gateway and not is_ask) or _is_local_viewer_turn()):
         return _approved()
 
     session_key = get_current_session_key()
@@ -1374,7 +1359,7 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
 
     # Without this, "Approve session" / "Always" choices are stored but never
     # consulted, so every execute_code call re-prompts (#39275).
-    if is_approved(session_key, pattern_key):
+    if not plugin_origin and is_approved(session_key, pattern_key):
         return _approved()
 
     # Smart mode: an APPROVE only suppresses the redundant whole-script prompt; the per-call terminal() guards still
@@ -1386,6 +1371,7 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
         pattern_keys=[pattern_key], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
         smart=approval_mode == "smart",
+        plugin_origin=plugin_origin,
         pending_body=lambda: f"**Code:**\n```python\n{redact_sensitive_text(code)}\n```",
     )
 
