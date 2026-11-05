@@ -596,15 +596,15 @@ class SessionAuthority:
                     source, route = await check_native_route(self.runner, native[-1]['payload'], target,
                                                              available_source, adapter)
                 else:
-                    queued_origins = [row for row in rows if row['status'] == 'queued'
-                                      and 'plugin_origin_v1' in row['payload']]
-                    if not queued_origins:
+                    queued = [row for row in rows if row['status'] == 'queued']
+                    queued_origins = [row for row in queued if 'plugin_origin_v1' in row['payload']]
+                    if not queued_origins or len(queued_origins) != len(queued):
                         raise RuntimeStoreError('not_found')
+                    # check() below pins every queued descriptor's route and target before binding.
                     source = available_source
-                    route = self.runner._session_key_for_source(source)
+                    route = queued_origins[0]['payload']['plugin_origin_v1']['route']
                     if adapter is None or self.runner._adapter_for_source(source) is not adapter:
                         raise RuntimeStoreError('admission_conflict')
-                    self.sessions.setdefault(sid, LiveSession(source, route))
                 for row in rows:
                     if row['status'] != 'queued':
                         continue

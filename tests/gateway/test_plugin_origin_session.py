@@ -45,7 +45,10 @@ class _StubDiscordAdapter:
         if not self.gateway_runner._is_user_authorized_for_source(
                 event.source, allow_adapter_delegation=False):
             return False
-        await self.authority.admit_native(event)
+        # Real ingress binds connector provenance, which later keyed plugin notes borrow.
+        from gateway.session_ingress_context import native_callback
+        with native_callback(self.gateway_runner, event, self.authority.profile_id):
+            await self.authority.admit_native(event)
         return True
 
     def _unwrap_ephemeral(self, response):
@@ -63,6 +66,8 @@ async def origin_env(tmp_path, monkeypatch):
     home.mkdir()
     config_path = home / "config.yaml"
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # Conftest pins DEFAULT_DB_PATH once hermes_state is imported; the authority must own this home.
+    monkeypatch.setattr("hermes_state.DEFAULT_DB_PATH", home / "state.db")
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "")
     monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "false")
     monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "")
@@ -72,6 +77,8 @@ async def origin_env(tmp_path, monkeypatch):
     runner.adapters = {Platform.DISCORD: adapter}
     authority = await initialize_session_authority(runner, profile_id=str(home), instance_id="plugin-origin")
     adapter.authority = authority
+    from gateway.session_ingress_context import register_transport_home
+    register_transport_home(runner, None, home)
     from gateway.session import SessionSource
     source = SessionSource(
         platform=Platform.DISCORD, chat_id=THREAD, chat_name="thread", chat_type="thread",
@@ -111,16 +118,33 @@ async def origin_env(tmp_path, monkeypatch):
     manager.set_gateway_message_injector(runner, runner._schedule_plugin_message_injection)
 
     executed = []
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+    monkeypatch.setattr("tools.discord_tool._load_allowed_actions_config", lambda: None)
+    monkeypatch.setattr("tools.discord_tool._load_post_channels_config", lambda: {"500"})
+    monkeypatch.setattr("tools.discord_tool._discord_request",
+                        lambda *args, **kwargs: {"id": "900", "type": 0})
+
     async def turn(event, _source, _quick_key, _generation):
+        import json
+        from gateway.session import build_session_context
         from gateway.session_ingress import admission_author, plugin_origin_turn
         from gateway.session_results import execution_result
         from gateway.run_turn import GatewayTurnMixin
+        from tools.cronjob_job_args import _origin_from_env
+        from tools.discord_tool import discord_core
         marker = plugin_origin_turn.get()
         toolsets = GatewayTurnMixin._resolve_enabled_toolsets_for_source(
             runner, {"platform_toolsets": {"cotal": ["discord"], "discord": ["discord_admin"]}},
             event.source, "discord")
+        entry = runner.session_store.lookup_by_session_key(runner._session_key_for_source(event.source))
+        # The session env _hmwa_prepare_turn binds for tools, from the turn's restored source.
+        with runner._session_env_scope(build_session_context(event.source, runner.config, entry)):
+            cron_origin = _origin_from_env()
+            post = json.loads(await asyncio.to_thread(
+                discord_core, action="post_message", channel_id="900", content="x"))
         executed.append(SimpleNamespace(text=event.text, source=event.source, marker=marker,
-                                        author=admission_author.get(), toolsets=toolsets))
+                                        author=admission_author.get(), toolsets=toolsets,
+                                        cron_origin=cron_origin, post=post))
         captured = execution_result.get()
         if captured is not None:
             captured["result"] = {"final_response": "reply", "messages": []}
@@ -193,6 +217,18 @@ async def test_bootstrap_uses_plugin_principal_and_narrow_turn_without_human_all
     assert "discord_admin" not in env.executed[0].toolsets
     assert env.executed[0].toolsets == ["discord"]
     assert env.adapter.thread_owned_by_self.await_count >= 1
+    assert env.executed[0].cron_origin["user_id"] == f"plugin:{PLUGIN}"
+    assert "outside discord.post_channels" in env.executed[0].post["error"]
+    env.adapter._threads.mark_async.assert_awaited_with(THREAD)
+
+    session_key = env.runner._session_key_for_source(env.source)
+    assert await asyncio.to_thread(env.context.inject_message, "second note", session_key=session_key)
+    await async_wait_until(lambda: len(env.executed) == 2, timeout=10, what="keyed second note")
+    await _wait_tasks(env)
+    assert env.executed[1].marker is True
+    assert env.executed[1].source.user_id == f"plugin:{PLUGIN}"
+    assert "discord_admin" not in env.executed[1].toolsets
+    assert len(env.runner.session_store._entries) == 1
 
 
 @pytest.mark.asyncio
@@ -246,7 +282,33 @@ async def test_existing_session_plugin_and_operator_inputs_use_their_own_authori
     await async_wait_until(lambda: len(env.executed) == 3, timeout=10, what="keyed plugin turn")
     await _wait_tasks(env)
     assert env.executed[2].marker is True
+    assert "discord_admin" not in env.executed[2].toolsets
     assert entry.session_id == env.runner.session_store.lookup_by_session_key(session_key).session_id
+
+    other = PluginContext(PluginManifest(name="other", key="other", source="user"), env.manager)
+    config = yaml.safe_load(env.config_path.read_text(encoding="utf-8"))
+    config["plugins"]["entries"]["other"] = {"allow_gateway_injection": True}
+    env.config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    assert await asyncio.to_thread(other.inject_message, "other plugin", session_key=session_key)
+    await async_wait_until(lambda: len(env.executed) == 4, timeout=10, what="other plugin turn")
+    await _wait_tasks(env)
+    assert env.executed[3].marker is False
+    assert "discord_admin" in env.executed[3].toolsets
+
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_contract import SessionRef
+    schedule = SessionAuthority._schedule
+    monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
+    assert await asyncio.to_thread(env.context.inject_message, "unreadable config", session_key=session_key)
+    await async_wait_until(lambda: any(row["payload"].get("text") == "unreadable config"
+                                       for row in _rows(env.authority, entry.session_id)),
+                           timeout=10, what="queued keyed note")
+    env.config_path.write_text("plugins: [", encoding="utf-8")
+    monkeypatch.setattr(SessionAuthority, "_schedule", schedule)
+    env.authority._schedule(SessionRef(env.authority.profile_id, entry.session_id))
+    await async_wait_until(lambda: len(env.executed) == 5, timeout=10, what="unreadable-config turn")
+    await _wait_tasks(env)
+    assert env.executed[4].marker is True
 
 
 @pytest.mark.asyncio
@@ -309,9 +371,15 @@ async def test_unknown_descriptor_key_pauses_non_local_fifo_with_permission_deni
 @pytest.mark.asyncio
 async def test_recovery_executes_queued_plugin_row_and_refuses_revoked_plugin(origin_env, monkeypatch):
     env = origin_env
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionRef
-    from gateway.session_runtime_workers import tracked_write
+    from gateway.session_authority import SessionAuthority
+    schedule = SessionAuthority._schedule
+
+    async def restart(**config):
+        env.authority.sessions.clear()
+        env.config(**config)
+        monkeypatch.setattr(SessionAuthority, "_schedule", schedule)
+        assert await env.authority.recover_native_sessions(
+            [(entry.session_id, env.source, env.adapter)]) == {entry.session_id: "ready"}
 
     monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
     accepted, outcome = await _inject_origin(env, "recover me")
@@ -319,30 +387,31 @@ async def test_recovery_executes_queued_plugin_row_and_refuses_revoked_plugin(or
     route = env.runner._session_key_for_source(env.source)
     entry = env.runner.session_store.lookup_by_session_key(route)
     row = _plugin_row(env.authority, entry.session_id, "recover me")
-    env.authority.sessions.clear()
-    env.config()
-    monkeypatch.setattr(SessionAuthority, "_schedule", SessionAuthority._schedule)
-    await env.authority.recover_native_sessions([(entry.session_id, env.source, env.adapter)])
+    await restart()
     await async_wait_until(lambda: len(env.executed) == 1, timeout=10, what="recovered plugin turn")
     await _wait_tasks(env)
     assert get_session_admission(env.authority.db, admission_id=row["admission_id"])["status"] == "terminal"
+    assert env.executed[0].marker is True
 
-    monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
-    accepted, outcome = await _inject_origin(env, "cancel after restart")
-    assert accepted is True and outcome is True
-    refused = _plugin_row(env.authority, entry.session_id, "cancel after restart")
-    env.authority.sessions.clear()
-    env.config(origin=False)
-    monkeypatch.setattr(SessionAuthority, "_schedule", SessionAuthority._schedule)
-    await env.authority.recover_native_sessions([(entry.session_id, env.source, env.adapter)])
-    await async_wait_until(lambda: get_session_admission(env.authority.db, admission_id=refused["admission_id"])["outcome"]
-                           == "cancelled", timeout=10, what="recovered revoked row")
+    for text, config in (("revoked across restart", {"origin": False}),
+                         ("per-user across restart", {"thread_per_user": True})):
+        env.config()
+        monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
+        accepted, outcome = await _inject_origin(env, text)
+        assert accepted is True and outcome is True
+        refused = _plugin_row(env.authority, entry.session_id, text)
+        await restart(**config)
+        await async_wait_until(lambda: get_session_admission(
+            env.authority.db, admission_id=refused["admission_id"])["outcome"] == "cancelled",
+            timeout=10, what=f"recovered row settled: {text}")
+        await _wait_tasks(env)
+    assert len(env.executed) == 1
 
 
 @pytest.mark.asyncio
-async def test_two_plugin_injections_racing_operator_message_preserve_fifo(origin_env):
+async def test_two_plugin_injections_racing_operator_message_preserve_fifo(origin_env, monkeypatch):
     env = origin_env
-    from gateway.session_authority import SessionAuthority
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", env.source.user_id)
     gate = asyncio.Event()
     entered = asyncio.Event()
     original = env.adapter._owns_thread
@@ -356,19 +425,25 @@ async def test_two_plugin_injections_racing_operator_message_preserve_fifo(origi
             await gate.wait()
         return await original(thread_id)
 
+    def route_waiters():
+        turn = env.authority._route_turns.get(env.runner.session_store._generate_session_key(env.source))
+        return turn[1] if turn is not None else 0
+
     env.adapter.thread_owned_by_self.side_effect = owned
     first = asyncio.to_thread(env.context.inject_message, "first", origin=_origin_source(env.source))
     first_task = asyncio.create_task(first)
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), timeout=10)
+    # The first note holds the route turn; each later input must queue behind it before the next starts.
     second_task = asyncio.create_task(asyncio.to_thread(env.context.inject_message, "second",
                                                        origin=_origin_source(env.source)))
-    await asyncio.sleep(0)
+    await async_wait_until(lambda: route_waiters() == 2, timeout=10, what="second note queued")
     native_task = asyncio.create_task(env.adapter.handle_message(
         MessageEvent(text="operator", source=env.source, message_id="operator-race")))
+    await async_wait_until(lambda: route_waiters() == 3, timeout=10, what="operator message queued")
     gate.set()
     assert await first_task is True
     assert await second_task is True
-    await native_task
+    assert await native_task is True
     await async_wait_until(lambda: len(env.executed) == 3, timeout=10, what="ordered turns")
     await _wait_tasks(env)
     entry = env.runner.session_store.lookup_by_session_key(env.runner._session_key_for_source(env.source))

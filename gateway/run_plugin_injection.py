@@ -72,7 +72,7 @@ class GatewayPluginInjectionMixin:
             )
 
         from gateway.plugin_origin_session import origin_sessions_enabled
-        fresh_context = origin_sessions_enabled(plugin_home, plugin_id)
+        fresh_context = plugin_home is not None and origin_sessions_enabled(plugin_home, plugin_id)
         try:
             current_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -231,16 +231,23 @@ class GatewayPluginInjectionMixin:
                                                                plugin_home=plugin_home)
         if not self._plugin_messaging_session_owned(session_key, plugin_home=plugin_home, plugin_id=plugin_id):
             return False
-        if not self._plugin_injection_authorized(source, plugin_id=plugin_id, target=f"session={session_key}"):
-            return False
-
         adapter = self._delivery_adapter_for(source)
         if adapter is None:
             return False
-
-        async with self._plugin_injection_scope(source):
+        from gateway.plugin_origin_session import admit, authorization_source, eligible
+        from gateway.session_authorities import authority_for_home
+        authority = authority_for_home(self, plugin_home) if plugin_home is not None else None
+        async with self._plugin_injection_scope(source, plugin_home):
+            # A session with no committed human envelope admits only as plugin_origin_v1.
+            if authority is not None and eligible(self, source):
+                return await admit(self, authority, adapter, source, content=content,
+                                   plugin_id=plugin_id, plugin_home=plugin_home)
+            auth_source = authorization_source(self, authority, entry, source) if authority is not None else source
+            if not self._plugin_injection_authorized(auth_source, plugin_id=plugin_id,
+                                                     target=f"session={session_key}"):
+                return False
             admitted = await self._admit_plugin_injection(
-                adapter, source, session_key=session_key, session_id=entry.session_id,
+                adapter, auth_source, session_key=session_key, session_id=entry.session_id,
                 content=content, plugin_id=plugin_id)
             if admitted is not None:
                 return admitted
@@ -331,13 +338,20 @@ class GatewayPluginInjectionMixin:
         return source
 
     def _plugin_origin_admissible(self, source: SessionSource, *, plugin_home: Optional[Path], plugin_id: str) -> bool:
-        from gateway.plugin_origin_session import eligible
+        """Under the session authority, an origin with no committed human message is admitted only
+        as a plugin-origin bootstrap by an allowed plugin; refuse it here so the plugin gets ``False``
+        instead of a ``True`` for a turn the dispatch then drops. Dispatch rechecks."""
+        from gateway.plugin_origin_session import allowed, eligible
         from gateway.session_authorities import authority_for_home
         authority = authority_for_home(self, plugin_home) if plugin_home is not None else None
-        if authority is not None and not eligible(self, source):
+        if authority is None:
+            return True  # no authority: the adapter's normal session path creates the session
+        if not eligible(self, source) or allowed(plugin_home, plugin_id):
             return True
-        from gateway.plugin_origin_session import allowed
-        return bool(plugin_home is not None and allowed(plugin_home, plugin_id))
+        logger.warning("Plugin message injection refused: plugin=%s origin=%s/%s has no human message admitted "
+                       "yet; a plugin can continue a chat, not open one", plugin_id, source.platform.value,
+                       source.chat_id)
+        return False
 
     async def _plugin_origin_authorized(self, source: SessionSource, *, plugin_id: str, plugin_home: Path,
                                         target: str) -> bool:
@@ -378,20 +392,21 @@ class GatewayPluginInjectionMixin:
             return False
         session_key = self._session_key_for_source(source)
         async with self._plugin_injection_scope(source, plugin_home):
-            from gateway.plugin_origin_session import admit, eligible
+            from gateway.plugin_origin_session import admit, authorization_source, eligible
             from gateway.session_authorities import authority_for_home
             authority = authority_for_home(self, plugin_home)
             if authority is not None:
                 if eligible(self, source):
                     return await admit(self, authority, adapter, source, content=content,
                                        plugin_id=plugin_id, plugin_home=plugin_home)
-                if not self._plugin_injection_authorized(source, plugin_id=plugin_id, target=target):
-                    return False
                 entry = await self.async_session_store.lookup_by_session_key(session_key)
                 if entry is None:
                     return False
+                auth_source = authorization_source(self, authority, entry, source)
+                if not self._plugin_injection_authorized(auth_source, plugin_id=plugin_id, target=target):
+                    return False
                 return await self._admit_plugin_injection(
-                    adapter, source, session_key=session_key, session_id=entry.session_id,
+                    adapter, auth_source, session_key=session_key, session_id=entry.session_id,
                     content=content, plugin_id=plugin_id)
             if not self._plugin_injection_authorized(source, plugin_id=plugin_id, target=target):
                 return False

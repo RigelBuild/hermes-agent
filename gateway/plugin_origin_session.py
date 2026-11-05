@@ -85,6 +85,18 @@ def eligible(runner, source) -> bool:
         return False
 
 
+def authorization_source(runner, authority, entry, fallback):
+    """A plugin-origin session authorizes later notes against its committed human source."""
+    if not (fallback.is_bot and str(fallback.user_id or '').startswith('plugin:')):
+        return fallback
+    from gateway.session_automation import committed_route_envelope
+    envelope = committed_route_envelope(authority, entry)
+    if envelope is None:
+        return fallback
+    from gateway.session_envelope import restore_native_source
+    return restore_native_source({'native_text_v1': envelope}, runner)
+
+
 def _source_for_plugin(source, plugin_id: str):
     from gateway.session_identity import replace_source
     label = f'plugin:{plugin_id}'
@@ -104,14 +116,15 @@ async def admit(runner, authority, adapter, source, *, content: str, plugin_id: 
     authority._require_admission_open()
     async with authority._route_turn(event):
         if not eligible(runner, source):
-            if not runner._plugin_injection_authorized(
-                    source, plugin_id=plugin_id, target=f'origin={source.platform.value}/{source.chat_id}'):
-                return False
             entry = runner.session_store.lookup_by_session_key(route)
             if entry is None:
                 return False
+            auth_source = authorization_source(runner, authority, entry, source)
+            if not runner._plugin_injection_authorized(
+                    auth_source, plugin_id=plugin_id, target=f'origin={source.platform.value}/{source.chat_id}'):
+                return False
             return bool(await runner._admit_plugin_injection(
-                adapter, source, session_key=route, session_id=entry.session_id,
+                adapter, auth_source, session_key=route, session_id=entry.session_id,
                 content=content, plugin_id=plugin_id))
         if (not allowed(plugin_home, plugin_id)
                 or _thread_sessions_per_user(plugin_home) is not False
