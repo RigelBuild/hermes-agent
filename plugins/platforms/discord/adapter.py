@@ -15,6 +15,7 @@ import datetime as dt
 import hashlib
 import inspect
 import json
+import io
 import logging
 import math
 import os
@@ -5636,6 +5637,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             body = body[: max(0, budget - len(truncated_suffix))] + truncated_suffix
         return f"{prefix}{body}{suffix}"
 
+    def _approval_mentions_target(self) -> str:
+        extra = getattr(getattr(self, "config", None), "extra", None)
+        target = str(extra.get("approval_mentions_target", "session") if isinstance(extra, dict) else "session")
+        return target if target in {"session", "index"} else "session"
+
     def _approval_mention_content(self) -> Optional[str]:
         """User mentions for approval prompts, gated on ``discord.approval_mentions``
         (``DISCORD_APPROVAL_MENTIONS``). Only numeric allowlist entries; default off."""
@@ -5690,13 +5696,15 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     # The reason shares the 2000-char content cap with the command; unbounded it would starve
     # the command preview to zero and push the content past the cap.
     _EA_REASON_BUDGET = 300
+    _EA_TRUNCATION_NOTICE = "\nCommand truncated; full command attached as command.txt."
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         # Mentions ride in front of the content and count against the 2000-char message cap too.
+        mention_content = self._approval_mention_content() if self._approval_mentions_target() == "session" else None
         fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
                  + len(self._EA_REASON_LABEL) + len(description) + len("...") + len(self._ea_deadline_line())
                  + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0)
-                 + len(self._approval_mention_content() or "") + 1)
+                 + len(mention_content or "") + len(self._EA_TRUNCATION_NOTICE) + 1)
         return max(0, self.MAX_MESSAGE_LENGTH - fixed)
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
@@ -5704,10 +5712,13 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         view_slot = {}
 
         def _build(_channel):
+            truncated = prompt.command_preview != prompt.command
             content = prompt.text
             mention_content = self._approval_mention_content()
-            if mention_content:
+            if self._approval_mentions_target() == "session" and mention_content:
                 content = f"{mention_content}\n{content}"
+            if truncated:
+                content += self._EA_TRUNCATION_NOTICE
             embed = discord.Embed(
                 title=_truncate_discord_component_text(f"⚠️ {t('gateway.exec_approval.header')}", _DISCORD_EMBED_TITLE_LIMIT),
                 color=discord.Color.orange(),
@@ -5722,7 +5733,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 request_id=str(prompt.request_id) if prompt.request_id else None,
             )
             send_kwargs: dict[str, Any] = {"content": content, "embed": embed, "view": view}
-            if mention_content:
+            if truncated:
+                send_kwargs["files"] = [discord.File(io.BytesIO(prompt.command.encode("utf-8")), filename="command.txt")]
+            if self._approval_mentions_target() == "session" and mention_content:
                 allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
                 if allowed_mentions_cls is not None:
                     send_kwargs["allowed_mentions"] = allowed_mentions_cls(
@@ -7372,6 +7385,12 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     )
     if approval_index_channel is not None:
         seeded_extra["approval_index_channel"] = str(approval_index_channel)
+    approval_mentions_target = (
+        discord_cfg["approval_mentions_target"] if "approval_mentions_target" in discord_cfg
+        else platform_extra_cfg.get("approval_mentions_target")
+    )
+    if approval_mentions_target is not None:
+        seeded_extra["approval_mentions_target"] = str(approval_mentions_target)
 
     def _gate(key: str, env_key: str, *, from_platform_extra: bool, lower: bool = False) -> None:
         value = discord_cfg[key] if key in discord_cfg else (platform_extra_cfg.get(key) if from_platform_extra else None)

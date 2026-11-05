@@ -22,6 +22,11 @@ _INDEX_OPERATION_TIMEOUT_SECONDS = 5.0
 _MARKDOWN = re.compile(r"([\\`*_{}\[\]()<>#+.!|~])")
 
 
+def _local_date() -> dt.date:
+    from hermes_time import now
+
+    return now().date()
+
 class DiscordApprovalIndex:
     """Post pending and settled approval lines in one persisted daily thread."""
 
@@ -60,7 +65,7 @@ class DiscordApprovalIndex:
         return status == 404 or code in {10003, 50083}
 
     async def _get_daily_thread(self):
-        date = dt.date.today().isoformat()
+        date = _local_date().isoformat()
         if self._thread_date == date and self._thread is not None:
             return self._thread
         async with self._thread_lock:
@@ -83,7 +88,9 @@ class DiscordApprovalIndex:
             if thread is None:
                 if saved_id:
                     await self._write_state(date, None)
-                title = f"Approvals {date}"
+                today = dt.date.fromisoformat(date)
+                from hermes_time import safe_strftime
+                title = f"{safe_strftime(today, '%a %b')} {today.day}"
                 if self._adapter._is_forum_parent(parent):
                     created = await parent.create_thread(name=title, content=title)
                     thread = self._adapter._forum_thread_parts(created)[0]
@@ -95,7 +102,7 @@ class DiscordApprovalIndex:
             return thread
 
     async def _invalidate_thread(self, thread) -> None:
-        date = dt.date.today().isoformat()
+        date = _local_date().isoformat()
         async with self._thread_lock:
             if self._thread is thread:
                 self._thread_date = None
@@ -206,9 +213,16 @@ class DiscordApprovalIndex:
 
     async def _send_pending_line(self, thread, content: str):
         import discord
-        return await thread.send(
-            content, allowed_mentions=discord.AllowedMentions.none(), suppress_embeds=True,
-        )
+
+        mention_content = None
+        if self._adapter._approval_mentions_target() == "index":
+            mention_content = self._adapter._approval_mention_content()
+        if mention_content:
+            content = f"{mention_content} {content}"
+            allowed_mentions = discord.AllowedMentions(users=True, roles=False, everyone=False, replied_user=False)
+        else:
+            allowed_mentions = discord.AllowedMentions.none()
+        return await thread.send(content, allowed_mentions=allowed_mentions, suppress_embeds=True)
 
     async def resolve(self, request_id: str, choice: str | None) -> None:
         request_id = str(request_id)
@@ -230,7 +244,10 @@ class DiscordApprovalIndex:
         }.get(choice)
         if status is None:
             return
+        import discord
+
         thread_id, message_id, summary, jump_url = reference
         thread = await self._adapter._resolve_channel(thread_id)
         message = await thread.fetch_message(int(message_id))
-        await message.edit(content=f"{status} · {summary} · {jump_url}")
+        await message.edit(content=f"{status} · {summary} · {jump_url}",
+                           allowed_mentions=discord.AllowedMentions.none())

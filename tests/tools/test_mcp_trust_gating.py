@@ -106,6 +106,21 @@ class TestTrustGateAtCallTime:
         assert json.loads(raw) == {"result": "ok"}
         fake_session.call_tool.assert_awaited_once()
 
+    def test_untrusted_approval_shows_capped_safe_arguments(self, fake_session):
+        _set_trust("srv", "untrusted")
+        handler = _mcp_handlers._make_tool_handler("srv", "sync_source", 30.0)
+        long_value = "x" * 500
+        with patch("tools.approval_prompt.request_elicitation_consent", return_value="decline") as consent:
+            handler({"source": "production", "api_token": "never show me", "notes": long_value})
+        message, description = consent.call_args.args
+        assert 'sync_source(source="production"' in message
+        assert "sync_source(source=\"production\"" in description
+        assert "never show me" not in message + description
+        assert "notes=" in message
+        assert "x" * 300 in message and "x" * 301 not in message
+        assert "source=\"production\"" in description
+        assert len(message) < 1800
+
     def test_denied_approval_blocks_rpc(self, fake_session):
         """'decline' blocks the call — the RPC must never fire."""
         _set_trust("srv", "untrusted")

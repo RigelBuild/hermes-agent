@@ -1213,6 +1213,50 @@ def _render_tool_call(tool_name: str, args: Any) -> str:
     return rendered if len(rendered) <= _CALL_LIMIT else rendered[: _CALL_LIMIT - 1] + "…"
 
 
+def _vault_approval_context(tool_name: str, args: Optional[dict]) -> str:
+    if not isinstance(args, dict):
+        return ""
+    try:
+        from agent.vault_backends import describe_ref
+    except Exception:
+        return ""
+
+    descriptions = []
+    if tool_name == "vault_secret":
+        env = args.get("env")
+        if isinstance(env, dict):
+            for name, reference in env.items():
+                if isinstance(reference, dict) and reference.get("item") and reference.get("field"):
+                    try:
+                        metadata = describe_ref(str(reference["item"]), str(reference["field"]))
+                    except Exception:
+                        target = f"{reference['item']} → field [{reference['field']}]"
+                        descriptions.append(f"{name} = {target}")
+                        continue
+                    target = f"{metadata.get('title') or reference['item']} [{reference['item']}]"
+                    if metadata.get("account") or metadata.get("vault"):
+                        target += f" ({metadata.get('account') or '?'} / {metadata.get('vault') or '?'})"
+                    target += f" → field {metadata['field_label']!r}" if metadata.get("field_label") else f" → field [{reference['field']}]"
+                    descriptions.append(f"{name} = {target}")
+    elif tool_name == "browser_vault" and args.get("action") in {"fill", "enter_code"}:
+        handle = args.get("handle")
+        if handle:
+            try:
+                metadata = describe_ref(str(handle))
+            except Exception:
+                metadata = {}
+            target = f"{metadata.get('title') or handle} [{handle}]"
+            if metadata.get("username"):
+                target += f" ({metadata['username']})"
+            if metadata.get("allowed_origins"):
+                target += f" · saved origins: {', '.join(metadata['allowed_origins'])}"
+            from tools.browser_vault_tool import _current_page_origin
+            current_origin = _current_page_origin(str(args.get("task_id") or "default"))
+            target += f" · current tab: {current_origin}" if current_origin else " · no current tab"
+            descriptions.append(target)
+    return "\nVault targets: " + "; ".join(descriptions) if descriptions else ""
+
+
 def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", approval_callback=None,
                           display: Optional[str] = None, review: bool = False,
                           args: Optional[dict] = None) -> dict:
@@ -1235,11 +1279,10 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
         rule_key = f"{tool_name}:{hashlib.sha256(description.encode('utf-8')).hexdigest()[:12]}"
     subject = f"Tool '{tool_name}' requires approval ({description})"
     return _run_approval_gate(
-        # Namespaced so plugin-rule approvals share the allowlist machinery without ever colliding with a real
-        # command pattern key; the display target is a synthetic label for the display/allowlist layer.
         pattern_key=f"plugin_rule:{rule_key}", description=description,
-        display_target=display or (_render_tool_call(tool_name, args) if args is not None
-                                   else f"<{tool_name}> (plugin approval rule)"),
+        display_target=(display if display is not None else
+                        (_render_tool_call(tool_name, args) if args is not None
+                         else f"<{tool_name}> (plugin approval rule)") + _vault_approval_context(tool_name, args)),
         approval_callback=approval_callback,
         review_first=review,
         subject=subject, advice="Find an alternative approach.",

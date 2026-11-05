@@ -2,7 +2,7 @@
 
 import json
 import stat
-from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -73,6 +73,80 @@ def test_search_and_fields_return_metadata_only(unlocked):
     assert _AGE not in json.dumps(fields)
 
 
+def test_describe_ref_exposes_only_onepassword_metadata(unlocked, monkeypatch):
+    from agent.vault_backends import describe_ref
+
+    vst, _ = unlocked
+    backend = vst._backend()
+    monkeypatch.setattr(backend, "read_field", lambda *_args: pytest.fail("metadata lookup read a value"))
+    monkeypatch.setattr("agent.vault_backends.base.enabled_backends", lambda: [backend])
+
+    metadata = describe_ref("op:sopsid", "pk")
+
+    assert metadata == {
+        "title": "SOPS", "vault": "Development", "account": "rigelbuild", "field_label": "private key",
+    }
+    assert _AGE not in json.dumps(metadata)
+
+def test_describe_ref_fetches_one_item_without_listing(unlocked, monkeypatch):
+    from agent.vault_backends import describe_ref
+
+    vst, _ = unlocked
+    backend = vst._backend()
+    monkeypatch.setattr("agent.vault_backends.base.enabled_backends", lambda: [backend])
+    backend._any_accounts["sopsid"] = "rigelbuild"
+    calls = []
+
+    def record_run(*args, **kwargs):
+        calls.append(args)
+        return json.dumps({
+            "id": "sopsid", "title": "SOPS", "vault": {"name": "Development"},
+            "fields": [{"id": "pk", "label": "private key", "value": _AGE}],
+        })
+
+    monkeypatch.setattr(backend, "_run", record_run)
+    metadata = describe_ref("op:sopsid", "pk")
+
+    assert metadata["field_label"] == "private key"
+    assert len(calls) == 1
+    assert calls[0][:2] == ("item", "get")
+    assert "list" not in calls[0]
+    assert _AGE not in json.dumps(metadata)
+
+def test_vault_secret_approval_shows_item_and_field_metadata_to_reviewer(unlocked, monkeypatch):
+    from tools import approval
+
+    vst, _ = unlocked
+    backend = vst._backend()
+    monkeypatch.setattr("agent.vault_backends.base.enabled_backends", lambda: [backend])
+    monkeypatch.setattr(approval, "get_current_session_key", lambda default="default": "vault-review")
+    monkeypatch.setattr("tools.approval_context.get_current_session_key", lambda default="default": "vault-review")
+    monkeypatch.setattr(approval, "is_approved", lambda *_args: False)
+    monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: False)
+    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
+    monkeypatch.setattr("tools.approval_context._get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(approval, "_presence", lambda cb=None: (None, False, True, False))
+    seen = {}
+    def smart(display, *_args):
+        seen["display"] = display
+        return "approve"
+
+    def human(spec, **kwargs):
+        seen.update(kwargs)
+        return {"approved": True, "message": None}
+
+    monkeypatch.setattr(approval, "_smart_verdict", smart)
+    monkeypatch.setattr(approval, "_human_decision", human)
+
+    approval.request_tool_approval("vault_secret", "review target", args={
+        "env": {"K": {"item": "op:sopsid", "field": "pk"}},
+    }, review=True)
+
+    assert "SOPS" in seen["display"]
+    assert "private key" in seen["display"]
+    assert "op:sopsid" in seen["command"]
+    assert _AGE not in seen["display"] + seen["command"]
+
 def test_run_injects_the_field_and_redacts_it_in_every_common_form(unlocked):
     vst, tmp = unlocked
     command = ('test "$K" = "' + _AGE + '" && echo match; echo "$K"; printf %s "$K" | base64; '
@@ -142,3 +216,13 @@ def test_run_requires_a_reason(unlocked):
         res = _call(vst, **args)
         assert not res["success"] and "reason is required" in res["error"]
     assert not (tmp / "ran.txt").exists()
+
+def test_describe_ref_raises_when_item_metadata_is_unavailable(monkeypatch):
+    from agent.vault_backends import describe_ref
+
+    backend = SimpleNamespace(name="local", owns=lambda _item: True, get_meta=lambda _item: None)
+    monkeypatch.setattr("agent.vault_backends.base.enabled_backends", lambda: [backend])
+
+    with pytest.raises(RuntimeError, match="item not found"):
+        describe_ref("vault_missing")
+
