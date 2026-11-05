@@ -5702,6 +5702,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Send an approval with content as its canonical payload and an embed for state."""
         view_slot = {}
+
         def _build(_channel):
             content = prompt.text
             mention_content = self._approval_mention_content()
@@ -5729,11 +5730,22 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     )
             view_slot["view"] = view
             return send_kwargs, view
-        result = await self._send_prompt(prompt.chat_id, prompt.metadata, _build)
+        request_id = str(prompt.request_id) if prompt.request_id else None
+        approval_index = getattr(self, "_approval_index", None) if request_id else None
+        if approval_index is not None:
+            # Reserve before sending so an outcome during an ambiguous send is buffered.
+            approval_index.reserve_pending(request_id)
+        try:
+            result = await self._send_prompt(prompt.chat_id, prompt.metadata, _build)
+        except BaseException:
+            if approval_index is not None:
+                approval_index.discard_pending_reservation(request_id)
+            raise
+        if approval_index is None:
+            return result
         view = view_slot.get("view")
-        request_id = prompt.request_id
-        approval_index = getattr(self, "_approval_index", None)
-        if result.success and approval_index is not None and request_id and view is not None:
+        jump_url = None
+        if result.success and view is not None:
             try:
                 message = view._message
                 channel = getattr(message, "channel", None)
@@ -5743,18 +5755,18 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 message_id = getattr(message, "id", None)
                 if channel_id is not None and message_id is not None:
                     jump_url = f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
-                    approval_index.start_pending(str(request_id), prompt.command_preview, jump_url)
+                    approval_index.start_pending(request_id, prompt.command_preview, jump_url)
             except Exception:
                 logger.warning("Discord approval index could not start pending record", exc_info=True)
+                jump_url = None
+        if jump_url is None:
+            approval_index.discard_pending_reservation(request_id)
         return result
 
     async def resolve_approval_index(self, request_id: str, choice: str | None) -> None:
-        if self._approval_index is None:
-            return
-        try:
-            await self._approval_index.resolve(request_id, choice)
-        except Exception:
-            logger.warning("Discord approval index could not update resolved prompt", exc_info=True)
+        """Hand the outcome to the index's retained, bounded background task."""
+        if self._approval_index is not None:
+            self._approval_index.start_resolve(request_id, choice)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,

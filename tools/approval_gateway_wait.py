@@ -187,12 +187,13 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         if adopted is not None:
             return adopted
 
-    def _drop_entry(state: str) -> str | None:
+    def _drop_entry(state: str, *, effective_outcome: str | None = None) -> str | None:
         """Leave the queue and return the choice committed so far. Reading ``entry.result`` and
         removing the entry are one critical section under the approval lock: ``resolve_gateway_approval``
         commits under the same lock, so a choice that landed after the deadline check but before this
         removal is still ours to honour, and one arriving later finds no entry (the client is told
-        nothing was pending instead of being acked "ok" while the agent denies)."""
+        nothing was pending instead of being acked "ok" while the agent denies). Choice observers get
+        ``effective_outcome`` when the caller overrides the committed choice (an interrupt denies)."""
         with _approval._lock:
             choice = entry.result
             queue = _approval._gateway_queues.get(session_key, [])
@@ -221,8 +222,10 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
                 settle(reason)
             except Exception:
                 logger.debug("approval settle hook failed", exc_info=True)
-        outcome = choice if choice is not None else (
-            "timeout" if state == "timeout" else "cancelled" if state != "notify_failed" else None
+        outcome = effective_outcome if effective_outcome is not None else (
+            choice if choice is not None else (
+                "timeout" if state == "timeout" else "cancelled" if state != "notify_failed" else None
+            )
         )
         if settle_choice is not None and outcome is not None:
             try:
@@ -253,7 +256,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             # Coalesced followers wake with the cause instead of a deny nobody issued.
             entry.cancelled = cancelled
             entry.event.set()
-        choice = _drop_entry(state)
+        choice = _drop_entry(state, effective_outcome="cancelled" if state == "interrupted" else None)
         if state == "interrupted":
             # Our own decision stays a fail-closed deny.
             choice = "deny"

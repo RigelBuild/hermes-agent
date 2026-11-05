@@ -34,6 +34,7 @@ class DiscordApprovalIndex:
         self._pending: dict[str, tuple[str, str, str, str]] = {}
         self._posting: set[str] = set()
         self._settled: dict[str, str] = {}
+        self._reservations: set[str] = set()
         self._tasks: set[asyncio.Task] = set()
 
     def _state_path(self) -> Path:
@@ -56,7 +57,7 @@ class DiscordApprovalIndex:
     def _thread_unavailable(error: Exception) -> bool:
         status = getattr(error, "status", None)
         code = getattr(error, "code", None)
-        return status in (403, 404) or code in {10003, 50001, 50013, 50083}
+        return status == 404 or code in {10003, 50083}
 
     async def _get_daily_thread(self):
         date = dt.date.today().isoformat()
@@ -109,10 +110,25 @@ class DiscordApprovalIndex:
             return text[:_SUMMARY_LIMIT - 1].rstrip() + "…"
         return text
 
+    def reserve_pending(self, request_id: str) -> None:
+        """Buffer terminal outcomes from before the prompt send is acknowledged."""
+        self._reservations.add(str(request_id))
+
+    def discard_pending_reservation(self, request_id: str) -> None:
+        request_id = str(request_id)
+        self._reservations.discard(request_id)
+        self._settled.pop(request_id, None)
+
     def start_pending(self, request_id: str, command_preview: str, jump_url: str) -> None:
         request_id = str(request_id)
-        self._posting.add(request_id)
         task = asyncio.create_task(self._add_pending_bounded(request_id, command_preview, jump_url))
+        self._reservations.discard(request_id)
+        self._posting.add(request_id)
+        self._tasks.add(task)
+        task.add_done_callback(self._task_done)
+
+    def start_resolve(self, request_id: str, choice: str | None) -> None:
+        task = asyncio.create_task(self._resolve_bounded(str(request_id), choice))
         self._tasks.add(task)
         task.add_done_callback(self._task_done)
 
@@ -145,8 +161,20 @@ class DiscordApprovalIndex:
             logger.warning("Discord approval index could not record pending prompt", exc_info=True)
         finally:
             self._posting.discard(request_id)
-            if request_id not in self._pending:
-                self._settled.pop(request_id, None)
+            self._settled.pop(request_id, None)
+            self._reservations.discard(request_id)
+
+    async def _resolve_bounded(self, request_id: str, choice: str | None) -> None:
+        try:
+            await asyncio.wait_for(
+                self.resolve(request_id, choice), timeout=_INDEX_OPERATION_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning("Discord approval index edit timed out for request %s", request_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Discord approval index could not update resolved prompt", exc_info=True)
 
     async def add_pending(self, request_id: str, command_preview: str, jump_url: str) -> None:
         request_id = str(request_id)
@@ -164,13 +192,14 @@ class DiscordApprovalIndex:
                 thread = await self._get_daily_thread()
                 message = await self._send_pending_line(thread, content)
             reference = (str(thread.id), str(message.id), summary, jump_url)
-            self._pending[request_id] = reference
             choice = self._settled.pop(request_id, None)
-            if choice is not None:
+            if choice is None:
+                self._pending[request_id] = reference
+            else:
                 await self._edit(reference, choice)
         except BaseException:
-            if request_id not in self._pending:
-                self._settled.pop(request_id, None)
+            self._settled.pop(request_id, None)
+            self._pending.pop(request_id, None)
             raise
         finally:
             self._posting.discard(request_id)
@@ -185,7 +214,7 @@ class DiscordApprovalIndex:
         request_id = str(request_id)
         reference = self._pending.pop(request_id, None)
         if reference is None:
-            if request_id in self._posting:
+            if request_id in self._posting or request_id in self._reservations:
                 self._settled[request_id] = choice or ""
             return
         await self._edit(reference, choice)

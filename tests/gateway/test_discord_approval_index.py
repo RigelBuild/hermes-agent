@@ -5,7 +5,7 @@ import datetime as dt
 import json
 import threading
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -121,11 +121,60 @@ async def _wait_for_index(adapter):
         await asyncio.gather(*tasks)
 
 
+def _assert_index_temporary_state_empty(index):
+    assert index._pending == {}
+    assert index._posting == set()
+    assert index._settled == {}
+    assert index._reservations == set()
+
+
+@pytest.mark.asyncio
+async def test_stalled_settlement_edit_does_not_delay_approval_wait(tmp_path, monkeypatch, caplog):
+    from tools import approval as approval_module
+
+    adapter, _client, _prompt_channel, _index_channel = _adapter(tmp_path / "home")
+    index = adapter._approval_index
+    request_id = "stalled-settlement"
+    await _send_prompt(adapter, request_id)
+    await _wait_for_index(adapter)
+    started = asyncio.Event()
+
+    async def stall_edit(*_args, **_kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(index, "_edit", stall_edit)
+    monkeypatch.setattr(
+        "plugins.platforms.discord.approval_index._INDEX_OPERATION_TIMEOUT_SECONDS", 0.5,
+    )
+    runner = _TurnRunner(_StatusAdapter(adapter), "discord:555")
+    loop = asyncio.get_running_loop()
+    runner._schedule = lambda coroutine, _label: asyncio.run_coroutine_threadsafe(coroutine, loop)
+    wait_task = await _approval_wait(
+        "discord:555", {"request_id": request_id, "command": "make release"}, runner,
+    )
+
+    assert approval_module.resolve_gateway_approval(
+        "discord:555", "once", request_id=request_id,
+    ) == 1
+    decision = await asyncio.wait_for(wait_task, timeout=2)
+    await asyncio.wait_for(started.wait(), timeout=2)
+    settle_task = next(
+        task for task in index._tasks
+        if task.get_coro().__name__ == "_resolve_bounded"
+    )
+    assert decision["resolved"] and decision["choice"] == "once"
+    assert settle_task in index._tasks
+    await asyncio.gather(settle_task, return_exceptions=True)
+    assert "edit timed out" in caplog.text
+    assert index._tasks == set()
+    _assert_index_temporary_state_empty(index)
+    approval_module._gateway_queues.pop("discord:555", None)
+
 
 def _line_messages(index_channel):
     return [message for thread in index_channel.threads for message in thread.messages.values()
             if message.content.startswith(("🟡 pending", "✅ approved", "❌ denied", "⌛ timed out", "⛔ cancelled"))]
-
 
 
 @pytest.mark.asyncio
@@ -168,6 +217,137 @@ async def test_approval_index_reuses_its_daily_thread_and_persisted_thread(tmp_p
     assert third.success is True
     assert len(index_channel.threads) == 1
     assert len(_line_messages(index_channel)) == 3
+
+
+@pytest.mark.asyncio
+async def test_approval_index_reservation_buffers_cancel_during_prompt_send(tmp_path, monkeypatch):
+    adapter, _client, prompt_channel, index_channel = _adapter(tmp_path / "home")
+    index = adapter._approval_index
+    request_id = "cancel-during-send"
+    sending = asyncio.Event()
+    continue_send = asyncio.Event()
+    original_send = prompt_channel.send
+
+    async def delayed_send(*args, **kwargs):
+        sending.set()
+        await continue_send.wait()
+        return await original_send(*args, **kwargs)
+
+    monkeypatch.setattr(prompt_channel, "send", delayed_send)
+    prompt_task = asyncio.create_task(_send_prompt(adapter, request_id))
+    await asyncio.wait_for(sending.wait(), timeout=2)
+    assert request_id in index._reservations
+
+    await index.resolve(request_id, "cancelled")
+    assert index._settled[request_id] == "cancelled"
+    continue_send.set()
+    result = await prompt_task
+    await _wait_for_index(adapter)
+
+    assert result.success
+    assert _line_messages(index_channel)[0].content.startswith("⛔ cancelled")
+    _assert_index_temporary_state_empty(index)
+
+
+@pytest.mark.asyncio
+async def test_failed_prompt_send_discards_index_reservation(tmp_path, monkeypatch):
+    adapter, _client, prompt_channel, _index_channel = _adapter(tmp_path / "home")
+    index = adapter._approval_index
+    request_id = "failed-prompt-send"
+    sending = asyncio.Event()
+    continue_send = asyncio.Event()
+
+    async def fail_after_pause(*_args, **_kwargs):
+        sending.set()
+        await continue_send.wait()
+        raise RuntimeError("Discord send failed")
+
+    monkeypatch.setattr(prompt_channel, "send", fail_after_pause)
+    prompt_task = asyncio.create_task(_send_prompt(adapter, request_id))
+    await asyncio.wait_for(sending.wait(), timeout=2)
+    assert request_id in index._reservations
+    await index.resolve(request_id, "cancelled")
+    continue_send.set()
+    result = await prompt_task
+    await _wait_for_index(adapter)
+
+    assert not result.success
+    _assert_index_temporary_state_empty(index)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_fields", [{"status": 403}, {"code": 50013}])
+async def test_approval_index_keeps_cached_thread_on_permission_error(tmp_path, monkeypatch, error_fields):
+    adapter, _client, _prompt_channel, index_channel = _adapter(tmp_path / "home")
+    index = adapter._approval_index
+    thread = await index._get_daily_thread()
+
+    async def deny_send(*_args, **_kwargs):
+        error = RuntimeError("missing permissions")
+        for key, value in error_fields.items():
+            setattr(error, key, value)
+        raise error
+
+    monkeypatch.setattr(thread, "send", deny_send)
+    with pytest.raises(RuntimeError, match="missing permissions"):
+        await index.add_pending("permission-denied", "make release", "https://example.test")
+
+    assert len(index_channel.threads) == 1
+    assert index._thread is thread
+    _assert_index_temporary_state_empty(index)
+
+
+@pytest.mark.asyncio
+async def test_interrupt_after_committed_choice_settles_index_as_cancelled(tmp_path, monkeypatch):
+    from tools import approval as approval_module
+
+    adapter, _client, _prompt_channel, index_channel = _adapter(tmp_path / "home")
+    request_id = "committed-choice-interrupt"
+    await _send_prompt(adapter, request_id)
+    await _wait_for_index(adapter)
+    runner = _TurnRunner(_StatusAdapter(adapter), "discord:555")
+
+    def commit_then_interrupt(_event, session_key, *, interrupt_log):
+        assert approval_module.resolve_gateway_approval(
+            session_key, "once", request_id=request_id,
+        ) == 1
+        return "interrupted"
+
+    monkeypatch.setattr("tools.approval_gateway_wait._poll_event", commit_then_interrupt)
+    wait_task = await _approval_wait(
+        "discord:555", {"request_id": request_id, "command": "make release"}, runner,
+    )
+    decision = await wait_task
+    await runner.scheduled.pop(0)
+    await _wait_for_index(adapter)
+
+    assert decision["cancelled"]
+    assert decision["choice"] == "deny"
+    assert _line_messages(index_channel)[0].content.startswith("⛔ cancelled")
+    _assert_index_temporary_state_empty(adapter._approval_index)
+    approval_module._gateway_queues.pop("discord:555", None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("config_yaml,expected_channel", [
+    ("discord:\n  enabled: true\n  approval_index_channel: 901\n", "901"),
+    ("platforms:\n  discord:\n    enabled: true\n    extra:\n      approval_index_channel: 902\n", "902"),
+])
+async def test_approval_index_channel_config_enables_adapter(tmp_path, monkeypatch, config_yaml, expected_channel):
+    from gateway.config import Platform, load_gateway_config
+    from hermes_cli.plugins import discover_plugins
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(config_yaml, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    discover_plugins()
+
+    config = load_gateway_config()
+    adapter = DiscordAdapter(config.platforms[Platform.DISCORD])
+
+    assert config.platforms[Platform.DISCORD].extra["approval_index_channel"] == expected_channel
+    assert adapter._approval_index._channel_id == expected_channel
 
 
 @pytest.mark.asyncio
@@ -220,6 +400,7 @@ async def test_approval_index_applies_settlement_during_pending_post(tmp_path, m
     assert _line_messages(index_channel)[0].content.startswith(
         "✅ approved · once · make release · https://discord.com/channels/777/555/1234"
     )
+    _assert_index_temporary_state_empty(adapter._approval_index)
 
 
 @pytest.mark.asyncio
@@ -373,7 +554,9 @@ async def _approval_wait(session_key, approval_data, runner, *, poll=None):
             runner, data, command=data["command"], card_message_id=None,
         )
         from gateway.run_turn_runner_approval_settle import register_approval_index_settle
-        register_approval_index_settle(runner, data, runner._ctx._status_adapter.adapter)
+        status_adapter = runner._ctx._status_adapter
+        if status_adapter is not None:
+            register_approval_index_settle(runner, data, status_adapter.adapter)
         notified.set()
     task = asyncio.create_task(asyncio.to_thread(_await_gateway_decision, session_key, notify, approval_data))
     assert await asyncio.to_thread(notified.wait, 5)
@@ -398,12 +581,13 @@ async def test_button_approval_edits_its_index_line(tmp_path):
     interaction = SimpleNamespace(
         user=SimpleNamespace(id=1, display_name="alice"),
         response=SimpleNamespace(edit_message=AsyncMock(), send_message=AsyncMock()),
-        message=SimpleNamespace(embeds=[SimpleNamespace(set_footer=AsyncMock(), color=None)]),
+        message=SimpleNamespace(embeds=[SimpleNamespace(set_footer=Mock(), color=None)]),
     )
 
     await view._resolve(interaction, "once", discord_adapter.discord.Color.green(), "platform.discord.approval.resolved_once")
     await wait_task
     await runner.scheduled.pop(0)
+    await _wait_for_index(adapter)
 
     assert _line_messages(index_channel)[0].content.startswith("✅ approved")
     approval_module._gateway_queues.pop(session_key, None)
@@ -429,6 +613,7 @@ async def test_typed_deny_edits_its_index_line(tmp_path):
     result = await slash_runner._handle_deny_command(_make_event("/deny wrong directory"))
     await wait_task
     await settle_runner.scheduled.pop(0)
+    await _wait_for_index(adapter)
 
     assert "wrong directory" in result
     assert _line_messages(index_channel)[0].content.startswith("❌ denied")
@@ -456,6 +641,7 @@ async def test_timeout_edits_its_index_line(tmp_path, monkeypatch):
     await runner.scheduled.pop(0)
     await runner.scheduled.pop(0)
 
+    await _wait_for_index(adapter)
     assert decision["resolved"] is False
     assert _line_messages(index_channel)[0].content.startswith("⌛ timed out")
     assert status_adapter.sent
@@ -551,6 +737,7 @@ async def test_resolve_during_failed_post_clears_temporary_state(tmp_path, monke
 
     assert index._posting == set()
     assert index._settled == {}
+    _assert_index_temporary_state_empty(index)
 
 
 @pytest.mark.asyncio
@@ -578,11 +765,13 @@ async def test_terminal_cancelled_paths_update_index_and_clear_pending(tmp_path,
 
     decision = await wait_task
     await runner.scheduled.pop(0)
+    await _wait_for_index(adapter)
 
     assert decision["cancelled"]
     assert _line_messages(index_channel)[0].content.startswith("⛔ cancelled · make release · ")
     assert request_id not in adapter._approval_index._pending
     assert request_id not in adapter._approval_index._settled
+    _assert_index_temporary_state_empty(adapter._approval_index)
     approval_module._gateway_queues.pop("discord:555", None)
 
 
