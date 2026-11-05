@@ -130,6 +130,16 @@ class TestSummarizeCronFailureForDelivery:
         assert "did not respond in time" not in summary
         assert "backup provider" not in summary.lower()
 
+    def test_pre_run_timeout_is_identified_as_a_script_timeout(self):
+        summary = _summarize_cron_failure_for_delivery(
+            {"name": "agent job"},
+            "pre-run script timed out after 2s",
+        )
+
+        assert "script timed out" in summary
+        assert "did not respond in time" not in summary
+        assert "ai model service" not in summary.lower()
+
 class TestPerJobToolsetMcpMerge:
     """A per-job enabled_toolsets allowlist must not silently drop MCP servers."""
 
