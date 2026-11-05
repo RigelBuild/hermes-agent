@@ -377,6 +377,8 @@ def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]
 
 
 GATEWAY_PROMPT_TIMEOUT_S = 300.0
+# Optional first line of ``.update_response`` naming the prompt id it answers.
+UPDATE_RESPONSE_ID_PREFIX = "prompt-id:"
 
 
 def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = GATEWAY_PROMPT_TIMEOUT_S) -> str:
@@ -419,6 +421,11 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = GATEWA
             try:
                 answer = response_path.read_text(encoding="utf-8-sig").strip()
                 response_path.unlink(missing_ok=True)
+                tag, _, rest = answer.partition("\n")
+                if tag.startswith(UPDATE_RESPONSE_ID_PREFIX):
+                    if tag[len(UPDATE_RESPONSE_ID_PREFIX):] != payload["id"]:
+                        continue  # an answer to an earlier prompt
+                    answer = rest.strip()
                 prompt_path.unlink(missing_ok=True)
                 return answer if answer else default
             except (OSError, ValueError):

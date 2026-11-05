@@ -83,6 +83,32 @@ class TestGatewayPrompt:
         assert not (hermes_home / ".update_prompt.json").exists()
         assert not (hermes_home / ".update_response").exists()
 
+    def test_answer_tagged_for_an_earlier_prompt_is_ignored(self, tmp_path):
+        """A late click from an old card must not answer the prompt now waiting."""
+        import json
+        import threading
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        prompt_path = hermes_home / ".update_prompt.json"
+        response_path = hermes_home / ".update_response"
+
+        def answer():
+            while not prompt_path.exists():
+                time.sleep(0.01)
+            current = json.loads(prompt_path.read_text())["id"]
+            response_path.write_text("prompt-id:stale\ny")
+            while response_path.exists():
+                time.sleep(0.01)
+            response_path.write_text(f"prompt-id:{current}\nn")
+
+        thread = threading.Thread(target=answer)
+        thread.start()
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            from hermes_cli.update_cmd import _gateway_prompt
+            result = _gateway_prompt("Restore? [Y/n]", "y", timeout=5.0)
+        thread.join()
+        assert result == "n"
+
 # ---------------------------------------------------------------------------
 # Update command spawns --gateway flag
 # ---------------------------------------------------------------------------

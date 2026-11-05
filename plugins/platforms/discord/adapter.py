@@ -6604,10 +6604,11 @@ def _define_discord_view_classes() -> None:
                 interaction, color,
                 t("platform.discord.approval.by_user", label=t(label_key), user=interaction.user.display_name))
             try:
+                from hermes_cli.update_cmd import UPDATE_RESPONSE_ID_PREFIX
                 from hermes_constants import get_hermes_home
                 response_path = get_hermes_home() / ".update_response"
                 tmp = response_path.with_suffix(".tmp")
-                tmp.write_text(answer, encoding="utf-8")
+                tmp.write_text(f"{UPDATE_RESPONSE_ID_PREFIX}{self.prompt_id}\n{answer}", encoding="utf-8")
                 tmp.replace(response_path)
                 logger.info("Discord update prompt answered '%s' by %s", answer, interaction.user.display_name)
             except Exception as exc:

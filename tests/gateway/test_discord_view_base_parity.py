@@ -145,7 +145,7 @@ async def test_old_update_card_cannot_answer_a_newer_prompt(tmp_path, monkeypatc
     stale.response.send_message.assert_awaited_once()
 
     await new_card._respond(_interaction(), "n", None, "platform.discord.prompt.negate")
-    assert (home / ".update_response").read_text() == "n"
+    assert (home / ".update_response").read_text() == "prompt-id:new\nn"
 
 
 @pytest.mark.asyncio
@@ -156,3 +156,15 @@ async def test_clarify_view_stays_live_when_its_edit_fails():
     await view._finish(interaction, None, "done", log_edit_failure=False)
     assert view.resolved is True
     assert getattr(view, "stopped", False) is False
+
+
+@pytest.mark.asyncio
+async def test_update_answer_names_the_prompt_it_answers(tmp_path, monkeypatch):
+    import json
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / ".update_prompt.json").write_text(json.dumps({"prompt": "p?", "id": "abc"}))
+    card = UpdatePromptView(session_key="s", allowed_user_ids={"1"})
+    await card._respond(_interaction(), "y", None, "platform.discord.prompt.affirm")
+    assert (home / ".update_response").read_text() == "prompt-id:abc\ny"
