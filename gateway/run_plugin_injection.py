@@ -26,15 +26,17 @@ logger = logging.getLogger("gateway.run")
 class GatewayPluginInjectionMixin:
     def _install_plugin_message_injector(self) -> None:
         """Publish this live gateway's plugin message scheduler process-wide."""
-        from hermes_cli.plugins import publish_gateway_message_host
+        from hermes_cli.plugins import publish_gateway_message_host, publish_gateway_session_reset_host
 
         publish_gateway_message_host(self, self._schedule_plugin_message_injection)
+        publish_gateway_session_reset_host(self, self._schedule_plugin_session_reset)
 
     def _clear_plugin_message_injector(self) -> None:
         """Remove this runner's scheduler without clobbering a newer owner."""
-        from hermes_cli.plugins import clear_published_gateway_message_host
+        from hermes_cli.plugins import clear_published_gateway_message_host, clear_published_gateway_session_reset_host
 
         clear_published_gateway_message_host(self)
+        clear_published_gateway_session_reset_host(self)
 
     def _schedule_plugin_message_injection(
         self, *, content: str, plugin_id: str, session_key: Optional[str] = None,
@@ -108,6 +110,89 @@ class GatewayPluginInjectionMixin:
 
         future.add_done_callback(_log_result)
         return True
+
+    def _schedule_plugin_session_reset(
+        self, *, session_id: str, reason: str, plugin_id: str, plugin_home: Optional[Path] = None,
+    ) -> bool:
+        """Schedule a reset of the live session named by *session_id* on the gateway loop."""
+        from gateway.run import safe_schedule_threadsafe
+        loop = getattr(self, "_gateway_loop", None)
+        if (not self._plugin_injection_accepting() or loop is None or loop.is_closed()
+                or not isinstance(session_id, str) or not session_id):
+            return False
+        entry = self.session_store.lookup_by_session_id(session_id)
+        if entry is None or not self._plugin_session_key_admissible(
+                entry.session_key, plugin_home=plugin_home, plugin_id=plugin_id):
+            return False
+        target = f"session={entry.session_key}"
+        coro = self._dispatch_plugin_session_reset(
+            session_id=session_id, session_key=entry.session_key, reason=reason,
+            plugin_id=plugin_id, plugin_home=plugin_home,
+        )
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        if current_loop is loop:
+            try:
+                future = loop.create_task(coro)
+            except Exception:
+                coro.close()
+                logger.warning("Plugin session reset scheduling failed", exc_info=True)
+                return False
+            self._background_tasks.add(future)
+            future.add_done_callback(self._background_tasks.discard)
+        else:
+            future = safe_schedule_threadsafe(
+                coro, loop, logger=logger, log_message="Plugin session reset scheduling failed",
+                log_level=logging.WARNING,
+            )
+            if future is None:
+                return False
+
+        def _log_result(completed) -> None:
+            try:
+                if completed.result():
+                    return
+            except (asyncio.CancelledError, concurrent.futures.CancelledError):
+                return
+            except Exception:
+                logger.warning("Plugin session reset failed: plugin=%s %s", plugin_id, target, exc_info=True)
+                return
+            logger.warning("Plugin session reset was not routed: plugin=%s %s", plugin_id, target)
+
+        future.add_done_callback(_log_result)
+        return True
+
+    async def _dispatch_plugin_session_reset(
+        self, *, session_id: str, session_key: str, reason: str, plugin_id: str,
+        plugin_home: Optional[Path],
+    ) -> bool:
+        """Recheck reset ownership on-loop, then run the shared session boundary."""
+        if not self._plugin_injection_accepting():
+            return False
+        entry = await self.async_session_store.lookup_by_session_id(session_id)
+        if (entry is None or entry.session_key != session_key or entry.session_id != session_id
+                or not self._plugin_session_key_admissible(
+                    session_key, plugin_home=plugin_home, plugin_id=plugin_id)):
+            return False
+        source = self._restored_source(entry)
+        if source is None:
+            return False
+        from gateway.run import _async_profile_runtime_scope
+        async with _async_profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+            fresh = await self.async_session_store.lookup_by_session_key(session_key)
+            if fresh is None or fresh.session_id != session_id:
+                return False
+            reset_result = await self._reset_session_for_key(
+                source, session_key, reason="session_reset", expected_session_id=session_id,
+            )
+            if reset_result is None:
+                return False
+            _old_sid, new_entry, _created = reset_result
+            logger.info("Plugin session reset accepted: plugin=%s session=%s reason=%s",
+                        plugin_id, session_key, reason)
+            return new_entry is not None
 
     def _plugin_injection_accepting(self) -> bool:
         return getattr(self, "_running", False) and not getattr(self, "_draining", False)

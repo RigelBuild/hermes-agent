@@ -100,3 +100,46 @@ async def test_new_command_only_clears_own_session():
     assert other_key in runner._session_reasoning_overrides
     assert session_key not in runner._pending_model_notes
     assert other_key in runner._pending_model_notes
+
+
+@pytest.mark.asyncio
+async def test_reset_without_existing_session_shows_new_session_header():
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    source = _make_source()
+    session_key = build_session_key(source)
+    new_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-new",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    session_store = SimpleNamespace(_entries={})
+    runner.session_store = session_store
+    runner._async_session_store = SimpleNamespace(
+        _store=session_store,
+        reset_session=AsyncMock(return_value=None),
+        get_or_create_session=AsyncMock(return_value=new_entry),
+    )
+    runner._hm_stop_owner_turn = AsyncMock()
+    runner._invalidate_session_run_generation = MagicMock()
+    runner._release_running_agent_state = MagicMock()
+    runner._cleanup_old_agent_for_reset = AsyncMock()
+    runner._evict_cached_agent = MagicMock()
+    runner._clear_conversation_scope = MagicMock()
+    runner._finalize_session_off_loop = AsyncMock(return_value=[])
+    runner._deliver_session_end_messages = AsyncMock()
+    runner.hooks = SimpleNamespace(emit=AsyncMock())
+    runner._is_telegram_topic_lane = MagicMock(return_value=False)
+    runner._session_key_for_source = MagicMock(return_value=session_key)
+    runner._reset_notice_session_info = MagicMock(return_value="")
+    runner._telegram_topic_new_header = MagicMock(return_value=None)
+    runner._session_db = None
+
+    result = await runner._handle_reset_command(_make_event("/reset"))
+
+    assert "New session started!" in str(result)
+    assert "Session reset!" not in str(result)

@@ -108,6 +108,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Dispatch tools from commands | `ctx.dispatch_tool(name, args)` — invokes a registered tool with parent-agent context auto-wired |
 | Add CLI commands | `ctx.register_cli_command(name, help, setup_fn, handler_fn)` — adds `hermes <plugin> <subcommand>` |
 | Inject messages | `ctx.inject_message(content, role="user", session_key=... \| origin=...)` - see [Injecting Messages](#injecting-messages) |
+| Reset a gateway session | `ctx.reset_session(session_id, reason)` - see [Resetting a Gateway Session](#resetting-a-gateway-session) |
 | Post and edit a status message | `handle = ctx.post_message(text)`, then `handle.edit(text)` — see [Posting a live message](#posting-a-live-message) |
 | Ship data files | `Path(__file__).parent / "data" / "file.yaml"` |
 | Bundle skills | `ctx.register_skill(name, path)` — namespaced as `plugin:skill`, loaded via `skill_view("plugin:skill")` |
@@ -1046,6 +1047,20 @@ Starting a session with `origin` (gateway mode only):
 - A plugin can never target another profile. `False` is returned (with the reason in the gateway log) when the origin names a different `profile`, when the gateway's own profile routing sends that chat to a different profile, when the plugin's profile is not served by this gateway, or when that profile has no connected adapter for `platform` — another profile's bot is never borrowed. On a multiplexed gateway the turn runs under the plugin's profile home and secrets.
 - Authorisation is not bypassed: the origin's user must pass the gateway's current allowlists, pairing, or allow-all configuration for that profile, the same check as the `session_key` path. Choose a `user_id` that is authorised, or the request is dropped at dispatch and logged.
 - The same text rules apply: no slash commands, approvals, or prompt resolution. The permission below is read from the plugin's own profile `config.yaml`.
+
+## Resetting a Gateway Session
+
+Plugins can request a clean conversation boundary for a known live gateway session:
+
+```python
+ctx.reset_session(session_id, reason="reasoning_extraction refusal")
+```
+
+**Signature:** `ctx.reset_session(session_id: str, reason: str) -> bool`
+
+This method requires the same per-plugin `allow_gateway_injection` permission as `inject_message`. It only resets a session in the plugin's own profile. It returns `True` when the live gateway accepts and schedules the reset; it does not wait for completion. Unknown sessions, another profile's sessions, a missing gateway, or a disabled permission return `False`. The gateway runs the normal reset lifecycle without sending a chat reply.
+
+**Reset requirements:** The session ID must be known to the gateway. The reset stops the current turn and invokes the normal session-boundary hooks. The plugin-provided `reason` is written to the gateway log.
 
 Ink TUI (`hermes --tui`) and the desktop / dashboard chat are a third host. They do not set the classic CLI reference and they do not register on the messaging-gateway injector — those two hosts stay separate so a live gateway cannot clobber the TUI (or the reverse). Pass the session's durable `session_key` (the `ses_…` id), not the ephemeral UI session id. Hermes queues the text on that session's prompt queue: a busy session keeps the message for the next turn, an idle session starts one. A key that is not a live TUI session is left for the messaging gateway when one is running, and is never rerouted to a different chat.
 
