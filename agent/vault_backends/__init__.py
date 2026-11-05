@@ -26,7 +26,7 @@ def describe_ref(item: str, field: str | None = None) -> dict:
     details: dict = {}
     if backend.name == "onepassword":
         item_id = str(item).removeprefix(backend.prefix)
-        data = backend._get_item(str(item))
+        data = backend.describe_item(str(item))
         title = data.get("title")
         if title:
             details["title"] = str(title)

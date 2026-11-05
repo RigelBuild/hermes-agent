@@ -110,6 +110,7 @@ def test_describe_ref_fetches_one_item_without_listing(unlocked, monkeypatch):
     assert metadata["field_label"] == "private key"
     assert len(calls) == 1
     assert calls[0][:2] == ("item", "get")
+    assert "--reveal" not in calls[0]
     assert "list" not in calls[0]
     assert _AGE not in json.dumps(metadata)
 

@@ -121,6 +121,21 @@ class TestTrustGateAtCallTime:
         assert "source=\"production\"" in description
         assert len(message) < 1800
 
+    def test_untrusted_approval_redacts_authorization_bearers_recursively(self, fake_session):
+        _set_trust("srv", "untrusted")
+        handler = _mcp_handlers._make_tool_handler("srv", "sync_source", 30.0)
+        args = {
+            "Authorization": "Bearer top-secret-token",
+            "options": [{"Proxy-Authorization": "Bearer nested-secret-token", "mode": "safe"}],
+        }
+        with patch("tools.approval_prompt.request_elicitation_consent", return_value="decline") as consent:
+            handler(args)
+        message, description = consent.call_args.args
+        assert "top-secret-token" not in message + description
+        assert "nested-secret-token" not in message + description
+        assert "Authorization" in message + description
+        assert "Proxy-Authorization" in message + description
+
     def test_denied_approval_blocks_rpc(self, fake_session):
         """'decline' blocks the call — the RPC must never fire."""
         _set_trust("srv", "untrusted")

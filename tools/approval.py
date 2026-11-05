@@ -1191,13 +1191,24 @@ _SECRET_ARG = re.compile(r"pass(word|phrase)?|secret|token|otp|totp|code|credent
 
 
 def _render_tool_call(tool_name: str, args: Any) -> str:
-    """The tool call as the approver should read it: ``tool(key=value, ...)`` with string values
-    clipped, credential-named arguments masked and the rest passed through ``redact_sensitive_text``."""
+    """Render a capped, redacted tool call for approval and review surfaces."""
     from agent.redact import redact_sensitive_text
 
+    def sensitive_key(key: str) -> bool:
+        return key.lower().replace("-", "_") in {"authorization", "proxy_authorization"} or bool(_SECRET_ARG.search(key))
+
+    def safe_value(raw: Any) -> Any:
+        if isinstance(raw, dict):
+            return {key: "[REDACTED]" if sensitive_key(str(key)) else safe_value(value)
+                    for key, value in raw.items()}
+        if isinstance(raw, list):
+            return [safe_value(value) for value in raw]
+        return raw
+
     def value(key: str, raw: Any) -> str:
-        if _SECRET_ARG.search(key):
+        if sensitive_key(key):
             return "[REDACTED]"
+        raw = safe_value(raw)
         if isinstance(raw, (dict, list)):
             text = json.dumps(raw, ensure_ascii=False, default=str)
         else:

@@ -90,7 +90,7 @@ class DiscordApprovalIndex:
                     await self._write_state(date, None)
                 today = dt.date.fromisoformat(date)
                 from hermes_time import safe_strftime
-                title = f"{safe_strftime(today, '%a %b')} {today.day}"
+                title = f"{safe_strftime(dt.datetime.combine(today, dt.time()), '%a %b')} {today.day}"
                 if self._adapter._is_forum_parent(parent):
                     created = await parent.create_thread(name=title, content=title)
                     thread = self._adapter._forum_thread_parts(created)[0]
