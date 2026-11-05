@@ -27,15 +27,15 @@ def _read_dm_role_auth_guild() -> Optional[int]:
 # Default timeout for Discord button views when ``approvals.discord_prompt_timeout`` is unset.
 # Prompts are bot messages, not interaction responses: each click brings a fresh interaction and
 # the timeout edit uses the bot's own message, so the ~15-minute interaction-token expiry does not
-# bound them. The ceiling is a sanity cap so a typo cannot leave buttons live for days.
+# bound them. The one-day ceiling lets an operator answer a prompt later the same day.
 _DISCORD_PROMPT_TIMEOUT_DEFAULT = 300
 _DISCORD_PROMPT_TIMEOUT_MIN = 30
-_DISCORD_PROMPT_TIMEOUT_MAX = 3600
+_DISCORD_PROMPT_TIMEOUT_MAX = 86400
 
 
 def _read_discord_prompt_timeout() -> int:
     """Timeout (seconds) for Discord button views from ``approvals.discord_prompt_timeout``
-    (default 300), clamped to [MIN, MAX] so a typo can't make prompts vanish or outlive tokens."""
+    (default 300), clamped to [MIN, MAX] so a typo can't make prompts vanish or stay live for days."""
     raw: Any = None
     try:
         from hermes_cli.config import read_raw_config
@@ -54,4 +54,13 @@ def _read_discord_prompt_timeout() -> int:
         return _DISCORD_PROMPT_TIMEOUT_MIN
     if seconds > _DISCORD_PROMPT_TIMEOUT_MAX:
         return _DISCORD_PROMPT_TIMEOUT_MAX
+    return seconds
+
+
+def _read_discord_prompt_timeout_within(backing_seconds: float) -> int:
+    """Prompt timeout capped at the backing wait's lifetime, so a card never outlives the request
+    it answers. ``backing_seconds <= 0`` means the backing wait is unbounded."""
+    seconds = _read_discord_prompt_timeout()
+    if backing_seconds > 0:
+        return min(seconds, max(int(backing_seconds), 1))
     return seconds

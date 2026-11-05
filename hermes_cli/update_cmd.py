@@ -376,7 +376,12 @@ def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]
 # because a name it pulls from a sibling module no longer exists.
 
 
-def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0) -> str:
+GATEWAY_PROMPT_TIMEOUT_S = 300.0
+# Optional first line of ``.update_response`` naming the prompt id it answers.
+UPDATE_RESPONSE_ID_PREFIX = "prompt-id:"
+
+
+def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = GATEWAY_PROMPT_TIMEOUT_S) -> str:
     """File-based IPC prompt for gateway mode.
 
     Writes a prompt marker file so the gateway can forward the question to the
@@ -414,8 +419,16 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     while _time.monotonic() < deadline:
         if response_path.exists():
             try:
-                answer = response_path.read_text(encoding="utf-8-sig").strip()
-                response_path.unlink(missing_ok=True)
+                # Claim by rename so a newer answer written after this read is never deleted.
+                claimed = response_path.with_suffix(".claimed")
+                response_path.replace(claimed)
+                answer = claimed.read_text(encoding="utf-8-sig").strip()
+                claimed.unlink(missing_ok=True)
+                tag, _, rest = answer.partition("\n")
+                if tag.startswith(UPDATE_RESPONSE_ID_PREFIX):
+                    if tag[len(UPDATE_RESPONSE_ID_PREFIX):] != payload["id"]:
+                        continue  # an answer to an earlier prompt
+                    answer = rest.strip()
                 prompt_path.unlink(missing_ok=True)
                 return answer if answer else default
             except (OSError, ValueError):

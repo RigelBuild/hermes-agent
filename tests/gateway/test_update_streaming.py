@@ -83,6 +83,64 @@ class TestGatewayPrompt:
         assert not (hermes_home / ".update_prompt.json").exists()
         assert not (hermes_home / ".update_response").exists()
 
+    def test_answer_tagged_for_an_earlier_prompt_is_ignored(self, tmp_path):
+        """A late click from an old card must not answer the prompt now waiting."""
+        import json
+        import threading
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        prompt_path = hermes_home / ".update_prompt.json"
+        response_path = hermes_home / ".update_response"
+
+        def answer():
+            while not prompt_path.exists():
+                time.sleep(0.01)
+            current = json.loads(prompt_path.read_text())["id"]
+            response_path.write_text("prompt-id:stale\ny")
+            while response_path.exists():
+                time.sleep(0.01)
+            response_path.write_text(f"prompt-id:{current}\nn")
+
+        thread = threading.Thread(target=answer)
+        thread.start()
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            from hermes_cli.update_cmd import _gateway_prompt
+            result = _gateway_prompt("Restore? [Y/n]", "y", timeout=5.0)
+        thread.join()
+        assert result == "n"
+
+    def test_answer_written_while_a_stale_one_is_handled_survives(self, tmp_path, monkeypatch):
+        """The consumer removes only the bytes it read, never a newer answer."""
+        import json
+        import threading
+        from pathlib import Path
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        prompt_path = hermes_home / ".update_prompt.json"
+        response_path = hermes_home / ".update_response"
+        real_read = Path.read_text
+
+        def read_then_race(self, *a, **k):
+            text = real_read(self, *a, **k)
+            if "prompt-id:stale" in text:  # the current answer lands right after the stale read
+                current = json.loads(real_read(prompt_path))["id"]
+                response_path.write_text(f"prompt-id:{current}\nn")
+            return text
+
+        def write_stale():
+            while not prompt_path.exists():
+                time.sleep(0.01)
+            response_path.write_text("prompt-id:stale\ny")
+
+        monkeypatch.setattr(Path, "read_text", read_then_race)
+        thread = threading.Thread(target=write_stale)
+        thread.start()
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            from hermes_cli.update_cmd import _gateway_prompt
+            result = _gateway_prompt("Restore? [Y/n]", "default", timeout=3.0)
+        thread.join()
+        assert result == "n"
+
 # ---------------------------------------------------------------------------
 # Update command spawns --gateway flag
 # ---------------------------------------------------------------------------

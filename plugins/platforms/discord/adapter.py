@@ -1201,7 +1201,8 @@ class VoiceReceiver:
 
 
 from plugins.platforms.discord.adapter_config_readers import (
-    _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout, _read_dm_role_auth_guild)
+    _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout,
+    _read_discord_prompt_timeout_within, _read_dm_role_auth_guild)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -6344,6 +6345,15 @@ def _resolve_exec_approval_admin_gate(config_extra: Optional[dict]) -> tuple[boo
     return (True, admin_ids)
 
 
+def _current_update_prompt_id() -> Optional[str]:
+    """The id of the update prompt now waiting on disk, or None when none is."""
+    try:
+        from hermes_constants import get_hermes_home
+        return json.loads((get_hermes_home() / ".update_prompt.json").read_text(encoding="utf-8")).get("id")
+    except Exception:
+        return None
+
+
 def _define_discord_view_classes() -> None:
     """Register Discord UI view classes as module globals.
     Called at module load and after a lazy install so the classes exist whenever DISCORD_AVAILABLE."""
@@ -6407,6 +6417,7 @@ def _define_discord_view_classes() -> None:
                 embed.set_footer(text=footer)
             self._disable_all()
             await interaction.response.edit_message(embed=embed, view=self)
+            self.stop()
 
         def _localize_buttons(self, **keys_by_attr: str) -> None:
             """Relabel decorator-declared buttons from the catalog (decorators run at import, before
@@ -6525,7 +6536,8 @@ def _define_discord_view_classes() -> None:
         ``GatewayRunner._request_slash_confirm``); clicks call ``tools.slash_confirm.resolve(...)``."""
 
         def __init__(self, session_key: str, confirm_id: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
+            from tools.slash_confirm import DEFAULT_TIMEOUT_SECONDS
+            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout_within(DEFAULT_TIMEOUT_SECONDS))
             self.session_key = session_key
             self.confirm_id = confirm_id
             self._localize_buttons(
@@ -6573,21 +6585,30 @@ def _define_discord_view_classes() -> None:
         ``.update_response`` for the detached update process to pick up."""
 
         def __init__(self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
+            from hermes_cli.update_cmd import GATEWAY_PROMPT_TIMEOUT_S
+            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout_within(GATEWAY_PROMPT_TIMEOUT_S))
             self.session_key = session_key
+            self.prompt_id = _current_update_prompt_id()
             self._localize_buttons(yes_btn="platform.discord.prompt.affirm", no_btn="platform.discord.prompt.negate")
 
         async def _respond(self, interaction: discord.Interaction, answer: str, color: discord.Color, label_key: str):
             if not await self._gate(interaction, resolved_msg=t("platform.discord.prompt.already_answered"), unauth_msg=_unauthorized()):
                 return
+            # A card left over from an earlier prompt must not answer the one now waiting.
+            if self.prompt_id is None or _current_update_prompt_id() != self.prompt_id:
+                await interaction.response.send_message(t("platform.discord.prompt.expired_footer"), ephemeral=True)
+                await self.on_timeout()
+                self.stop()
+                return
             await self._finalize_embed(
                 interaction, color,
                 t("platform.discord.approval.by_user", label=t(label_key), user=interaction.user.display_name))
             try:
+                from hermes_cli.update_cmd import UPDATE_RESPONSE_ID_PREFIX
                 from hermes_constants import get_hermes_home
                 response_path = get_hermes_home() / ".update_response"
                 tmp = response_path.with_suffix(".tmp")
-                tmp.write_text(answer, encoding="utf-8")
+                tmp.write_text(f"{UPDATE_RESPONSE_ID_PREFIX}{self.prompt_id}\n{answer}", encoding="utf-8")
                 tmp.replace(response_path)
                 logger.info("Discord update prompt answered '%s' by %s", answer, interaction.user.display_name)
             except Exception as exc:
@@ -6848,7 +6869,8 @@ def _define_discord_view_classes() -> None:
         Single-use: after the first valid click all buttons disable."""
 
         def __init__(self, choices: list[str], clarify_id: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
+            from tools.clarify_gateway import get_clarify_timeout
+            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout_within(get_clarify_timeout()))
             self.choices = list(choices)[:24]
             self.clarify_id = clarify_id
             for index, choice in enumerate(self.choices):
@@ -6909,6 +6931,8 @@ def _define_discord_view_classes() -> None:
                     await interaction.response.defer()
                 except Exception:
                     pass
+                return  # buttons may still show; keep the view so clicks get the already-answered reply
+            self.stop()
 
         async def _resolve_choice(self, interaction: discord.Interaction, index: int, choice: str) -> None:
             """Resolve the clarify with a chosen option."""
