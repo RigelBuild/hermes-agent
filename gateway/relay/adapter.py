@@ -1937,9 +1937,11 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         (success=False) so run.py's button→text fallback runs."""
         options = [{"id": choice, "label": label, **({"style": style} if style else {})}
                    for label, choice, style in prompt.actions]
+        metadata = dict(prompt.metadata or {})
+        metadata.pop("_approval_request_id", None)
         result = await self._mint_and_send_prompt(
             "exec_approval", {"session_key": prompt.session_key}, prompt.chat_id, prompt_kind="approval",
-            text=prompt.text, options=options, metadata=prompt.metadata,
+            text=prompt.text, options=options, metadata=metadata,
         )
         return result if result is not None else self._PROMPT_UNAVAILABLE
 

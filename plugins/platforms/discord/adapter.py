@@ -5713,13 +5713,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             )
             require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
             choices = set(prompt.choices)
-            request_id = (prompt.metadata or {}).get("_approval_request_id")
             view = ExecApprovalView(
                 session_key=prompt.session_key, allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
                 admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
                 allow_session="session" in choices, smart_denied=prompt.smart_denied,
-                request_id=str(request_id) if request_id else None,
+                request_id=str(prompt.request_id) if prompt.request_id else None,
             )
             send_kwargs: dict[str, Any] = {"content": content, "embed": embed, "view": view}
             if mention_content:
@@ -5732,7 +5731,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             return send_kwargs, view
         result = await self._send_prompt(prompt.chat_id, prompt.metadata, _build)
         view = view_slot.get("view")
-        request_id = (prompt.metadata or {}).get("_approval_request_id")
+        request_id = prompt.request_id
         approval_index = getattr(self, "_approval_index", None)
         if result.success and approval_index is not None and request_id and view is not None:
             try:
@@ -5744,9 +5743,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 message_id = getattr(message, "id", None)
                 if channel_id is not None and message_id is not None:
                     jump_url = f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
-                    await approval_index.add_pending(str(request_id), prompt.command, jump_url)
+                    approval_index.start_pending(str(request_id), prompt.command_preview, jump_url)
             except Exception:
-                logger.warning("Discord approval index could not record pending prompt", exc_info=True)
+                logger.warning("Discord approval index could not start pending record", exc_info=True)
         return result
 
     async def resolve_approval_index(self, request_id: str, choice: str | None) -> None:

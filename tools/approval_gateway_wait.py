@@ -221,14 +221,14 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
                 settle(reason)
             except Exception:
                 logger.debug("approval settle hook failed", exc_info=True)
-        if settle_choice is not None:
-            # Index surfaces also need the committed allow/deny choice, not only its settled reason.
-            outcome = choice if choice is not None else ("timeout" if state == "timeout" else None)
-            if outcome is not None:
-                try:
-                    settle_choice(outcome)
-                except Exception:
-                    logger.warning("approval choice settle hook failed", exc_info=True)
+        outcome = choice if choice is not None else (
+            "timeout" if state == "timeout" else "cancelled" if state != "notify_failed" else None
+        )
+        if settle_choice is not None and outcome is not None:
+            try:
+                settle_choice(outcome)
+            except Exception:
+                logger.warning("approval choice settle hook failed", exc_info=True)
         return choice
 
     from tools.human_input_hooks import human_input_request

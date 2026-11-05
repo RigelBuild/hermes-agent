@@ -101,11 +101,20 @@ async def test_exec_approval_renders_full_option_set():
     assert ids == ["once", "session", "always", "deny"]
     assert "rm -rf /tmp/x" in action["content"]
     assert "deletes files" in action["content"]
-    # The registry holds the pending prompt keyed by the wire's prompt_id.
     assert action["prompt_id"] in adapter._pending_prompts
     state = adapter._pending_prompts[action["prompt_id"]]
     assert state["kind"] == "exec_approval"
     assert state["session_key"] == "sess:1"
+
+
+@pytest.mark.asyncio
+async def test_exec_approval_does_not_send_internal_request_id_in_metadata():
+    adapter, stub = _adapter()
+    await adapter.send_exec_approval(
+        "c1", "rm -rf /tmp/x", "sess:1", metadata={"_approval_request_id": "internal"},
+    )
+
+    assert "_approval_request_id" not in stub.sent[-1].get("metadata", {})
 
 
 @pytest.mark.asyncio

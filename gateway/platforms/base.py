@@ -1629,9 +1629,11 @@ class ExecApprovalPrompt:
     text: str
     actions: list[tuple[str, str, str]]
     command: str
-    description: str
     smart_denied: bool
+    description: str = ""
     metadata: Optional[dict[str, Any]] = None
+    command_preview: str = ""
+    request_id: Optional[str] = None
 
     @property
     def choices(self) -> list[str]:
@@ -2844,17 +2846,23 @@ class BasePlatformAdapter(ABC):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False,
+        smart_denied: bool = False, request_id: Optional[str] = None,
     ) -> SendResult:
         """Interactive exec-approval prompt; a press resolves via
         ``tools.approval.resolve_gateway_approval``. Text and choice set are shared; adapters
         render them natively in ``_send_exec_approval_prompt``."""
         if description is None:
             description = ea_default_reason_text()
+        command = str(command or "")
         prompt = ExecApprovalPrompt(
-            chat_id=chat_id, session_key=session_key, metadata=metadata, command=str(command or ""),
+            chat_id=chat_id, session_key=session_key, metadata=metadata, command=command,
             description=description, smart_denied=smart_denied,
             text=self._format_exec_approval(command, description, smart_denied),
+            command_preview=self._ea_fit(
+                command, self._exec_approval_cmd_budget(description, smart_denied),
+                escape=lambda value: self._ea_escape(value).replace("\\\\", "\\\\\\\\"),
+            ),
+            request_id=request_id,
             actions=self._exec_approval_actions(
                 allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied))
         return await self._send_exec_approval_prompt(prompt)

@@ -688,10 +688,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         desc = approval_data.get("description") or ea_default_reason_text()
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
-        approval_metadata = {
-            **(ctx._status_thread_metadata or {}),
-            "_approval_request_id": approval_data.get("request_id"),
-        }
+        approval_metadata = dict(ctx._status_thread_metadata or {})
         from gateway.run_turn_runner_approval_settle import register_approval_index_settle
         register_approval_index_settle(self, approval_data, adapter)
         if _renders_exec_approval_buttons(type(adapter)):
@@ -699,7 +696,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=approval_metadata, **flags,
+                        description=desc, metadata=approval_metadata, request_id=approval_data.get("request_id"),
+                        **flags,
                     ),
                     "send_exec_approval scheduling error",
                 )
