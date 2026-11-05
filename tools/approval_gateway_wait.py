@@ -24,7 +24,7 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("acknowledged", "cancelled", "data", "event", "expired", "reason", "result", "settle")
+    __slots__ = ("acknowledged", "cancelled", "data", "event", "expired", "reason", "result", "settle", "settle_choice")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
@@ -34,6 +34,8 @@ class _ApprovalEntry:
         # Surface hook run once when the wait ends by ANY path (answer, timeout, interrupt, /approve from
         # another client): the tui_gateway withdraws its open server→client request through it.
         self.settle = None
+        # Choice observers need the committed allow/deny choice as well as the settle reason.
+        self.settle_choice = None
         self.result: str | None = None  # "once"|"session"|"always"|"deny"
         # Free-text reason from ``/deny <reason>`` so the agent can adapt, not just hear "denied".
         self.reason: str | None = None
@@ -199,6 +201,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             if not queue:
                 _approval._gateway_queues.pop(session_key, None)
             settle, entry.settle = entry.settle, None
+            settle_choice, entry.settle_choice = entry.settle_choice, None
             if choice is None and state in ("timeout", "notify_failed"):
                 # Coalesced followers block on this event: wake them with the leader's outcome rather than
                 # leaving them waiting their own full timeout on a prompt that no longer exists.
@@ -218,6 +221,14 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
                 settle(reason)
             except Exception:
                 logger.debug("approval settle hook failed", exc_info=True)
+        if settle_choice is not None:
+            # Index surfaces also need the committed allow/deny choice, not only its settled reason.
+            outcome = choice if choice is not None else ("timeout" if state == "timeout" else None)
+            if outcome is not None:
+                try:
+                    settle_choice(outcome)
+                except Exception:
+                    logger.warning("approval choice settle hook failed", exc_info=True)
         return choice
 
     from tools.human_input_hooks import human_input_request

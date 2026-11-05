@@ -1331,6 +1331,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         self._dedup = MessageDeduplicator()
         # Reply threading mode: "off", "first" (default; first chunk only), "all" (every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
+        extra = config.extra if isinstance(getattr(config, "extra", None), dict) else {}
+        index_channel_id = str(extra.get("approval_index_channel") or "").strip()
+        from .approval_index import DiscordApprovalIndex
+        self._approval_index = DiscordApprovalIndex(self, index_channel_id) if index_channel_id else None
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
         # Bot's last message ID per channel: lets history backfill skip the full channel.history() scan.
         self._last_self_message_id: dict[str, str] = {}
@@ -5697,6 +5701,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Send an approval with content as its canonical payload and an embed for state."""
+        view_slot = {}
         def _build(_channel):
             content = prompt.text
             mention_content = self._approval_mention_content()
@@ -5708,11 +5713,13 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             )
             require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
             choices = set(prompt.choices)
+            request_id = (prompt.metadata or {}).get("_approval_request_id")
             view = ExecApprovalView(
                 session_key=prompt.session_key, allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
                 admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
                 allow_session="session" in choices, smart_denied=prompt.smart_denied,
+                request_id=str(request_id) if request_id else None,
             )
             send_kwargs: dict[str, Any] = {"content": content, "embed": embed, "view": view}
             if mention_content:
@@ -5721,8 +5728,34 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     send_kwargs["allowed_mentions"] = allowed_mentions_cls(
                         users=True, roles=False, everyone=False, replied_user=False,
                     )
+            view_slot["view"] = view
             return send_kwargs, view
-        return await self._send_prompt(prompt.chat_id, prompt.metadata, _build)
+        result = await self._send_prompt(prompt.chat_id, prompt.metadata, _build)
+        view = view_slot.get("view")
+        request_id = (prompt.metadata or {}).get("_approval_request_id")
+        approval_index = getattr(self, "_approval_index", None)
+        if result.success and approval_index is not None and request_id and view is not None:
+            try:
+                message = view._message
+                channel = getattr(message, "channel", None)
+                guild = getattr(message, "guild", None) or getattr(channel, "guild", None)
+                guild_id = getattr(guild, "id", "@me")
+                channel_id = getattr(channel, "id", None)
+                message_id = getattr(message, "id", None)
+                if channel_id is not None and message_id is not None:
+                    jump_url = f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
+                    await approval_index.add_pending(str(request_id), prompt.command, jump_url)
+            except Exception:
+                logger.warning("Discord approval index could not record pending prompt", exc_info=True)
+        return result
+
+    async def resolve_approval_index(self, request_id: str, choice: str | None) -> None:
+        if self._approval_index is None:
+            return
+        try:
+            await self._approval_index.resolve(request_id, choice)
+        except Exception:
+            logger.warning("Discord approval index could not update resolved prompt", exc_info=True)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
@@ -6448,9 +6481,11 @@ def _define_discord_view_classes() -> None:
             self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None,
             require_admin: bool = False, admin_user_ids: Optional[set] = None,
             allow_permanent: bool = True, allow_session: bool = True, smart_denied: bool = False,
+            request_id: Optional[str] = None,
         ):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
+            self.request_id = request_id
             self.require_admin = require_admin
             self.admin_user_ids = {str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()}
             self._localize_buttons(
@@ -6499,7 +6534,9 @@ def _define_discord_view_classes() -> None:
             # wait timed out (count == 0) must not claim "Approved".
             try:
                 from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(self.session_key, choice)
+                count = resolve_gateway_approval(
+                    self.session_key, choice, request_id=self.request_id,
+                )
                 logger.info(
                     "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                     count, self.session_key, choice, interaction.user.display_name,
@@ -7318,6 +7355,12 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             candidate_extra = discord_platform_cfg.get("extra")
             if isinstance(candidate_extra, dict):
                 platform_extra_cfg = candidate_extra
+    approval_index_channel = (
+        discord_cfg["approval_index_channel"] if "approval_index_channel" in discord_cfg
+        else platform_extra_cfg.get("approval_index_channel")
+    )
+    if approval_index_channel is not None:
+        seeded_extra["approval_index_channel"] = str(approval_index_channel)
 
     def _gate(key: str, env_key: str, *, from_platform_extra: bool, lower: bool = False) -> None:
         value = discord_cfg[key] if key in discord_cfg else (platform_extra_cfg.get(key) if from_platform_extra else None)

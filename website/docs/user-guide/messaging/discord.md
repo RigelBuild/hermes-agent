@@ -373,6 +373,7 @@ discord:
   bots_require_inline_mention: true  # Bot authors must type a literal @mention (default: true)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
+  approval_index_channel: ""      # Optional channel ID for the daily exec-approval index
   free_response_auto_thread: false # If true, free_response_channels also auto-thread (default: inline)
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
