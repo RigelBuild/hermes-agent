@@ -1160,8 +1160,10 @@ def mark_running_jobs_interrupted(
             continue
         try:
             with use_cron_store(profile_home):
-                if mark_job_run(
-                    job_id, False, reason, expected_fire_owner=fire_owner):
+                from cron.executions import mark_execution_shutdown_interrupted
+
+                mark_execution_shutdown_interrupted(fire_owner)
+                if mark_job_run(job_id, False, reason, expected_fire_owner=fire_owner):
                     marked.append(job_id)
         except Exception as e:
             logger.warning("Failed to mark job %s interrupted: %s", job_id, e)
@@ -2941,10 +2943,7 @@ def _record_fire_ownership_lost(
             job_id, False, _OWNERSHIP_LOST_INTERRUPTED, expected_fire_owner=fire_owner,
             **({"ladder_rung": True} if is_retry_run(job) else {}),
         )
-        finish_execution(
-            execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED,
-            shutdown_interrupted=True,
-        )
+        finish_execution(execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED)
     else:
         finish_execution(
             execution_id, success=False,
@@ -4266,6 +4265,7 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)
     claimed_job["execution_id"] = job["execution_id"]
     claimed_job["_scheduled_instant"] = job.get("_scheduled_instant")
+    claimed_job["_shutdown_replay"] = bool(job.get("_shutdown_replay"))
     return run_one_job(claimed_job, adapters=adapters, loop=loop, verbose=verbose)
 
 

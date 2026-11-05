@@ -169,7 +169,7 @@ class CronScheduler(ABC):
         report it as scheduled). Built-in: no-op."""
         return
 
-    def recover_interrupted(self) -> int:
+    def recover_interrupted(self, *, adapters: Any = None, loop: Any = None) -> int:
         """Recover abandoned attempts and replay eligible shutdown-interrupted occurrences once."""
         from cron.executions import (
             create_shutdown_replay, recover_interrupted_executions,
@@ -187,8 +187,11 @@ class CronScheduler(ABC):
                 continue
             try:
                 claimed = claim_job_for_fire(
-                    occurrence["job_id"], return_job=True,
-                    scheduled_at=occurrence["scheduled_instant"], execution_id=replay["id"],
+                    occurrence["job_id"],
+                    return_job=True,
+                    scheduled_at=occurrence["scheduled_instant"],
+                    execution_id=replay["id"],
+                    shutdown_replay=True,
                 )
             except BaseException as exc:
                 finish_execution(
@@ -201,7 +204,7 @@ class CronScheduler(ABC):
                 continue
             claimed["execution_id"] = replay["id"]
             claimed["_scheduled_instant"] = occurrence["scheduled_instant"]
-            self.fire_claimed(claimed)
+            self.fire_claimed(claimed, adapters=adapters, loop=loop)
         return changed
 
     @property
@@ -496,7 +499,7 @@ class InProcessCronScheduler(CronScheduler):
         # store here must not take the whole ticker thread down (#111010) — the loop's own
         # per-tick handling logs, persists the reason and keeps the thread alive.
         try:
-            recovered = self.recover_interrupted()
+            recovered = self.recover_interrupted(adapters=adapters, loop=loop)
             if recovered:
                 logger.warning(
                     "Marked %d interrupted cron execution(s) unknown after restart", recovered

@@ -61,8 +61,10 @@ def finish_completed_run(d, fire_owner: Optional[str], execution_id: str, *, rec
         from cron.jobs import update_job
         update_job(job["id"], {"last_delivery_queued": None})
         job["last_delivery_queued"] = None
-    mark_kwargs: dict = {"delivery_error": d.delivery_error}
     from cron.scheduler_authority import journal_path
+    mark_kwargs: dict = {"delivery_error": d.delivery_error}
+    if job.get("_shutdown_replay"):
+        mark_kwargs["shutdown_replay"] = True
     journal = journal_path(job['id'], execution_id)
     if not job.get('no_agent'):
         mark_kwargs['execution_id'] = execution_id

@@ -2436,6 +2436,7 @@ def mark_job_run(
     ladder_rung: bool = False,
     quota_hold_seconds: Optional[float] = None,
     recover_consumed_fire: bool = False,
+    shutdown_replay: bool = False,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2473,19 +2474,23 @@ def mark_job_run(
         if execution_id is not None:  # retire ids recovery can no longer replay; latest stays last
             from cron.scheduler_authority import replayable_completions as live
             job["canonical_completions"] = [*live(job_id, job.get("canonical_completions")), execution_id]
-        _advance_after_run(job, now, ladder_rung=ladder_rung)
+        if not shutdown_replay:
+            _advance_after_run(job, now, ladder_rung=ladder_rung)
         from cron import quota_hold
         from cron.unreachable_retry import clear_state, plan_retry
 
-        if not success and model_unreachable and not is_terminal_job(job):
-            plan_retry(job)
-        else:
-            # Any run that reached the model (either outcome) resets the re-run ladder.
-            clear_state(job)
-        if not success and quota_hold_seconds and not is_terminal_job(job):
-            quota_hold.plan_hold(job, quota_hold_seconds, recover_consumed_fire=recover_consumed_fire)
-        else:
-            quota_hold.clear_state(job)
+        if not shutdown_replay:
+            if not success and model_unreachable and not is_terminal_job(job):
+                plan_retry(job)
+            else:
+                # Any run that reached the model (either outcome) resets the re-run ladder.
+                clear_state(job)
+            if not success and quota_hold_seconds and not is_terminal_job(job):
+                quota_hold.plan_hold(
+                    job, quota_hold_seconds, recover_consumed_fire=recover_consumed_fire
+                )
+            else:
+                quota_hold.clear_state(job)
         save_jobs(jobs)
         return True
 
@@ -2723,6 +2728,7 @@ def claim_job_for_fire(
     job_id: str, *, claim_ttl_seconds: int = FIRE_CLAIM_TTL_SECONDS, force: bool = False,
     manual: bool = False, return_job: bool = False, scheduled_at: Optional[str] = None,
     execution_id: Optional[str] = None,
+    shutdown_replay: bool = False,
 ) -> bool | dict[str, Any]:
     """Atomically claim a job for one external 'fire' (multi-machine at-most-once); True iff THIS
     caller won (``CronScheduler.fire_due``: exactly one of N replicas runs a job). Under the
@@ -2765,8 +2771,14 @@ def claim_job_for_fire(
         # ``manual`` (an off-tick run-now) must NOT stamp an occurrence identity: outside a
         # scheduler tick ``next_run_at`` is the NEXT occurrence, not the one being run, so
         # stamping it would make completed_occurrence() skip that slot when it arrives.
-        manual_fire = force or manual or job.get("manual_run_at") == job.get("next_run_at")
-        instant = None if manual_fire else scheduled_instant(job.get("next_run_at"))
+        manual_fire = (
+            force or (not shutdown_replay and (manual or job.get("manual_run_at") == job.get("next_run_at")))
+        )
+        instant = (
+            scheduled_instant(scheduled_at)
+            if shutdown_replay
+            else (None if manual_fire else scheduled_instant(job.get("next_run_at")))
+        )
         # A scheduled tick only ever fires when now >= next_run_at
         # (_evaluate_due_job returns False while the stored occurrence is still
         # in the future), so a claim arriving BEFORE the stored next occurrence
@@ -2801,13 +2813,17 @@ def claim_job_for_fire(
         if execution_id:
             bind_row(owned)
         # Claimed: the occurrence is now owned by a run (its ledger row + fire claim carry it).
-        job.pop("pending_slot", None)
-        if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
+        if not shutdown_replay:
+            job.pop("pending_slot", None)
+        if not shutdown_replay and job.get("schedule", {}).get("kind") in {"cron", "interval"}:
             nxt = compute_next_run(job["schedule"], now.isoformat())
             if nxt:
                 job["next_run_at"] = nxt
         save_jobs(jobs)
-        return dict(copy.deepcopy(job), _scheduled_instant=instant) if return_job else True
+        claimed = dict(copy.deepcopy(job), _scheduled_instant=instant)
+        if shutdown_replay:
+            claimed["_shutdown_replay"] = True
+        return claimed if return_job else True
 
     return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
 

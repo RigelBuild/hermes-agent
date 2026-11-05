@@ -431,6 +431,19 @@ def settle_unstarted_execution(execution_id: str, job_id: str, error: str) -> No
                      job_id, execution_id, error, record_err)
 
 
+def mark_execution_shutdown_interrupted(fire_claim_by: str) -> bool:
+    """Persist shutdown evidence before the gateway updates its job record."""
+    if not fire_claim_by:
+        return False
+    with _transaction() as conn:
+        cur = conn.execute(
+            "UPDATE executions SET shutdown_interrupted=1 "
+            "WHERE fire_claim_by=? AND status IN ('claimed','running')",
+            (fire_claim_by,),
+        )
+        return cur.rowcount > 0
+
+
 def recover_interrupted_executions() -> int:
     """Mark abandoned attempts unknown without scheduling retries: rows whose owner is provably
     dead, plus rows whose live owner holds a claim older than the derived stale bound (the
@@ -486,7 +499,6 @@ def recover_interrupted_executions() -> int:
             cur = conn.execute(
                 """UPDATE executions
                    SET status='unknown', finished_at=?, error=?, recovery_pending='restore',
-                       shutdown_interrupted=CASE WHEN started_at IS NOT NULL THEN 1 ELSE shutdown_interrupted END,
                        handoff_pending=0, handoff_started_at=NULL
                WHERE id=? AND status=? AND process_id=? AND pid=?
                  AND handoff_pending=?
@@ -817,7 +829,7 @@ def replayable_shutdown_occurrences() -> list[dict[str, Any]]:
             """SELECT e.* FROM executions e
                WHERE e.shutdown_interrupted=1 AND e.status IN ('failed','unknown')
                  AND e.scheduled_instant IS NOT NULL
-                 AND e.finished_at >= ?
+                 AND julianday(e.finished_at) >= julianday(?)
                  AND NOT EXISTS (
                    SELECT 1 FROM executions done
                    WHERE done.job_id=e.job_id AND done.scheduled_instant=e.scheduled_instant
