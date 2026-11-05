@@ -162,6 +162,23 @@ def test_discord_toolset_not_implicit_in_cron():
     assert "discord_admin" not in enabled
 
 
+def test_discord_toolset_allowed_on_cotal_when_configured():
+    config = {"platform_toolsets": {"cotal": ["discord", "discord_admin"]}}
+
+    enabled = _get_platform_tools(config, "cotal")
+
+    assert "discord" in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_discord_toolset_not_implicit_on_cotal():
+    enabled = _get_platform_tools({}, "cotal")
+
+    assert "discord" not in enabled
+    assert "discord_admin" not in enabled
+
+
+
 def test_discord_toolsets_configure_on_discord_platform():
     """A platform-less UI toggles discord toolsets on Discord, not on cron (sorts first)."""
     from hermes_cli.tools_config import _toolset_configuration_platform

@@ -10,6 +10,7 @@ from tools.discord_tool import (
     _ACTIONS,
     _ADMIN_ACTIONS,
     _CORE_ACTIONS,
+    _PostScopeConfigError,
     _available_actions,
     _detect_capabilities,
     _discord_request,
@@ -1291,6 +1292,168 @@ class TestCronScope:
         result = json.loads(discord_core(action="create_thread", channel_id="900", name="x"))
         assert result.get("success") is True
 
+
+class TestMeshScope:
+    @pytest.fixture(params=["cotal", "plugin_origin"])
+    def mesh(self, request, monkeypatch):
+        from gateway.session_context import _VAR_MAP
+        from gateway.session_ingress import plugin_origin_turn
+
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setattr("tools.discord_tool._load_allowed_actions_config", lambda: None)
+        platform = _VAR_MAP["HERMES_SESSION_PLATFORM"].set(
+            "cotal" if request.param == "cotal" else "discord")
+        cron = _VAR_MAP["HERMES_CRON_SESSION"].set("")
+        marker = plugin_origin_turn.set(request.param == "plugin_origin")
+        yield request.param
+        plugin_origin_turn.reset(marker)
+        _VAR_MAP["HERMES_CRON_SESSION"].reset(cron)
+        _VAR_MAP["HERMES_SESSION_PLATFORM"].reset(platform)
+
+    @pytest.fixture(autouse=True)
+    def clear_operator_guild_cache(self):
+        from tools.discord_tool import _operator_guilds
+        _operator_guilds.cache_clear()
+        yield
+        _operator_guilds.cache_clear()
+
+    @pytest.mark.parametrize("action,params", [
+        ("create_thread", {"channel_id": "900", "name": "x"}),
+        ("create_forum_post", {"channel_id": "900", "name": "x", "content": "x"}),
+        ("post_message", {"channel_id": "900", "content": "x"}),
+    ])
+    @patch("tools.discord_tool._load_post_channels_config", return_value={"500"})
+    @patch("tools.discord_tool._discord_request")
+    def test_writes_outside_list_refused(self, request, _config, mesh, action, params):
+        request.return_value = {"id": "900", "type": 0}
+        result = json.loads(discord_core(action=action, **params))
+        assert "outside discord.post_channels" in result["error"]
+        assert not any(method == "POST" for method, *_ in request.call_args_list)
+
+    @patch("tools.discord_tool._load_post_channels_config", return_value=None)
+    @patch("tools.discord_tool._discord_request")
+    def test_unset_list_refuses_writes_reads_and_search(self, request, _config, mesh):
+        for action, params in (
+            ("create_thread", {"channel_id": "500", "name": "x"}),
+            ("create_forum_post", {"channel_id": "500", "name": "x", "content": "x"}),
+            ("post_message", {"channel_id": "500", "content": "x"}),
+            ("fetch_messages", {"channel_id": "500"}),
+            ("list_forum_posts", {"channel_id": "500"}),
+            ("search_members", {"guild_id": "10", "query": "x"}),
+        ):
+            result = json.loads(discord_core(action=action, **params))
+            assert "post_channels is not set" in result["error"], action
+        request.assert_not_called()
+
+    @patch("tools.discord_tool._load_post_channels_config", side_effect=_PostScopeConfigError("bad config"))
+    @patch("tools.discord_tool._discord_request")
+    def test_unreadable_post_channels_refuses(self, request, _config, mesh):
+        result = json.loads(discord_core(action="fetch_messages", channel_id="500"))
+        assert "Could not read discord.post_channels" in result["error"]
+        request.assert_not_called()
+
+    @patch("tools.discord_tool._load_post_channels_config", return_value={"500"})
+    @patch("tools.discord_tool._discord_request")
+    def test_thread_with_listed_parent_passes(self, request, _config, mesh):
+        request.side_effect = lambda method, path, *a, **kw: (
+            {"id": "500", "guild_id": "10"} if path == "/channels/500"
+            else {"id": "700", "type": 11, "parent_id": "500", "guild_id": "10"}
+            if path == "/channels/700" else {"id": "message-1"} if method == "POST" else [])
+        result = json.loads(discord_core(action="post_message", channel_id="700", content="x"))
+        assert result.get("success") is True
+        assert ("POST", "/channels/700/messages") in [call.args[:2] for call in request.call_args_list]
+
+    @pytest.mark.parametrize("channel_type", [1, 3])
+    @patch("tools.discord_tool._load_post_channels_config", return_value={"500"})
+    @patch("tools.discord_tool._discord_request")
+    def test_dm_reads_refused(self, request, _config, mesh, channel_type):
+        request.side_effect = lambda method, path, *a, **kw: (
+            {"id": "500", "guild_id": "10"} if path == "/channels/500"
+            else {"id": "900", "type": channel_type} if path == "/channels/900" else [])
+        result = json.loads(discord_core(action="fetch_messages", channel_id="900"))
+        assert "DM" in result["error"]
+        assert not any(call.args[1].endswith("/messages") for call in request.call_args_list)
+
+    @patch("tools.discord_tool._load_post_channels_config", return_value={"500"})
+    @patch("tools.discord_tool._discord_request")
+    def test_other_guild_reads_and_search_refused(self, request, _config, mesh):
+        request.side_effect = lambda method, path, *a, **kw: (
+            {"id": "500", "guild_id": "10"} if path == "/channels/500"
+            else {"id": "900", "type": 0, "guild_id": "20"} if path == "/channels/900" else [])
+        read = json.loads(discord_core(action="fetch_messages", channel_id="900"))
+        search = json.loads(discord_core(action="search_members", guild_id="20", query="x"))
+        assert "outside the operator guilds" in read["error"]
+        assert "outside the operator guilds" in search["error"]
+        assert not any(call.args[1].endswith(("/messages", "/members/search"))
+                       for call in request.call_args_list)
+
+    @pytest.mark.parametrize("failure", ["invalid", "missing_guild", "unavailable"])
+    @patch("tools.discord_tool._load_post_channels_config", return_value={"500"})
+    @patch("tools.discord_tool._discord_request")
+    def test_bad_entry_refuses_all_reads_and_search(self, request, _config, mesh, failure):
+        if failure == "unavailable":
+            request.side_effect = DiscordAPIError(404, "missing")
+        elif failure == "invalid":
+            request.return_value = {"id": "wrong", "guild_id": "10"}
+        else:
+            request.return_value = {"id": "500"}
+        for action, params in (
+            ("fetch_messages", {"channel_id": "900"}),
+            ("list_forum_posts", {"channel_id": "900"}),
+            ("search_members", {"guild_id": "10", "query": "x"}),
+        ):
+            result = json.loads(discord_core(action=action, **params))
+            assert "resolve every" in result["error"], (failure, action)
+        assert not any(call.args[1].endswith(("/messages", "/members/search"))
+                       for call in request.call_args_list)
+
+    @patch("tools.discord_tool._load_post_channels_config", return_value={"500"})
+    @patch("tools.discord_tool._discord_request")
+    def test_listed_guild_reads_and_search_pass(self, request, _config, mesh):
+        request.side_effect = lambda method, path, *a, **kw: (
+            {"id": "500", "guild_id": "10"} if path == "/channels/500"
+            else {"id": "900", "type": 0, "guild_id": "10"} if path == "/channels/900" else [])
+        read = json.loads(discord_core(action="fetch_messages", channel_id="900"))
+        search = json.loads(discord_core(action="search_members", guild_id="10", query="x"))
+        assert "error" not in read
+        assert "error" not in search
+
+    @patch("tools.discord_tool._load_post_channels_config", return_value={"500"})
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_in_listed_channel_passes(self, request, _config, mesh):
+        request.return_value = {"id": "thread-1", "name": "x"}
+        result = json.loads(discord_core(action="create_thread", channel_id="500", name="x"))
+        assert result.get("success") is True
+        assert request.call_args.args[:2] == ("POST", "/channels/500/threads")
+
+
+    @patch("tools.discord_tool._discord_request", return_value={"id": "500", "guild_id": "10"})
+    def test_operator_guilds_cache_rest_resolution(self, request, mesh):
+        from tools.discord_tool import _operator_guilds
+
+        channels = frozenset({"500"})
+        assert _operator_guilds("test-token", channels) == frozenset({"10"})
+        assert _operator_guilds("test-token", channels) == frozenset({"10"})
+        request.assert_called_once_with("GET", "/channels/500", "test-token")
+
+    @patch("tools.discord_tool._load_post_channels_config", return_value={"500"})
+    @patch("tools.discord_tool._discord_request")
+    def test_native_discord_turn_is_unscoped(self, request, _config, monkeypatch):
+        from gateway.session_context import _VAR_MAP
+        from gateway.session_ingress import plugin_origin_turn
+
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setattr("tools.discord_tool._load_allowed_actions_config", lambda: None)
+        platform = _VAR_MAP["HERMES_SESSION_PLATFORM"].set("discord")
+        marker = plugin_origin_turn.set(False)
+        try:
+            request.return_value = {"id": "t1", "name": "x"}
+            result = json.loads(discord_core(action="create_thread", channel_id="900", name="x"))
+            assert result.get("success") is True
+            request.assert_called_once()
+        finally:
+            plugin_origin_turn.reset(marker)
+            _VAR_MAP["HERMES_SESSION_PLATFORM"].reset(platform)
 
 class TestCronScopeSnapshot:
     @pytest.fixture
