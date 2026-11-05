@@ -53,6 +53,23 @@ def register_timeout_notice(
 
     register_gateway_settle(session_key, request_id, settle)
 
+def register_approval_index_settle(runner, approval_data: dict, adapter) -> None:
+    """Update one adapter's approval index when its prompt is answered or times out."""
+    from tools.approval import register_gateway_choice_settle
+
+    request_id = approval_data.get("request_id")
+    session_key = runner._ctx.session_key or ""
+    if getattr(adapter, "_approval_index", None) is None or not request_id or not session_key:
+        return
+
+    def settle(choice: str) -> None:
+        runner._schedule(
+            adapter.resolve_approval_index(str(request_id), choice),
+            "Approval index update scheduling error",
+        )
+
+    register_gateway_choice_settle(session_key, str(request_id), settle)
+
 
 async def _post_timeout_notice(ctx, command: str, card_message_id: Optional[str], timeout_s: int) -> None:
     from gateway.run import _interim_metadata

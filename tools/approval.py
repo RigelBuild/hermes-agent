@@ -212,6 +212,16 @@ def register_gateway_settle(session_key: str, request_id: str, settle) -> bool:
     return False
 
 
+def register_gateway_choice_settle(session_key: str, request_id: str, settle) -> bool:
+    """Attach ``settle(choice)`` to one approval's final choice or timeout."""
+    with _lock:
+        for entry in _gateway_queues.get(session_key, []):
+            if entry.data.get("request_id") == request_id:
+                entry.settle_choice = settle
+                return True
+    return False
+
+
 def ack_gateway_approval(session_key: str, request_id: str) -> bool:
     """Record that a client received a particular pending approval request."""
     with _lock:

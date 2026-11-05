@@ -1556,6 +1556,7 @@ DEFAULT_CONFIG = {
     },
 
     "discord": {
+        "approval_index_channel": "",  # optional channel for daily exec-approval thread index
         "require_mention": True,  # require @mention to respond in server channels
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)

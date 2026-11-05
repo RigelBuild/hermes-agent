@@ -24,7 +24,7 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("acknowledged", "cancelled", "data", "event", "expired", "reason", "result", "settle")
+    __slots__ = ("acknowledged", "cancelled", "data", "event", "expired", "reason", "result", "settle", "settle_choice")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
@@ -34,6 +34,8 @@ class _ApprovalEntry:
         # Surface hook run once when the wait ends by ANY path (answer, timeout, interrupt, /approve from
         # another client): the tui_gateway withdraws its open server→client request through it.
         self.settle = None
+        # Choice observers need the committed allow/deny choice as well as the settle reason.
+        self.settle_choice = None
         self.result: str | None = None  # "once"|"session"|"always"|"deny"
         # Free-text reason from ``/deny <reason>`` so the agent can adapt, not just hear "denied".
         self.reason: str | None = None
@@ -185,12 +187,13 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         if adopted is not None:
             return adopted
 
-    def _drop_entry(state: str) -> str | None:
+    def _drop_entry(state: str, *, effective_outcome: str | None = None) -> str | None:
         """Leave the queue and return the choice committed so far. Reading ``entry.result`` and
         removing the entry are one critical section under the approval lock: ``resolve_gateway_approval``
         commits under the same lock, so a choice that landed after the deadline check but before this
         removal is still ours to honour, and one arriving later finds no entry (the client is told
-        nothing was pending instead of being acked "ok" while the agent denies)."""
+        nothing was pending instead of being acked "ok" while the agent denies). Choice observers get
+        ``effective_outcome`` when the caller overrides the committed choice (an interrupt denies)."""
         with _approval._lock:
             choice = entry.result
             queue = _approval._gateway_queues.get(session_key, [])
@@ -199,6 +202,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             if not queue:
                 _approval._gateway_queues.pop(session_key, None)
             settle, entry.settle = entry.settle, None
+            settle_choice, entry.settle_choice = entry.settle_choice, None
             if choice is None and state in ("timeout", "notify_failed"):
                 # Coalesced followers block on this event: wake them with the leader's outcome rather than
                 # leaving them waiting their own full timeout on a prompt that no longer exists.
@@ -218,6 +222,16 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
                 settle(reason)
             except Exception:
                 logger.debug("approval settle hook failed", exc_info=True)
+        outcome = effective_outcome if effective_outcome is not None else (
+            choice if choice is not None else (
+                "timeout" if state == "timeout" else "cancelled" if state != "notify_failed" else None
+            )
+        )
+        if settle_choice is not None and outcome is not None:
+            try:
+                settle_choice(outcome)
+            except Exception:
+                logger.warning("approval choice settle hook failed", exc_info=True)
         return choice
 
     from tools.human_input_hooks import human_input_request
@@ -242,7 +256,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             # Coalesced followers wake with the cause instead of a deny nobody issued.
             entry.cancelled = cancelled
             entry.event.set()
-        choice = _drop_entry(state)
+        choice = _drop_entry(state, effective_outcome="cancelled" if state == "interrupted" else None)
         if state == "interrupted":
             # Our own decision stays a fail-closed deny.
             choice = "deny"
