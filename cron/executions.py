@@ -92,7 +92,9 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     )
     add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
     add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
+    add_column_if_missing(conn, "executions", "shutdown_interrupted", "shutdown_interrupted INTEGER NOT NULL DEFAULT 0")
     add_column_if_missing(conn, "executions", "progress_at", "progress_at TEXT")
+    add_column_if_missing(conn, "executions", "replay_of", "replay_of TEXT")
     add_column_if_missing(conn, "executions", "fire_claim_by", "fire_claim_by TEXT")
     # Unfinished settlement of an unknown row: 'restore' still to try, else the decided outcome.
     add_column_if_missing(conn, "executions", "recovery_pending", "recovery_pending TEXT")
@@ -316,7 +318,7 @@ def mark_execution_running(execution_id: str) -> Optional[dict[str, Any]]:
 
 def finish_execution(
     execution_id: str, *, success: bool, error: Optional[str] = None,
-    delivery_outcome: Optional[str] = None,
+    delivery_outcome: Optional[str] = None, shutdown_interrupted: bool = False,
 ) -> Optional[dict[str, Any]]:
     """Write a terminal result once; terminal attempts cannot be rewritten.
 
@@ -331,10 +333,11 @@ def finish_execution(
         cur = conn.execute(
             """UPDATE executions
                SET status=?, finished_at=?, error=?, handoff_pending=0,
-                   handoff_started_at=NULL, delivery_outcome=?
+                   handoff_started_at=NULL, delivery_outcome=?,
+                   shutdown_interrupted=MAX(shutdown_interrupted, ?)
                WHERE id=? AND status IN ('claimed','running')
                  AND process_id=? AND pid=?""",
-            (status, now, detail, delivery_outcome, execution_id, *owner),
+            (status, now, detail, delivery_outcome, int(shutdown_interrupted), execution_id, *owner),
         )
         if cur.rowcount != 1:
             return None
@@ -483,11 +486,12 @@ def recover_interrupted_executions() -> int:
             cur = conn.execute(
                 """UPDATE executions
                    SET status='unknown', finished_at=?, error=?, recovery_pending='restore',
+                       shutdown_interrupted=CASE WHEN started_at IS NOT NULL THEN 1 ELSE shutdown_interrupted END,
                        handoff_pending=0, handoff_started_at=NULL
-                   WHERE id=? AND status=? AND process_id=? AND pid=?
-                     AND handoff_pending=?
-                     AND handoff_started_at IS ?
-                     AND claimed_at=? AND progress_at IS ?""",
+               WHERE id=? AND status=? AND process_id=? AND pid=?
+                 AND handoff_pending=?
+                 AND handoff_started_at IS ?
+                 AND claimed_at=? AND progress_at IS ?""",
                 (now, reason, row["id"], row["status"], row["process_id"], row["pid"],
                  row["handoff_pending"], row["handoff_started_at"],
                  row["claimed_at"], row["progress_at"]),
@@ -751,6 +755,108 @@ def get_execution(execution_id: str) -> Optional[dict[str, Any]]:
 def latest_execution(job_id: str) -> Optional[dict[str, Any]]:
     rows = list_executions(job_id=job_id, limit=1)
     return rows[0] if rows else None
+
+
+def create_shutdown_replay(job_id: str, scheduled_instant: str, replay_of: str) -> Optional[dict[str, Any]]:
+    """Atomically reserve the single replay of a shutdown-interrupted occurrence."""
+    from cron.occurrences import scheduled_instant as canonical_instant
+
+    instant = canonical_instant(scheduled_instant)
+    if instant is None:
+        return None
+    now = _hermes_now().isoformat()
+    execution_id = uuid.uuid4().hex
+    pid = os.getpid()
+    with _transaction() as conn:
+        original = conn.execute(
+            "SELECT job_id, status, shutdown_interrupted, scheduled_instant FROM executions WHERE id=?",
+            (str(replay_of),),
+        ).fetchone()
+        if (
+            original is None or original["job_id"] != str(job_id)
+            or original["status"] not in ("failed", "unknown")
+            or not original["shutdown_interrupted"]
+            or original["scheduled_instant"] != instant
+        ):
+            return None
+        conn.execute(
+            """INSERT INTO executions
+               (id, job_id, source, process_id, pid, process_started_at, status,
+                claimed_at, scheduled_instant, replay_of)
+               SELECT ?, ?, 'shutdown-replay', ?, ?, ?, 'claimed', ?, ?, ?
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM executions WHERE job_id=? AND scheduled_instant=? AND replay_of IS NOT NULL
+               ) AND NOT EXISTS (
+                 SELECT 1 FROM executions WHERE job_id=? AND replay_of=?
+               ) AND NOT EXISTS (
+                 SELECT 1 FROM executions WHERE job_id=? AND scheduled_instant=?
+                   AND status='completed'
+               )""",
+            (execution_id, str(job_id), _PROCESS_ID, pid, _process_start_time(pid), now,
+             instant, str(replay_of), str(job_id), instant,
+             str(job_id), str(replay_of), str(job_id), instant),
+        )
+        if conn.execute("SELECT changes()").fetchone()[0] != 1:
+            return None
+        record = _fetch(conn, execution_id)
+    _emit_execution_state(record)
+    return record
+def replayable_shutdown_occurrences() -> list[dict[str, Any]]:
+    """Return eligible recurring occurrences marked interrupted by gateway shutdown.
+
+    A shutdown ambiguity is replayed once by recording a separate attempted execution before the
+    scheduler claims it. The interrupted marker stays on the original ledger row as the durable
+    replay-attempt fence; a completed execution for the exact instant always wins.
+    """
+    from cron.jobs import get_job, is_job_runnable, is_terminal_job
+
+    from datetime import timedelta
+    cutoff = (_hermes_now() - timedelta(seconds=7200)).isoformat()
+    with _transaction() as conn:
+        rows = conn.execute(
+            """SELECT e.* FROM executions e
+               WHERE e.shutdown_interrupted=1 AND e.status IN ('failed','unknown')
+                 AND e.scheduled_instant IS NOT NULL
+                 AND e.finished_at >= ?
+                 AND NOT EXISTS (
+                   SELECT 1 FROM executions done
+                   WHERE done.job_id=e.job_id AND done.scheduled_instant=e.scheduled_instant
+                     AND done.status='completed'
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM executions retry
+                   WHERE retry.job_id=e.job_id AND retry.replay_of IS NOT NULL
+                     AND retry.scheduled_instant=e.scheduled_instant
+                 )
+               ORDER BY e.finished_at, e.id""",
+            (cutoff,),
+        ).fetchall()
+
+    candidates = []
+    for row in rows:
+        job = get_job(row["job_id"])
+        if (
+            job is None
+            or job.get("schedule", {}).get("kind") not in {"cron", "interval"}
+            or is_terminal_job(job)
+            or not is_job_runnable(job)
+        ):
+            continue
+        try:
+            scheduled = datetime.fromisoformat(row["scheduled_instant"])
+            next_run = datetime.fromisoformat(job["next_run_at"])
+        except (TypeError, ValueError):
+            continue
+        if scheduled.tzinfo is None or next_run.tzinfo is None:
+            continue
+        if next_run.timestamp() <= _hermes_now().timestamp():
+            continue
+        candidates.append({
+            "job_id": row["job_id"],
+            "scheduled_instant": row["scheduled_instant"],
+            "execution_id": row["id"],
+        })
+    return candidates
 
 
 def live_inflight_execution(job_id: str) -> Optional[dict[str, Any]]:

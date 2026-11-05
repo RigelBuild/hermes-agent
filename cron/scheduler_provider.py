@@ -170,10 +170,39 @@ class CronScheduler(ABC):
         return
 
     def recover_interrupted(self) -> int:
-        """Run profile-local attempt recovery for every provider lifecycle."""
-        from cron.executions import recover_interrupted_executions
+        """Recover abandoned attempts and replay eligible shutdown-interrupted occurrences once."""
+        from cron.executions import (
+            create_shutdown_replay, recover_interrupted_executions,
+            replayable_shutdown_occurrences, finish_execution,
+        )
+        from cron.jobs import claim_job_for_fire
 
-        return recover_interrupted_executions()
+        changed = recover_interrupted_executions()
+        occurrences = replayable_shutdown_occurrences()
+        for occurrence in occurrences:
+            replay = create_shutdown_replay(
+                occurrence["job_id"], occurrence["scheduled_instant"], occurrence["execution_id"]
+            )
+            if replay is None:
+                continue
+            try:
+                claimed = claim_job_for_fire(
+                    occurrence["job_id"], return_job=True,
+                    scheduled_at=occurrence["scheduled_instant"], execution_id=replay["id"],
+                )
+            except BaseException as exc:
+                finish_execution(
+                    replay["id"], success=False,
+                    error=f"Shutdown replay claim failed: {type(exc).__name__}: {exc}",
+                )
+                raise
+            if not isinstance(claimed, dict):
+                finish_execution(replay["id"], success=False, error="Shutdown replay claim was not acquired")
+                continue
+            claimed["execution_id"] = replay["id"]
+            claimed["_scheduled_instant"] = occurrence["scheduled_instant"]
+            self.fire_claimed(claimed)
+        return changed
 
     @property
     def supports_force_fire(self) -> bool:

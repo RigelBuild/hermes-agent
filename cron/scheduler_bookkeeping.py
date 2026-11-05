@@ -24,7 +24,8 @@ def finish_interrupted_run(job, execution_id, delivery_error):
         except Exception as exc:
             logger.debug('Failed recording delivery_error for interrupted job %s: %s', job['id'], exc, exc_info=True)
     scheduler.finish_execution(execution_id, success=False,
-                               error='Interrupted by gateway shutdown before terminal completion.')
+                               error='Interrupted by gateway shutdown before terminal completion.',
+                               shutdown_interrupted=True)
 
 
 def _classify_delivery_outcome(

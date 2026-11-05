@@ -2941,7 +2941,10 @@ def _record_fire_ownership_lost(
             job_id, False, _OWNERSHIP_LOST_INTERRUPTED, expected_fire_owner=fire_owner,
             **({"ladder_rung": True} if is_retry_run(job) else {}),
         )
-        finish_execution(execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED)
+        finish_execution(
+            execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED,
+            shutdown_interrupted=True,
+        )
     else:
         finish_execution(
             execution_id, success=False,

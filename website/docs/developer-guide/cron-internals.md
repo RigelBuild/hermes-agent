@@ -174,14 +174,22 @@ dropped silently. The mechanics, in the order the due scan applies them
    does a `completed` row whose `finished_at` (else `claimed_at`) precedes the
    instant it is stamped with — a run cannot prove an occurrence that had not
    happened yet. Rows without a comparable timestamp keep counting.
+
    An occurrence identity is only claimable once it is due: `claim_job_for_fire`
    drops a `scheduled_instant` that is still in the future, so an off-tick fire
    (dashboard trigger, webhook, lease reclaim, misfire backstop) runs
    occurrence-free instead of consuming the next slot.
-4. **Late within grace → fire late.** Grace = half the period clamped to
+
+4. **Shutdown interruption → one replay.** Startup marks an interrupted active execution in the
+   ledger and may re-fire its recurring `scheduled_instant` once when no completed attempt exists.
+   A shutdown replay claim is persisted before dispatch, so another shutdown does not replay it
+   again. Ordinary failures, one-shots, stale occurrences, paused or disabled jobs, and terminal
+   jobs are not replayed. If side effects completed before the shutdown was recorded, the replay
+   can duplicate them; that ambiguity is accepted.
+5. **Late within grace → fire late.** Grace = half the period clamped to
    `[120 s, 2 h]` (`_compute_grace_seconds`); the dispatch is stamped
    `last_dispatch.kind = late`.
-5. **Past grace → collapse the backlog, fire once** (`kind = catch_up`), or skip
+6. **Past grace → collapse the backlog, fire once** (`kind = catch_up`), or skip
    with a logged reason when the operator set `cron.catch_up_missed: false`
    (planned downtime). One-shots past their 120 s grace are retired with a
    diagnostic, never resurrected.
@@ -190,7 +198,7 @@ dropped silently. The mechanics, in the order the due scan applies them
    recurring occurrence that came due *while paused* is not lost, though:
    `resume_job` keeps a past stored `next_run_at` as the due instant instead of
    re-anchoring from now (and logs that it did), so the first tick after
-   resume applies rules 3–5 to it — one late/catch-up run, or a logged skip.
+   resume applies rules 3–6 to it — one late/catch-up run, or a logged skip.
    One-shots and future instants recompute from now on resume.
 
 The same store fields drive every topology: a standalone `hermes -p X gateway

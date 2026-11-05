@@ -88,21 +88,25 @@ def parse_launchd_exit_timeout(print_output: object) -> float | None:
         return None
     return float(match.group(1))
 
+# Home Manager's mkAgent labels every agent ``org.nix-community.home.<logName>``; ours are hermes-*.
+_HOME_MANAGER_LABEL_PREFIX = "org.nix-community.home.hermes"
+
 
 def launchd_job_label(environ: Mapping[str, str] | None = None) -> str | None:
-    """The ``ai.hermes.*`` launchd job label in *environ*, or ``None`` (no darwin gate).
+    """The Hermes launchd job label in *environ* (``ai.hermes*`` or Home Manager), or ``None``.
 
     launchd stamps ``XPC_SERVICE_NAME`` only on the job process it spawns. The generated plist
     runs the stderr-timestamp wrapper there, so the gateway grandchild reads ``XPC_SERVICE_NAME=0``
-    and finds its label only in the wrapper's re-export, ``HERMES_LAUNCHD_LABEL``. Both go through
-    the same ``ai.hermes`` predicate: app-coalition labels (``application.<bundle>…``, exported
-    into IDE integrated terminals) are not our job. ONE seam for every reader of launchd identity
-    (drain cap, restart route, control-socket supervisor declaration).
+    and finds its label only in the wrapper's re-export, ``HERMES_LAUNCHD_LABEL``. App-coalition
+    labels (``application.<bundle>…``, exported into IDE terminals) are not our job. ONE seam for
+    every reader of launchd identity (drain cap, restart route, control-socket supervisor).
     """
     env = os.environ if environ is None else environ
     for var in ("XPC_SERVICE_NAME", LAUNCHD_LABEL_ENV):
         label = str(env.get(var, "") or "").strip()
         if label.startswith("ai.hermes"):
+            return label
+        if label.startswith(_HOME_MANAGER_LABEL_PREFIX):
             return label
     return None
 
