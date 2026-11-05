@@ -21,6 +21,8 @@ busy_acceptance = ContextVar('busy_acceptance', default=None)
 # commit task, which command barriers and /restart wait on): ``busy_acceptance`` may already resolve
 # once the input's FIFO position is fixed behind an earlier input of its chat still capturing.
 busy_commit = ContextVar('busy_commit', default=None)
+# True while an allowed plugin's injected row executes: narrows toolsets and forces approval cards.
+plugin_origin_turn: ContextVar[bool] = ContextVar('plugin_origin_turn', default=False)
 # ``_validate_native`` clauses about the message's own content, safe to name to the sender's chat.
 _CONTENT_CLAUSES = frozenset({
     'text', 'auto_skill', 'channel_prompt', 'channel_context', 'reply_expected',
