@@ -109,6 +109,38 @@ class TestGatewayPrompt:
         thread.join()
         assert result == "n"
 
+    def test_answer_written_while_a_stale_one_is_handled_survives(self, tmp_path, monkeypatch):
+        """The consumer removes only the bytes it read, never a newer answer."""
+        import json
+        import threading
+        from pathlib import Path
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        prompt_path = hermes_home / ".update_prompt.json"
+        response_path = hermes_home / ".update_response"
+        real_read = Path.read_text
+
+        def read_then_race(self, *a, **k):
+            text = real_read(self, *a, **k)
+            if "prompt-id:stale" in text:  # the current answer lands right after the stale read
+                current = json.loads(real_read(prompt_path))["id"]
+                response_path.write_text(f"prompt-id:{current}\nn")
+            return text
+
+        def write_stale():
+            while not prompt_path.exists():
+                time.sleep(0.01)
+            response_path.write_text("prompt-id:stale\ny")
+
+        monkeypatch.setattr(Path, "read_text", read_then_race)
+        thread = threading.Thread(target=write_stale)
+        thread.start()
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            from hermes_cli.update_cmd import _gateway_prompt
+            result = _gateway_prompt("Restore? [Y/n]", "default", timeout=3.0)
+        thread.join()
+        assert result == "n"
+
 # ---------------------------------------------------------------------------
 # Update command spawns --gateway flag
 # ---------------------------------------------------------------------------

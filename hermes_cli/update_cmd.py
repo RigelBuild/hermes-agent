@@ -419,8 +419,11 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = GATEWA
     while _time.monotonic() < deadline:
         if response_path.exists():
             try:
-                answer = response_path.read_text(encoding="utf-8-sig").strip()
-                response_path.unlink(missing_ok=True)
+                # Claim by rename so a newer answer written after this read is never deleted.
+                claimed = response_path.with_suffix(".claimed")
+                response_path.replace(claimed)
+                answer = claimed.read_text(encoding="utf-8-sig").strip()
+                claimed.unlink(missing_ok=True)
                 tag, _, rest = answer.partition("\n")
                 if tag.startswith(UPDATE_RESPONSE_ID_PREFIX):
                     if tag[len(UPDATE_RESPONSE_ID_PREFIX):] != payload["id"]:
