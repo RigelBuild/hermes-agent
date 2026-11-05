@@ -271,7 +271,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     # Script runner contract ("Script timed out after {n}s: {path}") — also for agent jobs with a
     # context script. Must precede provider classification so it never claims a model failure.
     # See #78503, #82460.
-    if lower.startswith("script timed out"):
+    if lower.startswith(("script timed out", "pre-run script timed out")):
         return script_timeout_notice(job_name, job_id)
 
     # Scheduler inactivity watchdog ("idle for {n}s (limit {m}s)"): the job's OWN tool call went
@@ -2297,6 +2297,18 @@ def _prepare_job_prompt(
             cancel_event=cancel_event,
         )
         _ran_ok, _script_output = prerun_script
+        timeout = re.match(r"Script timed out after (\d+)s:", _script_output)
+        if not _ran_ok and timeout:
+            error = f"pre-run script timed out after {timeout.group(1)}s"
+            failed_doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                "**Status:** FAILED\n\n"
+                f"{error}.\n"
+            )
+            return (False, failed_doc, "", error), None
+
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info("Job '%s' (ID: %s): wakeAgent=false, skipping agent run", job_name, job_id)
             note_cron_skipped(job)
