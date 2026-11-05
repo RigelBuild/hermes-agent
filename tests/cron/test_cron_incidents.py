@@ -250,6 +250,42 @@ def test_missing_db_no_crash(monkeypatch, tmp_path):
 # ── Scheduler gating ───────────────────────────────────────────────────────
 
 
+def test_pre_run_script_timeout_creates_incident(monkeypatch, tmp_path, cron_owner):
+    inc = _point_db(monkeypatch, tmp_path)
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "slow.py").write_text(
+        "import threading\nthreading.Event().wait()\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_CRON_SCRIPT_TIMEOUT", "2")
+    monkeypatch.setattr(sched, "_hermes_home", tmp_path)
+    job = _job(script="slow.py", deliver="local")
+
+    with cron_jobs.use_cron_store(tmp_path):
+        cron_jobs.save_jobs([job])
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={
+                "api_key": "test-key",
+                "base_url": "https://example.invalid/v1",
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+            }
+        ), patch("run_agent.AIAgent") as mock_agent:
+            first_run = sched.run_one_job(dict(job))
+            second_run = sched.run_one_job(dict(job))
+
+        rows = inc.list_incidents()
+        assert len(rows) == 1
+        assert rows[0]["error"] == "pre-run script timed out after 2s"
+        assert first_run is True
+        assert second_run is True
+        stored = next(row for row in cron_jobs.load_jobs() if row["id"] == job["id"])
+        assert stored["last_status"] == "error"
+        mock_agent.assert_not_called()
+
+
 def test_repeat_failure_alerts_once_then_reminds_after_cooldown(monkeypatch, tmp_path, cron_owner):
     """Same job + same error: the first failing run delivers, the repeat is withheld (but still
     recorded as a run), one reminder goes out once ``cron.failure_repeat_alert_hours`` has
