@@ -6345,6 +6345,15 @@ def _resolve_exec_approval_admin_gate(config_extra: Optional[dict]) -> tuple[boo
     return (True, admin_ids)
 
 
+def _current_update_prompt_id() -> Optional[str]:
+    """The id of the update prompt now waiting on disk, or None when none is."""
+    try:
+        from hermes_constants import get_hermes_home
+        return json.loads((get_hermes_home() / ".update_prompt.json").read_text(encoding="utf-8")).get("id")
+    except Exception:
+        return None
+
+
 def _define_discord_view_classes() -> None:
     """Register Discord UI view classes as module globals.
     Called at module load and after a lazy install so the classes exist whenever DISCORD_AVAILABLE."""
@@ -6579,10 +6588,17 @@ def _define_discord_view_classes() -> None:
             from hermes_cli.update_cmd import GATEWAY_PROMPT_TIMEOUT_S
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout_within(GATEWAY_PROMPT_TIMEOUT_S))
             self.session_key = session_key
+            self.prompt_id = _current_update_prompt_id()
             self._localize_buttons(yes_btn="platform.discord.prompt.affirm", no_btn="platform.discord.prompt.negate")
 
         async def _respond(self, interaction: discord.Interaction, answer: str, color: discord.Color, label_key: str):
             if not await self._gate(interaction, resolved_msg=t("platform.discord.prompt.already_answered"), unauth_msg=_unauthorized()):
+                return
+            # A card left over from an earlier prompt must not answer the one now waiting.
+            if self.prompt_id is None or _current_update_prompt_id() != self.prompt_id:
+                await interaction.response.send_message(t("platform.discord.prompt.expired_footer"), ephemeral=True)
+                await self.on_timeout()
+                self.stop()
                 return
             await self._finalize_embed(
                 interaction, color,
@@ -6914,6 +6930,7 @@ def _define_discord_view_classes() -> None:
                     await interaction.response.defer()
                 except Exception:
                     pass
+                return  # buttons may still show; keep the view so clicks get the already-answered reply
             self.stop()
 
         async def _resolve_choice(self, interaction: discord.Interaction, index: int, choice: str) -> None:

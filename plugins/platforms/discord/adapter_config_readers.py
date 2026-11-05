@@ -62,5 +62,5 @@ def _read_discord_prompt_timeout_within(backing_seconds: float) -> int:
     it answers. ``backing_seconds <= 0`` means the backing wait is unbounded."""
     seconds = _read_discord_prompt_timeout()
     if backing_seconds > 0:
-        return min(seconds, max(int(backing_seconds), _DISCORD_PROMPT_TIMEOUT_MIN))
+        return min(seconds, max(int(backing_seconds), 1))
     return seconds

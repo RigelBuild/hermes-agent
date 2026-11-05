@@ -116,3 +116,43 @@ async def test_resolved_exec_view_is_stopped():
     await view._finalize_embed(_interaction(), color=None, footer="done")
     assert view.resolved is True
     assert getattr(view, "stopped", False) is True
+
+
+def test_short_backing_wait_beats_the_view_floor(monkeypatch):
+    import hermes_cli.config
+    cfg = {"approvals": {"discord_prompt_timeout": 86400}, "clarify": {"timeout": 5}}
+    monkeypatch.setattr(hermes_cli.config, "read_raw_config", lambda: cfg)
+    monkeypatch.setattr(hermes_cli.config, "load_config", lambda: cfg)
+    assert _views()["clarify"].timeout == 5
+
+
+@pytest.mark.asyncio
+async def test_old_update_card_cannot_answer_a_newer_prompt(tmp_path, monkeypatch):
+    import json
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    prompt = home / ".update_prompt.json"
+    prompt.write_text(json.dumps({"prompt": "old?", "id": "old"}))
+    old_card = UpdatePromptView(session_key="s", allowed_user_ids={"1"})
+    prompt.write_text(json.dumps({"prompt": "new?", "id": "new"}))
+    new_card = UpdatePromptView(session_key="s", allowed_user_ids={"1"})
+
+    stale = _interaction()
+    await old_card._respond(stale, "y", None, "platform.discord.prompt.affirm")
+    assert not (home / ".update_response").exists()
+    assert old_card.resolved is True
+    stale.response.send_message.assert_awaited_once()
+
+    await new_card._respond(_interaction(), "n", None, "platform.discord.prompt.negate")
+    assert (home / ".update_response").read_text() == "n"
+
+
+@pytest.mark.asyncio
+async def test_clarify_view_stays_live_when_its_edit_fails():
+    view = ClarifyChoiceView(choices=["a"], clarify_id="c", allowed_user_ids=set())
+    interaction = _interaction()
+    interaction.response.edit_message = AsyncMock(side_effect=RuntimeError("gone"))
+    await view._finish(interaction, None, "done", log_edit_failure=False)
+    assert view.resolved is True
+    assert getattr(view, "stopped", False) is False
