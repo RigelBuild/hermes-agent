@@ -5362,6 +5362,20 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             logger.warning("[%s] Failed to fetch channel history: %s", self.name, e)
             return ""
 
+    async def thread_owned_by_self(self, thread_id: str) -> bool:
+        """Check the thread owner against this connected bot using a REST channel fetch."""
+        if not self._client or not getattr(self._client, 'user', None):
+            return False
+        try:
+            thread = await self._client.fetch_channel(int(thread_id))
+            owner_id = getattr(thread, 'owner_id', None)
+            return (getattr(thread, 'id', None) is not None
+                    and str(thread.id) == str(thread_id)
+                    and owner_id is not None
+                    and str(owner_id) == str(self._client.user.id))
+        except Exception:
+            logger.debug("[%s] Cannot verify ownership of Discord thread %s", self.name, thread_id, exc_info=True)
+            return False
     async def _resolve_channel(self, channel_id: Any) -> Any:
         """Cached ``get_channel`` first, REST ``fetch_channel`` on miss (raises on API error).
 

@@ -7,12 +7,11 @@ in the calling plugin's OWN profile. The origin path never chooses a profile: th
 for that chat through that profile's adapter must already land in the plugin's profile, so a human
 follow-up in the same chat keys into the same session."""
 from __future__ import annotations
-
 import asyncio
 import concurrent.futures
 import contextlib
+import contextvars
 import logging
-import weakref
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -41,11 +40,7 @@ class GatewayPluginInjectionMixin:
         origin: Optional[Mapping[str, Any]] = None, plugin_home: Optional[Path] = None,
         keyless: bool = False, calling_session_key: str = "",
     ) -> bool:
-        """Schedule a plugin-triggered turn on the live gateway loop (thread-safe).
-
-        With ``origin`` the profile, origin and adapter checks run here, synchronously, so the plugin
-        gets ``False`` for a chat it may not start; authorization is rechecked at dispatch. ``keyless``
-        (neither given) picks the target here too (``gateway/plugin_keyless_inject.py``)."""
+        """Schedule a plugin-triggered turn on the live gateway loop (thread-safe)."""
         from gateway.run import safe_schedule_threadsafe
         loop = getattr(self, "_gateway_loop", None)
         if not getattr(self, "_running", False) or loop is None or loop.is_closed():
@@ -65,7 +60,8 @@ class GatewayPluginInjectionMixin:
                                                                     plugin_id=plugin_id):
                 return False
             target = f"origin={source.platform.value}/{source.chat_id}"
-            coro = self._dispatch_plugin_origin_injection(source=source, content=content, plugin_id=plugin_id)
+            coro = self._dispatch_plugin_origin_injection(
+                source=source, content=content, plugin_id=plugin_id, plugin_home=plugin_home)
         else:
             if not self._plugin_session_key_admissible(session_key, plugin_home=plugin_home, plugin_id=plugin_id):
                 return False
@@ -73,26 +69,58 @@ class GatewayPluginInjectionMixin:
             coro = self._dispatch_plugin_message_injection(
                 session_key=session_key, content=content, plugin_id=plugin_id, plugin_home=plugin_home,
             )
+
+        from gateway.plugin_origin_session import origin_sessions_enabled
+        fresh_context = origin_sessions_enabled(plugin_home, plugin_id)
         try:
             current_loop = asyncio.get_running_loop()
         except RuntimeError:
             current_loop = None
-
         if current_loop is loop:
             try:
-                future = loop.create_task(coro)
+                future = loop.create_task(coro, context=contextvars.Context() if fresh_context else None)
             except Exception:
                 coro.close()
                 logger.warning("Plugin message injection scheduling failed", exc_info=True)
                 return False
             self._background_tasks.add(future)
             future.add_done_callback(self._background_tasks.discard)
-        else:
+        elif not fresh_context:
             future = safe_schedule_threadsafe(
                 coro, loop, logger=logger, log_message="Plugin message injection scheduling failed",
                 log_level=logging.WARNING,
             )
             if future is None:
+                return False
+        else:
+            future = concurrent.futures.Future()
+
+            def create_on_loop():
+                try:
+                    task = loop.create_task(coro, context=contextvars.Context())
+                except Exception as exc:
+                    coro.close()
+                    future.set_exception(exc)
+                    return
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+
+                def completed(done):
+                    if done.cancelled():
+                        future.cancel()
+                    elif (exc := done.exception()) is not None:
+                        future.set_exception(exc)
+                    else:
+                        future.set_result(done.result())
+
+                task.add_done_callback(completed)
+
+            try:
+                loop.call_soon_threadsafe(create_on_loop, context=contextvars.Context())
+            except Exception as exc:
+                coro.close()
+                future.set_exception(exc)
+                logger.warning("Plugin message injection scheduling failed", exc_info=True)
                 return False
 
         def _log_result(completed) -> None:
@@ -101,7 +129,7 @@ class GatewayPluginInjectionMixin:
                     return
             except (asyncio.CancelledError, concurrent.futures.CancelledError):
                 return
-            except Exception:  # dispatch boundary: the plugin already got True; log, never raise
+            except Exception:
                 logger.warning("Plugin message injection failed: plugin=%s %s", plugin_id, target, exc_info=True)
                 return
             logger.warning("Plugin message injection was not routed: plugin=%s %s", plugin_id, target)
@@ -302,28 +330,42 @@ class GatewayPluginInjectionMixin:
         return source
 
     def _plugin_origin_admissible(self, source: SessionSource, *, plugin_home: Optional[Path], plugin_id: str) -> bool:
-        """Under the session authority a plugin turn borrows the connector provenance of a human
-        message already committed in that chat, and the gateway never mints it for a chat the
-        platform did not deliver: refuse such an origin here, so the plugin gets ``False`` instead of
-        a ``True`` for a turn the dispatch then drops. Dispatch rechecks."""
+        from gateway.plugin_origin_session import eligible
         from gateway.session_authorities import authority_for_home
-        from gateway.session_automation import committed_route_envelope
         authority = authority_for_home(self, plugin_home) if plugin_home is not None else None
-        if authority is None:
-            return True  # no authority: the adapter's normal session path creates the session
-        entry = self.session_store.lookup_by_session_key(self._session_key_for_source(source))
-        if entry is not None and committed_route_envelope(authority, entry) is not None:
+        if authority is not None and not eligible(self, source):
             return True
-        logger.warning("Plugin message injection refused: plugin=%s origin=%s/%s has no human message admitted "
-                       "yet; a plugin can continue a chat, not open one", plugin_id, source.platform.value,
-                       source.chat_id)
-        return False
+        from gateway.plugin_origin_session import allowed
+        return bool(plugin_home is not None and allowed(plugin_home, plugin_id))
+
+    async def _plugin_origin_authorized(self, source: SessionSource, *, plugin_id: str, plugin_home: Path,
+                                        target: str) -> bool:
+        """Authorize bootstrap using only this plugin profile's grant and Discord bot ownership."""
+        from agent.estop import check_paused
+        from gateway.config import Platform
+        from gateway.plugin_origin_session import allowed, _thread_sessions_per_user
+        from gateway.session_identity import identity_of
+        if not allowed(plugin_home, plugin_id) or _thread_sessions_per_user(plugin_home) is not False:
+            return False
+        identity = identity_of(source)
+        adapter = self._delivery_adapter_for(source)
+        if (source.platform != Platform.DISCORD or source.chat_type != "thread"
+                or source.thread_id != source.chat_id or adapter is None
+                or (identity is not None and identity.runtime_home != Path(plugin_home))):
+            return False
+        try:
+            if await adapter.thread_owned_by_self(source.thread_id) is not True:
+                return False
+        except Exception:
+            logger.warning("Plugin origin thread ownership check failed: plugin=%s %s", plugin_id, target,
+                           exc_info=True)
+            return False
+        return not check_paused("Plugin-origin injection", logger)
 
     async def _dispatch_plugin_origin_injection(
-        self, *, source: SessionSource, content: str, plugin_id: str
+        self, *, source: SessionSource, content: str, plugin_id: str, plugin_home: Optional[Path] = None,
     ) -> bool:
-        """Start (or continue) the session at a plugin-supplied origin through the adapter's normal
-        message path: ``get_or_create_session`` creates it, the reply goes back to that chat."""
+        """Queue an origin injection into a native route or bootstrap it under the authority."""
         target = f"origin={source.platform.value}/{source.chat_id}"
         if not self._plugin_injection_accepting():
             return False
@@ -331,31 +373,35 @@ class GatewayPluginInjectionMixin:
         if adapter is None:
             logger.warning("Plugin message injection: adapter for %s went away before dispatch", target)
             return False
-        if not self._plugin_injection_authorized(source, plugin_id=plugin_id, target=target):
+        if plugin_home is None:
             return False
         session_key = self._session_key_for_source(source)
-        async with self._plugin_injection_scope(source):
-            from gateway.session_authorities import active_authority
-            if active_authority(self) is not None:
-                # The FIFO admits a producer turn only into a session that already holds a
-                # committed human turn (its connector provenance is borrowed, never minted), so
-                # an origin with no session yet is refused rather than run outside the FIFO.
+        async with self._plugin_injection_scope(source, plugin_home):
+            from gateway.plugin_origin_session import admit, eligible
+            from gateway.session_authorities import authority_for_home
+            authority = authority_for_home(self, plugin_home)
+            if authority is not None:
+                if eligible(self, source):
+                    if not await self._plugin_origin_authorized(
+                            source, plugin_id=plugin_id, plugin_home=plugin_home, target=target):
+                        return False
+                    return await admit(self, authority, adapter, source, content=content,
+                                       plugin_id=plugin_id, plugin_home=plugin_home)
+                if not self._plugin_injection_authorized(source, plugin_id=plugin_id, target=target):
+                    return False
                 entry = await self.async_session_store.lookup_by_session_key(session_key)
                 if entry is None:
-                    logger.warning("Plugin message injection refused: plugin=%s %s has no session under "
-                                   "the session authority yet", plugin_id, target)
                     return False
                 return await self._admit_plugin_injection(
                     adapter, source, session_key=session_key, session_id=entry.session_id,
                     content=content, plugin_id=plugin_id)
+            if not self._plugin_injection_authorized(source, plugin_id=plugin_id, target=target):
+                return False
             await adapter.handle_message(MessageEvent(
                 text=content, message_type=MessageType.TEXT, source=source, internal=True,
                 allow_gateway_control=False,
-                # Non-strict: the key is pinned against topic recovery, the session may not exist yet.
-                metadata={
-                    "hermes_plugin_id": plugin_id, "hermes_plugin_injection": True,
-                    "gateway_session_key": session_key,
-                },
+                metadata={"hermes_plugin_id": plugin_id, "hermes_plugin_injection": True,
+                          "gateway_session_key": session_key},
             ))
         logger.info("Plugin message injection dispatched: plugin=%s %s session=%s", plugin_id, target, session_key)
         return True
