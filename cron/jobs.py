@@ -2372,12 +2372,16 @@ def _record_run_outcome(
         job["run_claim"] = None
 
 
-def _advance_after_run(job: dict[str, Any], now: str, *, ladder_rung: bool = False) -> None:
+def _advance_after_run(
+    job: dict[str, Any], now: str, *, ladder_rung: bool = False,
+    count_repeat: bool = True, update_next_run: bool = True,
+) -> None:
     """Bump ``repeat.completed`` and recompute ``next_run_at``; retire the record as a terminal
     completion when the repeat limit is reached or a one-shot has no further run.
 
     ``ladder_rung``: this run re-ran an occurrence that already counted (an unreachable-model
-    re-run, ``cron.unreachable_retry.is_retry_run``), so ``repeat.completed`` is left as is."""
+    re-run, ``cron.unreachable_retry.is_retry_run``), so ``repeat.completed`` is left as is.
+    ``count_repeat`` and ``update_next_run`` separate interruption bookkeeping from its replay."""
     # If no next run, decide whether this is terminal completion (one-shot) or a transient failure
     # (recurring schedule couldn't compute — e.g. 'croniter' missing from the runtime env). Recurring jobs
     # must NEVER be silently disabled: that turns a missing runtime dep into "job completed" and the user's
@@ -2394,7 +2398,7 @@ def _advance_after_run(job: dict[str, Any], now: str, *, ladder_rung: bool = Fal
         # Count each occurrence once. A ladder re-run's occurrence already counted, and finite
         # one-shots were pre-claimed by claim_dispatch() (completed already incremented); every
         # other run, recurring or direct, gets the increment.
-        if not ladder_rung and not (kind == "once" and finite and completed > 0):
+        if count_repeat and not ladder_rung and not (kind == "once" and finite and completed > 0):
             completed += 1
             repeat["completed"] = completed
         if finite and completed >= times:
@@ -2403,6 +2407,8 @@ def _advance_after_run(job: dict[str, Any], now: str, *, ladder_rung: bool = Fal
             _complete_job_record(job)
             return
 
+    if not update_next_run:
+        return
     job["next_run_at"] = compute_next_run(job["schedule"], now)
     if job["next_run_at"] is not None:
         if job.get("state") != "paused":
@@ -2437,6 +2443,7 @@ def mark_job_run(
     quota_hold_seconds: Optional[float] = None,
     recover_consumed_fire: bool = False,
     shutdown_replay: bool = False,
+    shutdown_interrupted: bool = False,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2457,7 +2464,7 @@ def mark_job_run(
     ``retry after <N>s``). Recurring jobs are parked through the window instead of re-firing into
     it on every tick. ``recover_consumed_fire`` lets a scheduled sparse cron recover its
     consumed fire when the provider reopens; manual runs retain the natural schedule
-    (cron/quota_hold.py, #89376).
+    (cron/quota_hold.py, #89376). ``shutdown_interrupted`` leaves a recurring repeat slot for replay.
     """
     def apply(jobs, _i, job):
         if execution_id is not None and execution_id in job.get("canonical_completions", []):
@@ -2474,8 +2481,13 @@ def mark_job_run(
         if execution_id is not None:  # retire ids recovery can no longer replay; latest stays last
             from cron.scheduler_authority import replayable_completions as live
             job["canonical_completions"] = [*live(job_id, job.get("canonical_completions")), execution_id]
-        if not shutdown_replay:
-            _advance_after_run(job, now, ladder_rung=ladder_rung)
+        _advance_after_run(
+            job, now, ladder_rung=ladder_rung,
+            count_repeat=(
+                not shutdown_interrupted or job.get("schedule", {}).get("kind") == "once"
+            ),
+            update_next_run=not shutdown_replay,
+        )
         from cron import quota_hold
         from cron.unreachable_retry import clear_state, plan_retry
 

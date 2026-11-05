@@ -601,10 +601,12 @@ class InProcessCronScheduler(CronScheduler):
         # A profile may have been deleted since this snapshot was taken; never recreate a deleted home's
         # cron workspace via the heartbeat below (#47368).
         for entry in initial_homes:
-            _, home = _profile_entry(entry)
+            profile_name, home = _profile_entry(entry)
             try:
                 with _profile_cron_scope(home):
-                    recovered = self.recover_interrupted()
+                    recovered = self.recover_interrupted(
+                        adapters=tick_adapters_for(profile_name), loop=loop
+                    )
                     if recovered:
                         logger.warning(
                             "Marked %d interrupted cron execution(s) for profile at %s",

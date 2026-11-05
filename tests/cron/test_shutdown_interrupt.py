@@ -92,6 +92,7 @@ class TestMarkRunningJobsInterrupted:
             assert c.args[1] is False
             assert "gateway shutdown" in c.args[2]
             assert c.kwargs["expected_fire_owner"] in {"owner-1", "owner-2"}
+            assert c.kwargs["shutdown_interrupted"] is True
 
     def test_sets_interrupted_flag_for_consumption_by_run_one_job(self):
         import cron.scheduler as sched
@@ -194,7 +195,8 @@ class TestRunningFireOwnerRegistry:
             release.wait(timeout=2)
             return True
 
-        def mark(_job_id, _success, _reason, *, expected_fire_owner):
+        def mark(_job_id, _success, _reason, *, expected_fire_owner, shutdown_interrupted):
+            assert shutdown_interrupted is True
             marked_owners.append(expected_fire_owner)
             return True
 
@@ -232,7 +234,8 @@ class TestRunningFireOwnerRegistry:
             object(): ("owner-b", profile_b),
         }
 
-        def mark(job_id, success, reason, *, expected_fire_owner):
+        def mark(job_id, success, reason, *, expected_fire_owner, shutdown_interrupted):
+            assert shutdown_interrupted is True
             observed.append(
                 (
                     job_id,

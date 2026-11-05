@@ -180,11 +180,12 @@ dropped silently. The mechanics, in the order the due scan applies them
    (dashboard trigger, webhook, lease reclaim, misfire backstop) runs
    occurrence-free instead of consuming the next slot.
 
-4. **Shutdown interruption → one replay.** Startup marks an interrupted active execution in the
-   ledger and may re-fire its recurring `scheduled_instant` once when no completed attempt exists.
-   A shutdown replay claim is persisted before dispatch, so another shutdown does not replay it
-   again. Ordinary failures, one-shots, stale occurrences, paused or disabled jobs, and terminal
-   jobs are not replayed. If side effects completed before the shutdown was recorded, the replay
+4. **Shutdown interruption → one replay.** Startup may re-fire a shutdown-interrupted recurring
+   `scheduled_instant` once when no completed attempt exists. The interrupted attempt does not
+   consume a repeat slot; the replay does, so a repeat-limited job reaches its terminal limit only
+   after the replay. A replay claim is persisted before dispatch, so another shutdown does not
+   replay it again. Ordinary failures, one-shots, stale occurrences, paused or disabled jobs, and
+   terminal jobs are not replayed. If side effects completed before shutdown was recorded, replay
    can duplicate them; that ambiguity is accepted.
 5. **Late within grace → fire late.** Grace = half the period clamped to
    `[120 s, 2 h]` (`_compute_grace_seconds`); the dispatch is stamped

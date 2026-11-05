@@ -52,9 +52,9 @@ unknown and is not retried automatically.
 
 An interrupted admitted execution, or a prepared fire that cannot be found, stays paused for
 operator review. Recovery never creates another admission for it. Paused jobs are not
-automatically resumed, even when their completed result is recovered. This is separate from
-[execution recovery](#execution-history), which restores a scheduled occurrence only when its attempt
-never started. `hermes cron run` exits nonzero for a known synchronous execution failure; background
+automatically resumed, even when their completed result is recovered. A recurring scheduled
+occurrence explicitly marked interrupted by gateway shutdown is replayed once; see
+[execution recovery](#execution-history). `hermes cron run` exits nonzero for a known synchronous execution failure; background
 dispatch is not a terminal success/failure verdict.
 
 ## Creating scheduled tasks
@@ -428,20 +428,25 @@ passes.
 
 What recovery does next depends on whether the attempt had started:
 
-- **Started** (`started_at` is set): the attempt stays an audit record and is
-  never rerun automatically, because its side effects may already have happened.
-- **Never started** (claimed, then the owner died before the run began): its
-  scheduled occurrence goes back on the schedule once. A recurring job's slot
-  is restored exactly like an occurrence the scheduler advanced past but never
-  claimed: the next tick fires it under the usual late / catch-up rules, and the
-  new attempt keeps the original scheduled instant. A one-shot fires once on
-  the next tick, even if its grace window has passed in the meantime. This
-  happens only while the job's fire claim is still the lost attempt's own claim
-  for that occurrence (the attempt records its claim token). If the job's
-  schedule, next run time or enabled/paused state was changed since (edit of
-  the schedule, pause, resume, run-now), or another fire claimed it, the
-  old slot is not restored. An edit to only the prompt, script or delivery
-  target does not cancel it: the restored run uses the edited job.
+   - **Started** (`started_at` is set): the attempt stays an audit record and is
+     not ordinarily rerun, because its side effects may already have happened.
+     A recurring occurrence explicitly marked interrupted by gateway shutdown
+     is replayed once with the owning profile's adapters. One-shots and
+     interruptions without shutdown evidence are not replayed. If the job has a
+     repeat limit, the interrupted occurrence does not consume it; its replay
+     consumes one repeat slot and can complete the job.
+   - **Never started** (claimed, then the owner died before the run began): its
+     scheduled occurrence goes back on the schedule once. A recurring job's slot
+     is restored exactly like an occurrence the scheduler advanced past but never
+     claimed: the next tick fires it under the usual late / catch-up rules, and the
+     new attempt keeps the original scheduled instant. A one-shot fires once on
+     the next tick, even if its grace window has passed in the meantime. This
+     happens only while the job's fire claim is still the lost attempt's own claim
+     for that occurrence (the attempt records its claim token). If the job's
+     schedule, next run time or enabled/paused state was changed since (edit of
+     the schedule, pause, resume, run-now), or another fire claimed it, the
+     old slot is not restored. An edit to only the prompt, script or delivery
+     target does not cancel it: the restored run uses the edited job.
 
 Each such `unknown` attempt also opens or refreshes a [failure
 incident](#failure-incidents-alert-once-remind-on-a-cooldown-acknowledge) with a fixed message per outcome: started and not
@@ -1401,7 +1406,7 @@ The referenced jobs' most recent completed outputs are injected above the prompt
 
 Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md`.
 
-Job definitions are plain JSON on disk: they survive `hermes update`, gateway restarts, and machine reboots. A job that was mid-run during a restart is marked `unknown` in the execution ledger and opens a failure incident. A run that had already started is not retried automatically; one that was claimed but had not started yet fires once after the restart. The job's next scheduled tick fires normally. See [Execution history](#execution-history) for details.
+Job definitions are plain JSON on disk: they survive `hermes update`, gateway restarts, and machine reboots. A recurring run explicitly marked interrupted by gateway shutdown is replayed once; one-shots and other runs that had started are not replayed automatically. A run claimed but not yet started fires once after restart. See [Execution history](#execution-history) for details.
 
 :::tip
 Ask the agent to manage jobs through the `cronjob_manage` tool, `hermes cron edit`, or `/cron` — not by patching `jobs.json` directly. Direct edits can fail silently when [file write safety](../security.md#file-write-safety) blocks the path (for example when `HERMES_WRITE_SAFE_ROOT` is set), and the [file-mutation verifier](../configuration.md#file-mutation-verifier) footer is the authoritative signal that nothing was saved.

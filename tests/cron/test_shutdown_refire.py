@@ -122,6 +122,113 @@ def test_startup_replay_receives_adapters_and_loop(
 
     assert seen == [(job_id, {"adapters": adapters, "loop": loop})]
 
+def test_multiplex_startup_replay_receives_profile_adapters_and_loop(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    homes = [(name, tmp_path / name) for name in ("default", "secondary")]
+    job_ids = {}
+    for name, home in homes:
+        home.mkdir()
+        token = set_hermes_home_override(str(home))
+        try:
+            job = jobs.create_job(prompt="run", schedule="every 1h", name=name)
+            scheduled = (now() - timedelta(minutes=1)).isoformat()
+            jobs.update_job(job["id"], {"next_run_at": (now() + timedelta(hours=1)).isoformat()})
+            row = executions.create_execution(job["id"], source="builtin", scheduled_instant=scheduled)
+            executions.mark_execution_running(row["id"])
+            executions.finish_execution(
+                row["id"], success=False,
+                error="Interrupted by gateway shutdown before terminal completion.",
+                shutdown_interrupted=True,
+            )
+            job_ids[name] = job["id"]
+        finally:
+            reset_hermes_home_override(token)
+
+    shared_adapters, default_adapters, secondary_adapters, loop = (object() for _ in range(4))
+    seen = []
+    provider = InProcessCronScheduler()
+    monkeypatch.setattr(executions, "recover_interrupted_executions", lambda: 0)
+
+    def fire_claimed(claimed, **kwargs):
+        seen.append((claimed["id"], kwargs))
+        executions.finish_execution(claimed["execution_id"], success=True)
+        return True
+
+    monkeypatch.setattr(provider, "fire_claimed", fire_claimed)
+    stop = threading.Event()
+    stop.set()
+    provider.start(
+        stop,
+        adapters=shared_adapters,
+        loop=loop,
+        profile_homes=homes,
+        profile_adapters={"default": default_adapters, "secondary": secondary_adapters},
+        default_profile="default",
+    )
+
+    assert seen == [
+        (job_ids["default"], {"adapters": shared_adapters, "loop": loop}),
+        (job_ids["secondary"], {"adapters": secondary_adapters, "loop": loop}),
+    ]
+
+
+def test_final_repeat_run_interrupted_at_shutdown_replays_once(temp_home, monkeypatch):
+    job = jobs.create_job(prompt="run", schedule="every 1h", name="final-repeat", repeat=2)
+    jobs.update_job(job["id"], {"repeat": {"times": 2, "completed": 1}})
+    scheduled = (now() - timedelta(minutes=1)).isoformat()
+    row = executions.create_execution(job["id"], source="builtin", scheduled_instant=scheduled)
+    claimed = jobs.claim_job_for_fire(
+        job["id"], return_job=True, scheduled_at=scheduled, execution_id=row["id"]
+    )
+    assert isinstance(claimed, dict)
+    assert executions.mark_execution_running(row["id"])
+
+    key = scheduler._inflight_key(job["id"])
+    token = object()
+    scheduler._running_job_ids.add(key)
+    scheduler._running_fire_owners[key] = {
+        token: (claimed["fire_claim"]["by"], temp_home.resolve()),
+    }
+    try:
+        assert scheduler.mark_running_jobs_interrupted("gateway shutdown") == [job["id"]]
+    finally:
+        scheduler._running_job_ids.discard(key)
+        scheduler._running_fire_owners.pop(key, None)
+
+    executions.finish_execution(
+        row["id"], success=False, error="Interrupted by gateway shutdown before terminal completion."
+    )
+    interrupted = jobs.get_job(job["id"])
+    assert interrupted["repeat"]["completed"] == 1
+    assert not jobs.is_terminal_job(interrupted)
+
+    monkeypatch.setattr(executions, "recover_interrupted_executions", lambda: 0)
+    provider = InProcessCronScheduler()
+    replayed = []
+
+    def finish_replay(replay, **_kwargs):
+        replayed.append(replay)
+        jobs.mark_job_run(
+            job["id"],
+            True,
+            execution_id=replay["execution_id"],
+            expected_fire_owner=replay["fire_claim"]["by"],
+            shutdown_replay=replay.get("_shutdown_replay", False),
+        )
+        executions.finish_execution(replay["execution_id"], success=True)
+        return True
+
+    monkeypatch.setattr(provider, "fire_claimed", finish_replay)
+    provider.recover_interrupted()
+
+    finished = jobs.get_job(job["id"])
+    assert len(replayed) == 1
+    assert finished["repeat"]["completed"] == 2
+    assert finished["state"] == "completed"
+    assert finished["enabled"] is False
+    assert finished["next_run_at"] is None
+
 
 def test_gateway_shutdown_marks_active_execution_for_replay(temp_home, monkeypatch):
     job = jobs.create_job(prompt="run", schedule="every 1h", name="shutdown-marked")

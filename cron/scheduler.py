@@ -1163,7 +1163,10 @@ def mark_running_jobs_interrupted(
                 from cron.executions import mark_execution_shutdown_interrupted
 
                 mark_execution_shutdown_interrupted(fire_owner)
-                if mark_job_run(job_id, False, reason, expected_fire_owner=fire_owner):
+                if mark_job_run(
+                    job_id, False, reason, expected_fire_owner=fire_owner,
+                    shutdown_interrupted=True,
+                ):
                     marked.append(job_id)
         except Exception as e:
             logger.warning("Failed to mark job %s interrupted: %s", job_id, e)
