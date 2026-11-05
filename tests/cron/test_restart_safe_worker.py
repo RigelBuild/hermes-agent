@@ -1152,6 +1152,7 @@ def test_lost_execution_start_cas_prevents_side_effects(monkeypatch):
 def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
     tmp_path, monkeypatch
 ):
+    import socket
     from cron import delivery_queue
     from cron import executions
     from cron import scheduler
@@ -1166,21 +1167,18 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
     home = tmp_path / "profile"
     scripts_dir = home / "scripts"
     scripts_dir.mkdir(parents=True)
-    started = tmp_path / "started"
-    release = tmp_path / "release"
+    worker_gate_path = f"\0cron-start-{os.getpid()}"
     side_effect = tmp_path / "side-effect"
     probe = scripts_dir / "restart_probe.py"
     probe.write_text(
-        "import pathlib, time\n"
-        f"started = pathlib.Path({str(started)!r})\n"
-        f"release = pathlib.Path({str(release)!r})\n"
+        "import pathlib, socket\n"
+        f"worker_gate_path = {worker_gate_path!r}\n"
         f"side_effect = pathlib.Path({str(side_effect)!r})\n"
-        "started.write_text('started')\n"
-        "deadline = time.monotonic() + 15\n"
-        "while not release.exists() and time.monotonic() < deadline:\n"
-        "    time.sleep(0.05)\n"
-        "if not release.exists():\n"
-        "    raise SystemExit('release timeout')\n"
+        "with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as gate:\n"
+        "    gate.connect(str(worker_gate_path))\n"
+        "    gate.sendall(b's')\n"
+        "    if gate.recv(1) != b'g':\n"
+        "        raise SystemExit('release gate closed')\n"
         "with side_effect.open('a') as handle:\n"
         "    handle.write('once\\n')\n"
         "print('completed')\n",
@@ -1231,7 +1229,7 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
     assert replacement_loop.is_running()
 
     harness = (
-        "import json, os, pathlib, time\n"
+        "import json, os, pathlib\n"
         f"os.environ['HERMES_HOME'] = {str(home)!r}\n"
         "os.environ['INVOCATION_ID'] = 'restart-fixture'\n"
         "from cron import scheduler\n"
@@ -1242,20 +1240,23 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
         "    raise SystemExit('worker was not isolated')\n"
         f"pathlib.Path({str(launched)!r}).write_text('returned')\n"
     )
-    parent = subprocess.Popen([sys.executable, "-c", harness])
+    # The socket handshake is the script's start event; unlike a short deadline, it
+    # stays reliable while the external worker boots under load.
+    worker_gate = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    worker_gate.bind(worker_gate_path)
+    worker_gate.listen(1)
+    worker_gate.settimeout(30)
+    worker_connection = None
     worker_pid = None
+    parent = None
     try:
-        deadline = time.monotonic() + 10
-        current = None
-        while time.monotonic() < deadline:
-            if parent.poll() is not None:
-                pytest.fail(f"gateway fixture exited early with {parent.returncode}")
-            current = executions.latest_execution(job["id"])
-            if started.exists() and current and current.get("pid") != os.getpid():
-                break
-            time.sleep(0.05)
-        assert started.exists()
+        parent = subprocess.Popen([sys.executable, "-c", harness])
+        worker_connection, _ = worker_gate.accept()
+        worker_connection.settimeout(30)
+        assert worker_connection.recv(1) == b"s"
+        current = executions.latest_execution(job["id"])
         assert current is not None
+        assert current.get("pid") != os.getpid()
         execution = current
         worker_pid = int(current["pid"])
         assert not launched.exists(), "handoff returned before execution completed"
@@ -1266,7 +1267,7 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
         parent.wait(timeout=5)
         assert _pid_exists(worker_pid)
 
-        release.write_text("go", encoding="utf-8")
+        worker_connection.sendall(b"g")
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             row = delivery_queue.get_status(execution["id"])
@@ -1284,10 +1285,13 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
         assert len(sent) == 1
         assert "completed" in sent[0][0]
     finally:
+        if worker_connection is not None:
+            worker_connection.close()
+        worker_gate.close()
         replacement_loop.call_soon_threadsafe(replacement_loop.stop)
         replacement_thread.join(timeout=2)
         replacement_loop.close()
-        if parent.poll() is None:
+        if parent is not None and parent.poll() is None:
             parent.terminate()
             parent.wait(timeout=5)
         if worker_pid is not None and _pid_exists(worker_pid):
