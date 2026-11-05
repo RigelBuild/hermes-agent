@@ -524,7 +524,8 @@ def is_approval_bypass_active_for_session(session_key: str) -> bool:
 
 def is_approval_bypass_active() -> bool:
     """Return whether the current approval context has bypass enabled."""
-    return is_approval_bypass_active_for_session(get_current_session_key(default=""))
+    return (not approval_context.is_plugin_origin_turn()
+            and is_approval_bypass_active_for_session(get_current_session_key(default="")))
 
 
 # --- Result builders shared by the gates ----------------------------------------------------------------------------

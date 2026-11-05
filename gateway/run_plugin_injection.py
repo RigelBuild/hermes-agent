@@ -1,11 +1,7 @@
-"""Plugin-triggered gateway turns (``PluginContext.inject_message``): the process-wide injector this
-runner publishes, the thread-safe scheduler, and the dispatch through the adapter message path.
+"""Plugin-origin turns run in the owning session under current plugin authorization.
 
-Two targets: an existing session (``session_key``; route and session id pinned from the store) or a
-messaging chat (``origin``) whose session is created — or continued — through the normal session path
-in the calling plugin's OWN profile. The origin path never chooses a profile: the gateway's routing
-for that chat through that profile's adapter must already land in the plugin's profile, so a human
-follow-up in the same chat keys into the same session."""
+The injected message is admitted to the session FIFO and dispatched through the adapter path.
+"""
 from __future__ import annotations
 import asyncio
 import concurrent.futures

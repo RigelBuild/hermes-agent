@@ -1,5 +1,6 @@
 """Trusted messaging admission and the existing TurnRunner invocation boundary."""
 import asyncio
+import json
 import logging
 from contextvars import ContextVar
 from contextlib import nullcontext
@@ -227,15 +228,43 @@ async def execute_admission(authority, ref, row):
     noted = await note_if_unviewed(authority, ref, row)  # #134889 LC-7: no viewer, no turn
     if noted is not None:
         return noted
+    plugin_origin = 'plugin_origin_v1' in row['payload']
+    if plugin_origin:
+        from gateway.plugin_origin_session import PluginOriginRefused, check
+        source = authority.sessions[ref.session_id].source
+        try:
+            await check(authority, ref, row, source=source,
+                        adapter=authority.runner._adapter_for_source(source))
+        except PluginOriginRefused as exc:
+            logger.warning('Plugin-origin admission %s refused at execution: %s',
+                           row.get('admission_id'), exc.reason)
+            raise RuntimeStoreError('permission_denied') from exc
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if policy is not None and policy.source == 'cron':
         from gateway.session_cron import execute
         return await execute(authority, ref, row, policy)
     local_policy = policy
+    from gateway.plugin_origin_session import narrowed
+    plugin_turn = narrowed(authority, row)
     from gateway.session_managed_worker import managed_policy, execute_managed
     policy = managed_policy(authority, ref)
     if policy is not None:
+        if plugin_turn:
+            from hermes_cli.toolset_validation import saved_toolset_resolver
+            config = policy.config()
+            resolver = saved_toolset_resolver(config)
+            from hermes_cli.tools_config import _get_platform_tools
+            toolsets = tuple(sorted(_get_platform_tools(config, 'cotal')))
+            if any(not resolver(name) for name in toolsets):
+                raise RuntimeStoreError('permission_denied')
+            config.setdefault('platform_toolsets', {})['cli'] = list(toolsets)
+            policy = replace(policy, toolsets=toolsets, config_json=json.dumps(config))
+            token = plugin_origin_turn.set(True)
+            try:
+                return await execute_managed(authority, ref, row, policy, plugin_origin=True)
+            finally:
+                plugin_origin_turn.reset(token)
         return await execute_managed(authority, ref, row, policy)
     live = authority.sessions[ref.session_id]
     native = row['admission_id'] in authority.native_waiters

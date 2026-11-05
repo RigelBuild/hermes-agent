@@ -468,3 +468,112 @@ async def test_plugin_origin_refusal_and_descriptor_revalidation(origin_env, mon
     with pytest.raises(PluginOriginRefused, match="authorization"):
         await check(env.authority, SessionRef(str(env.home), entry.session_id), row,
                     source=env.source, adapter=env.adapter)
+@pytest.mark.asyncio
+async def test_managed_plugin_admission_passes_cotal_toolsets_and_origin_marker(origin_env, monkeypatch):
+    import json
+    from dataclasses import replace
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_contract import SessionRef
+    from gateway.session_ingress import execute_admission, plugin_origin_turn
+    from gateway.session_local import _bypass_policy
+
+    env = origin_env
+    monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
+    accepted, outcome = await _inject_origin(env, "managed plugin note")
+    assert accepted is True and outcome is True
+    entry = env.runner.session_store.lookup_by_session_key(env.runner._session_key_for_source(env.source))
+    row = _plugin_row(env.authority, entry.session_id, "managed plugin note")
+    ref = SessionRef(env.authority.profile_id, entry.session_id)
+    policy = _bypass_policy({"cwd": str(env.home), "model": "fixture", "provider": "custom",
+                             "base_url": "http://127.0.0.1:9/v1", "ignore_user_config": True},
+                            private_secrets={})
+    config = policy.config()
+    config["platform_toolsets"] = {"cotal": ["discord"], "cli": ["discord_admin"]}
+    policy = replace(policy, config_json=json.dumps(config), toolsets=("discord_admin",))
+    observed = []
+
+    async def managed(authority, ref, row, policy, *, plugin_origin=False):
+        observed.append((plugin_origin_turn.get(), policy.toolsets, plugin_origin))
+        return "managed reply"
+
+    monkeypatch.setattr("gateway.session_completion_notes.note_if_unviewed", AsyncMock(return_value=None))
+    monkeypatch.setattr("gateway.session_policy.policy_for_source", lambda *_args: None)
+    monkeypatch.setattr("gateway.session_managed_worker.managed_policy", lambda *_args: policy)
+    monkeypatch.setattr("gateway.session_managed_worker.execute_managed", managed)
+
+    assert await execute_admission(env.authority, ref, row) == "managed reply"
+    assert observed == [(True, ("discord",), True)]
+    assert plugin_origin_turn.get() is False
+
+
+@pytest.mark.asyncio
+async def test_revoked_plugin_origin_is_dropped_after_claim(origin_env, monkeypatch, caplog):
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_contract import SessionRef
+
+    env = origin_env
+    schedule = SessionAuthority._schedule
+    monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
+    accepted, outcome = await _inject_origin(env, "revoke between claim and run")
+    assert accepted is True and outcome is True
+    entry = env.runner.session_store.lookup_by_session_key(env.runner._session_key_for_source(env.source))
+    row = _plugin_row(env.authority, entry.session_id, "revoke between claim and run")
+    original_execute = env.authority._execute_claimed
+
+    async def revoke_after_claim(ref, live, claimed_row):
+        env.config(origin=False)
+        return await original_execute(ref, live, claimed_row)
+
+    monkeypatch.setattr(env.authority, "_execute_claimed", revoke_after_claim)
+    monkeypatch.setattr(SessionAuthority, "_schedule", schedule)
+    with caplog.at_level("WARNING", logger="gateway.session_ingress"):
+        env.authority._schedule(SessionRef(env.authority.profile_id, entry.session_id))
+        await async_wait_until(lambda: get_session_admission(
+            env.authority.db, admission_id=row["admission_id"])["status"] == "terminal",
+            timeout=10, what="revoked plugin-origin row to be dropped")
+    await _wait_tasks(env)
+
+    settled = get_session_admission(env.authority.db, admission_id=row["admission_id"])
+    assert settled["outcome"] == "failed"
+    assert env.executed == []
+    assert any("refused at execution" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_each_claimed_row_uses_a_fresh_context(origin_env, monkeypatch):
+    from contextvars import ContextVar
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_contract import SessionRef
+    from gateway.session_ingress import plugin_origin_turn
+
+    env = origin_env
+    schedule = SessionAuthority._schedule
+    monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
+    accepted, outcome = await _inject_origin(env, "fresh context row")
+    assert accepted is True and outcome is True
+    entry = env.runner.session_store.lookup_by_session_key(env.runner._session_key_for_source(env.source))
+    ref = SessionRef(env.authority.profile_id, entry.session_id)
+    drain_value = ContextVar("plugin_origin_drain_value", default=None)
+    row_context = []
+    post_row_drain_context = []
+    claim = env.authority._claim_with_retry
+
+    async def claim_with_drain_context(ref, live):
+        if drain_value.get() is not None:
+            post_row_drain_context.append((drain_value.get(), plugin_origin_turn.get()))
+        result = await claim(ref, live)
+        if result is not None and isinstance(result[0], dict):
+            drain_value.set("set by drain")
+        return result
+
+    async def execute_with_row_marker(ref, live, claimed_row):
+        row_context.append((drain_value.get(), plugin_origin_turn.get()))
+        plugin_origin_turn.set(True)
+        return "reply", "completed"
+
+    monkeypatch.setattr(env.authority, "_claim_with_retry", claim_with_drain_context)
+    monkeypatch.setattr(env.authority, "_execute_claimed", execute_with_row_marker)
+    monkeypatch.setattr(SessionAuthority, "_schedule", schedule)
+    env.authority._schedule(ref)
+    await _wait_tasks(env)
+

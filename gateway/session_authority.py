@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from functools import partial
@@ -1162,7 +1163,7 @@ class SessionAuthority:
 
     async def _drain(self, ref):
         from gateway.session_managed_worker import ManagedExecutionUnknown
-        from functools import partial
+        from gateway.session_runtime_workers import tracked_write
         live = self.sessions[ref.session_id]
         while True:
             claimed = await self._claim_with_retry(ref, live)
@@ -1177,8 +1178,6 @@ class SessionAuthority:
                 self._pause(ref, 'session_busy')
                 return
             if row == 'refused':
-                from functools import partial
-                from gateway.session_runtime_workers import tracked_write
                 from hermes_state_runtime import cancel_session_input
                 cancelled = await tracked_write(self, partial(
                     cancel_session_input, self.db, epoch=self.epoch,
@@ -1203,7 +1202,11 @@ class SessionAuthority:
                 return
             admission_id = row['admission_id']
             try:
-                response, outcome = await self._execute_claimed(ref, live, row)
+                from gateway.session_ingress import plugin_origin_turn
+                row_context = contextvars.Context()
+                row_context.run(plugin_origin_turn.set, 'plugin_origin_v1' in row['payload'])
+                task = asyncio.create_task(self._execute_claimed(ref, live, row), context=row_context)
+                response, outcome = await task
             except BaseException as exc:
                 # No settlement follows (a lost managed worker, a cancelled drain): the turn is never
                 # replayed, so its deferred reset is dropped (the next turn re-detects the overflow),
