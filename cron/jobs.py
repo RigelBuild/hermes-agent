@@ -2477,6 +2477,14 @@ def mark_job_run(
                     job_id)
                 return False
         now = _hermes_now().isoformat()
+        from cron.unreachable_retry import clear_state, is_retry_run, plan_retry
+        fire_claim = job.get("fire_claim")
+        retry_rung = is_retry_run({
+            "_scheduled_instant": (
+                fire_claim.get("scheduled_at") if isinstance(fire_claim, dict) else None
+            ),
+            "unreachable_retry": job.get("unreachable_retry"),
+        })
         _record_run_outcome(job, success, error, delivery_error, status, now)
         if execution_id is not None:  # retire ids recovery can no longer replay; latest stays last
             from cron.scheduler_authority import replayable_completions as live
@@ -2489,22 +2497,23 @@ def mark_job_run(
             update_next_run=not shutdown_replay,
         )
         from cron import quota_hold
-        from cron.unreachable_retry import clear_state, plan_retry
 
-        # A shutdown preserves the rung marker for replay; a replay still resolves the ladder.
+        # A claimed occurrence that is not the retry instant starts a fresh ladder.
         if not shutdown_interrupted and (not shutdown_replay or ladder_rung):
+            if not shutdown_replay and fire_claim is not None and not retry_rung:
+                clear_state(job)
             if not success and model_unreachable and not is_terminal_job(job):
                 plan_retry(job)
             else:
                 # Any run that reached the model (any outcome) resets the re-run ladder.
                 clear_state(job)
-        if not shutdown_replay:
-            if not success and quota_hold_seconds and not is_terminal_job(job):
-                quota_hold.plan_hold(
-                    job, quota_hold_seconds, recover_consumed_fire=recover_consumed_fire
-                )
-            else:
-                quota_hold.clear_state(job)
+        if not success and quota_hold_seconds and not is_terminal_job(job):
+            quota_hold.plan_hold(
+                job, quota_hold_seconds,
+                recover_consumed_fire=recover_consumed_fire and not shutdown_replay,
+            )
+        else:
+            quota_hold.clear_state(job)
         save_jobs(jobs)
         return True
 

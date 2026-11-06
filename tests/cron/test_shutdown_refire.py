@@ -316,6 +316,134 @@ def test_shutdown_replay_of_unreachable_rung_does_not_spend_repeat_slot(
         assert retry_state["at"] == finished["next_run_at"]
 
 
+def test_skipped_paused_retry_replay_starts_a_fresh_unreachable_ladder(
+    temp_home, monkeypatch,
+):
+    from cron import unreachable_retry
+
+    clock = [now()]
+    monkeypatch.setattr(jobs, "_hermes_now", lambda: clock[0])
+    monkeypatch.setattr(unreachable_retry, "_hermes_now", lambda: clock[0])
+    monkeypatch.setattr(executions, "_hermes_now", lambda: clock[0])
+    job = jobs.create_job(prompt="run", schedule="every 24h", name="paused-retry")
+    job_id = job["id"]
+
+    assert jobs.mark_job_run(job_id, False, "ConnectError: dns", model_unreachable=True)
+    retry_at = jobs.get_job(job_id)[unreachable_retry.STATE_KEY]["at"]
+    clock[0] = datetime.fromisoformat(retry_at) + timedelta(seconds=1)
+
+    rung = executions.create_execution(job_id, source="builtin", scheduled_instant=retry_at)
+    claimed = jobs.claim_job_for_fire(
+        job_id, return_job=True, scheduled_at=retry_at, execution_id=rung["id"]
+    )
+    assert isinstance(claimed, dict)
+    assert executions.mark_execution_running(rung["id"])
+    assert jobs.mark_job_run(
+        job_id,
+        False,
+        "Interrupted by gateway shutdown before terminal completion.",
+        expected_fire_owner=claimed["fire_claim"]["by"],
+        ladder_rung=True,
+        shutdown_interrupted=True,
+    )
+    executions.finish_execution(
+        rung["id"],
+        success=False,
+        error="Interrupted by gateway shutdown before terminal completion.",
+        shutdown_interrupted=True,
+    )
+
+    assert jobs.pause_job(job_id)
+    before_replay = len(executions.list_executions(job_id=job_id))
+    monkeypatch.setattr(executions, "recover_interrupted_executions", lambda: 0)
+    InProcessCronScheduler().recover_interrupted()
+    assert len(executions.list_executions(job_id=job_id)) == before_replay
+
+    assert jobs.resume_job(job_id)
+    scheduled_at = jobs.get_job(job_id)["next_run_at"]
+    clock[0] = datetime.fromisoformat(scheduled_at) + timedelta(seconds=1)
+
+    next_run = jobs.claim_job_for_fire(
+        job_id, return_job=True, scheduled_at=scheduled_at
+    )
+    assert isinstance(next_run, dict)
+    assert not unreachable_retry.is_retry_run(next_run)
+    assert jobs.mark_job_run(
+        job_id,
+        False,
+        "ConnectError: dns",
+        expected_fire_owner=next_run["fire_claim"]["by"],
+        model_unreachable=True,
+    )
+
+    retry_state = jobs.get_job(job_id)[unreachable_retry.STATE_KEY]
+    assert retry_state["attempt"] == 1
+    assert retry_state["at"] == jobs.get_job(job_id)["next_run_at"]
+
+
+def test_shutdown_replay_quota_failure_holds_the_next_occurrence(temp_home, monkeypatch):
+    from cron import quota_hold
+    from cron.scheduler_bookkeeping import finish_completed_run
+
+    clock = [now()]
+    monkeypatch.setattr(jobs, "_hermes_now", lambda: clock[0])
+    monkeypatch.setattr(quota_hold, "_hermes_now", lambda: clock[0])
+    monkeypatch.setattr(executions, "_hermes_now", lambda: clock[0])
+    job = jobs.create_job(
+        prompt="run", schedule="every 1h", name="quota-replay", repeat=3
+    )
+    scheduled = (clock[0] - timedelta(minutes=1)).isoformat()
+    natural_next = (clock[0] + timedelta(hours=1)).isoformat()
+    jobs.update_job(job["id"], {
+        "last_run_at": (clock[0] - timedelta(hours=1)).isoformat(),
+        "next_run_at": natural_next,
+    })
+    interrupted = executions.create_execution(
+        job["id"], source="builtin", scheduled_instant=scheduled
+    )
+    assert executions.mark_execution_running(interrupted["id"])
+    executions.finish_execution(
+        interrupted["id"],
+        success=False,
+        error="Interrupted by gateway shutdown before terminal completion.",
+        shutdown_interrupted=True,
+    )
+
+    plan_calls = []
+    original_plan_hold = quota_hold.plan_hold
+
+    def capture_plan_hold(job_record, hold_seconds, *, recover_consumed_fire=False):
+        plan_calls.append(recover_consumed_fire)
+        return original_plan_hold(
+            job_record, hold_seconds, recover_consumed_fire=recover_consumed_fire
+        )
+
+    monkeypatch.setattr(quota_hold, "plan_hold", capture_plan_hold)
+    monkeypatch.setattr(executions, "recover_interrupted_executions", lambda: 0)
+    provider = InProcessCronScheduler()
+
+    def finish_replay(replay, **_kwargs):
+        assert executions.mark_execution_running(replay["execution_id"])
+        replay["_quota_hold_seconds"] = 2 * 60 * 60
+        assert finish_completed_run(
+            scheduler._RunDelivery(job=replay, success=False, error="quota exhausted"),
+            replay["fire_claim"]["by"],
+            replay["execution_id"],
+        )
+        return True
+
+    monkeypatch.setattr(provider, "fire_claimed", finish_replay)
+    provider.recover_interrupted()
+
+    held = jobs.get_job(job["id"])
+    assert plan_calls == [False]
+    assert held["repeat"]["completed"] == 1
+    assert held[quota_hold.STATE_KEY] == held["next_run_at"]
+    assert held["next_run_at"] != natural_next
+    clock[0] = datetime.fromisoformat(natural_next) + timedelta(seconds=1)
+    assert job["id"] not in {due["id"] for due in jobs.get_due_jobs()}
+
+
 def test_gateway_shutdown_marks_active_execution_for_replay(temp_home, monkeypatch):
     job = jobs.create_job(prompt="run", schedule="every 1h", name="shutdown-marked")
     scheduled = (now() - timedelta(minutes=1)).isoformat()
