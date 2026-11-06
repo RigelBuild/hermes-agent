@@ -606,8 +606,120 @@ def test_shutdown_recovery_reclaims_unbound_reservation(temp_home, monkeypatch, 
     assert reservations[0]["id"] != abandoned["id"]
 
 
+def test_shutdown_replay_save_failure_releases_reservation(temp_home, monkeypatch):
+    job_id, scheduled, first_id = _interrupted_recurring_job(temp_home)
+    replay = executions.create_shutdown_replay(job_id, scheduled, first_id)
+    assert replay is not None
+
+    def fail_save(_jobs, **_kwargs):
+        raise OSError("jobs store unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(jobs, "save_jobs", fail_save)
+        with pytest.raises(OSError, match="jobs store unavailable"):
+            jobs.claim_job_for_fire(
+                job_id,
+                return_job=True,
+                scheduled_at=scheduled,
+                execution_id=replay["id"],
+                shutdown_replay=True,
+            )
+
+    failed_claim = executions.get_execution(replay["id"])
+    assert failed_claim["fire_claim_by"] is None
+    assert executions.release_shutdown_replay_reservation(replay["id"])
+
+    replayed = _recover_and_fire(monkeypatch)
+    assert [item["_scheduled_instant"] for item in replayed] == [scheduled]
+    assert len(replayed) == 1
+    assert _recover_and_fire(monkeypatch) == []
+
+
+def test_shutdown_replay_save_failure_after_durable_claim_keeps_binding(
+    temp_home, monkeypatch,
+):
+    job_id, scheduled, first_id = _interrupted_recurring_job(temp_home)
+    replay = executions.create_shutdown_replay(job_id, scheduled, first_id)
+    assert replay is not None
+    save = jobs.save_jobs
+
+    def save_then_fail(stored, **kwargs):
+        save(stored, **kwargs)
+        raise OSError("post-save failure")
+
+    monkeypatch.setattr(jobs, "save_jobs", save_then_fail)
+    with pytest.raises(OSError, match="post-save failure"):
+        jobs.claim_job_for_fire(
+            job_id,
+            return_job=True,
+            scheduled_at=scheduled,
+            execution_id=replay["id"],
+            shutdown_replay=True,
+        )
+
+    execution = executions.get_execution(replay["id"])
+    assert execution["fire_claim_by"] is not None
+    assert jobs.get_job(job_id)["fire_claim"]["by"] == execution["fire_claim_by"]
+
+    monkeypatch.setattr(executions, "_owner_is_live", lambda *_args: False)
+    monkeypatch.setattr(executions, "recover_interrupted_executions", lambda: 0)
+    assert executions.create_shutdown_replay(job_id, scheduled, first_id) is None
+
+
+def test_reclaimed_live_reserver_cannot_claim_after_replacement(
+    temp_home, monkeypatch,
+):
+    job_id, scheduled, first_id = _interrupted_recurring_job(temp_home)
+    abandoned = executions.create_shutdown_replay(job_id, scheduled, first_id)
+    assert abandoned is not None
+    monkeypatch.setattr(executions, "_owner_is_live", lambda *_args: True)
+    monkeypatch.setattr(executions, "_live_owner_stale_after_seconds", lambda: 1)
+    monkeypatch.setattr(executions, "_claim_age_seconds", lambda _claimed_at: 2)
+    create_replay = executions.create_shutdown_replay
+
+    old_claim_job_states = []
+    replacements = []
+    old_claims = []
+
+    def reserve_replacement(replay_job_id, instant, replay_of):
+        replacement = create_replay(replay_job_id, instant, replay_of)
+        if replacement is not None:
+            replacements.append(replacement)
+            old_claims.append(jobs.claim_job_for_fire(
+                job_id,
+                return_job=True,
+                scheduled_at=scheduled,
+                execution_id=abandoned["id"],
+                shutdown_replay=True,
+            ))
+            old_claim_job_states.append(jobs.get_job(job_id).get("fire_claim"))
+        return replacement
+
+    monkeypatch.setattr(executions, "create_shutdown_replay", reserve_replacement)
+    monkeypatch.setattr(executions, "recover_interrupted_executions", lambda: 0)
+    provider = InProcessCronScheduler()
+    dispatched = []
+
+    def finish_replay(claimed, **_kwargs):
+        dispatched.append(claimed["execution_id"])
+        executions.finish_execution(claimed["execution_id"], success=True)
+        return True
+
+    monkeypatch.setattr(provider, "fire_claimed", finish_replay)
+    provider.recover_interrupted()
+
+    assert old_claim_job_states == [None]
+    assert len(replacements) == 1
+    assert old_claims == [False]
+    stale = executions.get_execution(abandoned["id"])
+    assert stale["replay_of"] is None
+    assert stale["fire_claim_by"] is None
+    assert dispatched == [replacements[0]["id"]]
+
+
 def test_completed_interrupted_occurrence_does_not_refire(temp_home, monkeypatch):
     job = jobs.create_job(prompt="run", schedule="every 1h", name="already-completed")
+
     scheduled = (now() - timedelta(minutes=1)).isoformat()
     row = executions.create_execution(job["id"], source="builtin", scheduled_instant=scheduled)
     executions.mark_execution_running(row["id"])

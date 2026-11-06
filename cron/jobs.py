@@ -2764,20 +2764,22 @@ def claim_job_for_fire(
     ``next_run_at`` so a stale re-delivery cannot re-fire. ``scheduled_at`` is the occurrence the
     caller's ledger row dispatches (the claim then owns exactly it); ``execution_id`` binds the
     claim token and occurrence onto that row BEFORE the claim is saved, so a crash in between
-    leaves a restorable row, never a store claim with an unbound one."""
+    leaves a restorable row, never a store claim with an unbound one. Replay claim binding is
+    required and rechecked against its durable reservation; non-replay ledger binds stay best-effort."""
     token = f"{_machine_id()}:{uuid.uuid4().hex}"
 
-    def bind_row(owned: Optional[str]) -> None:
+    def bind_row(owned: Optional[str]) -> bool:
         from cron.executions import bind_execution_claim
 
-        # Best-effort: an unbound row is only ever refused restore, never wrongly restored.
         try:
-            if not bind_execution_claim(execution_id, token, owned):
-                logger.warning("Cron execution %s is not a claimed attempt of this process; its "
-                               "fire claim was not recorded", execution_id)
+            if bind_execution_claim(execution_id, token, owned):
+                return True
+            logger.warning("Cron execution %s is not a claimed attempt of this process; its "
+                           "fire claim was not recorded", execution_id)
         except Exception:
             logger.warning("Could not record the fire claim on cron execution %s", execution_id,
                            exc_info=True)
+        return False
 
     def apply(jobs, _i, job):
         if is_terminal_job(job) and not _is_recoverable_error_job(job):
@@ -2833,8 +2835,11 @@ def claim_job_for_fire(
         owned = None if manual_fire else (scheduled_instant(scheduled_at) if scheduled_at else instant)
         if owned:
             job["fire_claim"]["scheduled_at"] = owned
+        bound = False
         if execution_id:
-            bind_row(owned)
+            bound = bind_row(owned)
+            if shutdown_replay and not bound:
+                return False
         # Claimed: the occurrence is now owned by a run (its ledger row + fire claim carry it).
         if not shutdown_replay:
             job.pop("pending_slot", None)
@@ -2842,7 +2847,30 @@ def claim_job_for_fire(
             nxt = compute_next_run(job["schedule"], now.isoformat())
             if nxt:
                 job["next_run_at"] = nxt
-        save_jobs(jobs)
+        try:
+            save_jobs(jobs)
+        except BaseException:
+            if bound:
+                # A save can fail after the atomic rename; retain the binding if disk has our token.
+                from cron.executions import unbind_execution_claim
+
+                claim_persisted = False
+                try:
+                    stored = next((item for item in load_jobs() if item.get("id") == job_id), None)
+                    claim = stored.get("fire_claim") if isinstance(stored, dict) else None
+                    claim_persisted = isinstance(claim, dict) and claim.get("by") == token
+                except Exception:
+                    logger.warning("Could not verify the persisted fire claim for cron job %s",
+                                   job_id, exc_info=True)
+                if not claim_persisted:
+                    try:
+                        unbind_execution_claim(execution_id, token)
+                    except Exception:
+                        logger.warning(
+                            "Could not clear the unpersisted fire claim on cron execution %s",
+                            execution_id, exc_info=True,
+                        )
+            raise
         claimed = dict(copy.deepcopy(job), _scheduled_instant=instant)
         if shutdown_replay:
             claimed["_shutdown_replay"] = True

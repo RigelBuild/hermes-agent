@@ -240,16 +240,29 @@ def create_execution(
 
 
 def bind_execution_claim(execution_id: str, claim_token: str, instant: Optional[str]) -> bool:
-    """Record the fire-claim token (and the occurrence, when given) that owns this attempt, before
-    the job-store claim is saved; recovery restores only under it. False when the row is not this
-    process's claimed attempt (recovery then never restores it)."""
+    """Bind an attempt to its fire claim only while its replay reservation still exists.
+
+    Recovery restores an unstarted occurrence only under its bound token. A replay whose stale
+    reservation was reclaimed cannot bind or dispatch under that obsolete reservation.
+    """
     from cron.occurrences import scheduled_instant
 
     with _transaction() as conn:
         cur = conn.execute(
             "UPDATE executions SET fire_claim_by=?, scheduled_instant=COALESCE(?, scheduled_instant) "
-            "WHERE id=? AND status='claimed' AND handoff_pending=0 AND process_id=? AND pid=?",
+            "WHERE id=? AND status='claimed' AND handoff_pending=0 AND process_id=? AND pid=? "
+            "AND (source!='shutdown-replay' OR replay_of IS NOT NULL)",
             (claim_token, scheduled_instant(instant), execution_id, _PROCESS_ID, os.getpid()),
+        )
+        return cur.rowcount == 1
+
+
+def unbind_execution_claim(execution_id: str, claim_token: str) -> bool:
+    """Clear only this exact attempt's fire-claim token after its job claim did not persist."""
+    with _transaction() as conn:
+        cur = conn.execute(
+            "UPDATE executions SET fire_claim_by=NULL WHERE id=? AND fire_claim_by=?",
+            (execution_id, claim_token),
         )
         return cur.rowcount == 1
 
