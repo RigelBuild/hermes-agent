@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import UTC, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from cron import executions, jobs, scheduler
@@ -228,6 +228,92 @@ def test_final_repeat_run_interrupted_at_shutdown_replays_once(temp_home, monkey
     assert finished["state"] == "completed"
     assert finished["enabled"] is False
     assert finished["next_run_at"] is None
+
+
+@pytest.mark.parametrize("replay_success", [True, False], ids=["succeeds", "unreachable-again"])
+def test_shutdown_replay_of_unreachable_rung_does_not_spend_repeat_slot(
+    temp_home, monkeypatch, replay_success,
+):
+    from cron import unreachable_retry
+    from cron.scheduler_bookkeeping import finish_completed_run
+
+    clock = [now()]
+    monkeypatch.setattr(jobs, "_hermes_now", lambda: clock[0])
+    monkeypatch.setattr(unreachable_retry, "_hermes_now", lambda: clock[0])
+    job = jobs.create_job(prompt="run", schedule="every 24h", name="retry-repeat", repeat=2)
+    job_id = job["id"]
+
+    assert jobs.mark_job_run(job_id, False, "ConnectError: dns", model_unreachable=True)
+    first_failure = jobs.get_job(job_id)
+    assert first_failure["repeat"]["completed"] == 1
+    retry_at = first_failure[unreachable_retry.STATE_KEY]["at"]
+    clock[0] = datetime.fromisoformat(retry_at) + timedelta(seconds=1)
+
+    rung = executions.create_execution(job_id, source="builtin", scheduled_instant=retry_at)
+    claimed = jobs.claim_job_for_fire(
+        job_id, return_job=True, scheduled_at=retry_at, execution_id=rung["id"]
+    )
+    assert isinstance(claimed, dict)
+    assert executions.mark_execution_running(rung["id"])
+    assert jobs.mark_job_run(
+        job_id,
+        False,
+        "Interrupted by gateway shutdown before terminal completion.",
+        expected_fire_owner=claimed["fire_claim"]["by"],
+        shutdown_interrupted=True,
+    )
+    executions.finish_execution(
+        rung["id"],
+        success=False,
+        error="Interrupted by gateway shutdown before terminal completion.",
+        shutdown_interrupted=True,
+    )
+
+    interrupted = jobs.get_job(job_id)
+    second_occurrence = interrupted["next_run_at"]
+    assert interrupted[unreachable_retry.STATE_KEY]["at"] == retry_at
+    assert unreachable_retry.is_retry_run(claimed)
+
+    monkeypatch.setattr(executions, "recover_interrupted_executions", lambda: 0)
+    provider = InProcessCronScheduler()
+    replayed = []
+
+    def finish_replay(replay, **_kwargs):
+        replayed.append(replay)
+        assert executions.mark_execution_running(replay["execution_id"])
+        if not replay_success:
+            replay["_model_unreachable"] = True
+        assert finish_completed_run(
+            scheduler._RunDelivery(
+                job=replay, success=replay_success,
+                error=None if replay_success else "ConnectError: dns",
+            ),
+            replay["fire_claim"]["by"],
+            replay["execution_id"],
+        )
+        return True
+
+    monkeypatch.setattr(provider, "fire_claimed", finish_replay)
+    provider.recover_interrupted()
+
+    finished = jobs.get_job(job_id)
+    if replay_success:
+        assert finished["next_run_at"] == second_occurrence
+    else:
+        assert finished["next_run_at"] != second_occurrence
+    assert len(replayed) == 1
+    assert finished["repeat"]["completed"] == 1
+    assert not jobs.is_terminal_job(finished)
+    assert finished["state"] == "scheduled"
+    assert finished["next_run_at"] is not None
+
+    retry_state = finished.get(unreachable_retry.STATE_KEY)
+    if replay_success:
+        assert retry_state is None
+    else:
+        assert retry_state is not None
+        assert retry_state["attempt"] == 2
+        assert retry_state["at"] == finished["next_run_at"]
 
 
 def test_gateway_shutdown_marks_active_execution_for_replay(temp_home, monkeypatch):

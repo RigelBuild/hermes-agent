@@ -430,11 +430,12 @@ What recovery does next depends on whether the attempt had started:
 
    - **Started** (`started_at` is set): the attempt stays an audit record and is
      not ordinarily rerun, because its side effects may already have happened.
-     A recurring occurrence explicitly marked interrupted by gateway shutdown
-     is replayed once with the owning profile's adapters. One-shots and
-     interruptions without shutdown evidence are not replayed. If the job has a
-     repeat limit, the interrupted occurrence does not consume it; its replay
-     consumes one repeat slot and can complete the job.
+     A recurring occurrence explicitly marked interrupted by gateway shutdown is
+     replayed once with the owning profile's adapters. One-shots and interruptions
+     without shutdown evidence are not replayed. The interrupted attempt does not
+     consume a repeat slot. Its replay does unless it is an unreachable-retry
+     ladder rung whose occurrence already counted; that rung keeps its identity
+     through shutdown, so the replay does not count twice.
    - **Never started** (claimed, then the owner died before the run began): its
      scheduled occurrence goes back on the schedule once. A recurring job's slot
      is restored exactly like an occurrence the scheduler advanced past but never

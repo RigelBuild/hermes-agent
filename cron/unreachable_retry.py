@@ -108,7 +108,7 @@ def will_retry(job: dict[str, Any]) -> bool:
 
 
 def clear_state(job: dict[str, Any]) -> None:
-    """A run reached the model (any outcome): the ladder resets."""
+    """Clear the ladder after model access; shutdown bookkeeping preserves its marker for replay."""
     job.pop(STATE_KEY, None)
 
 

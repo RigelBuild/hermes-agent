@@ -2491,12 +2491,14 @@ def mark_job_run(
         from cron import quota_hold
         from cron.unreachable_retry import clear_state, plan_retry
 
-        if not shutdown_replay:
+        # A shutdown preserves the rung marker for replay; a replay still resolves the ladder.
+        if not shutdown_interrupted and (not shutdown_replay or ladder_rung):
             if not success and model_unreachable and not is_terminal_job(job):
                 plan_retry(job)
             else:
-                # Any run that reached the model (either outcome) resets the re-run ladder.
+                # Any run that reached the model (any outcome) resets the re-run ladder.
                 clear_state(job)
+        if not shutdown_replay:
             if not success and quota_hold_seconds and not is_terminal_job(job):
                 quota_hold.plan_hold(
                     job, quota_hold_seconds, recover_consumed_fire=recover_consumed_fire
