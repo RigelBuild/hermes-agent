@@ -605,6 +605,10 @@ def test_local_plugin_origin_display_keeps_cotal_toolsets(origin_env, monkeypatc
 
     env = origin_env
     monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
+    monkeypatch.setattr("gateway.session_local.load_profile_config",
+                        lambda *_args, **_kwargs: {"platform_toolsets": {
+                            "cli": ["terminal"], "cotal": ["discord"],
+                        }})
     actor = Principal("test-owner", env.authority.profile_id,
                       frozenset({"session:create", "session:submit", "session:read"}), "fixture")
     ref = create_local_session(env.authority, actor, {
