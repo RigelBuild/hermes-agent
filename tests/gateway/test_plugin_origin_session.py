@@ -542,6 +542,7 @@ async def test_revoked_plugin_origin_is_dropped_after_claim(origin_env, monkeypa
 @pytest.mark.asyncio
 async def test_each_claimed_row_uses_a_fresh_context(origin_env, monkeypatch):
     from contextvars import ContextVar
+    from gateway.platforms.event import MessageType
     from gateway.session_authority import SessionAuthority
     from gateway.session_contract import SessionRef
     from gateway.session_ingress import plugin_origin_turn
@@ -549,25 +550,31 @@ async def test_each_claimed_row_uses_a_fresh_context(origin_env, monkeypatch):
     env = origin_env
     schedule = SessionAuthority._schedule
     monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
-    accepted, outcome = await _inject_origin(env, "fresh context row")
+    accepted, outcome = await _inject_origin(env, "fresh plugin context row")
     assert accepted is True and outcome is True
     entry = env.runner.session_store.lookup_by_session_key(env.runner._session_key_for_source(env.source))
     ref = SessionRef(env.authority.profile_id, entry.session_id)
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", env.source.user_id)
+    operator_task = asyncio.create_task(env.adapter.handle_message(MessageEvent(
+        text="operator context row", message_type=MessageType.TEXT, source=env.source,
+        message_id="operator-context-row")))
+    await async_wait_until(lambda: len(_rows(env.authority, entry.session_id)) == 2,
+                           timeout=10, what="operator row admission")
+
     drain_value = ContextVar("plugin_origin_drain_value", default=None)
     row_context = []
     post_row_drain_context = []
     claim = env.authority._claim_with_retry
 
     async def claim_with_drain_context(ref, live):
-        if drain_value.get() is not None:
-            post_row_drain_context.append((drain_value.get(), plugin_origin_turn.get()))
         result = await claim(ref, live)
         if result is not None and isinstance(result[0], dict):
+            post_row_drain_context.append((drain_value.get(), plugin_origin_turn.get()))
             drain_value.set("set by drain")
         return result
 
     async def execute_with_row_marker(ref, live, claimed_row):
-        row_context.append((drain_value.get(), plugin_origin_turn.get()))
+        row_context.append((claimed_row["payload"]["text"], drain_value.get(), plugin_origin_turn.get()))
         plugin_origin_turn.set(True)
         return "reply", "completed"
 
@@ -575,5 +582,55 @@ async def test_each_claimed_row_uses_a_fresh_context(origin_env, monkeypatch):
     monkeypatch.setattr(env.authority, "_execute_claimed", execute_with_row_marker)
     monkeypatch.setattr(SessionAuthority, "_schedule", schedule)
     env.authority._schedule(ref)
+    await operator_task
     await _wait_tasks(env)
+
+    assert row_context == [
+        ("fresh plugin context row", None, True),
+        ("operator context row", None, False),
+    ]
+    assert post_row_drain_context == [(None, False), ("set by drain", False)]
+
+
+def test_local_plugin_origin_display_keeps_cotal_toolsets(origin_env, monkeypatch):
+    from contextlib import contextmanager
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_contract import Principal
+    from gateway.session_ingress import plugin_origin_turn
+    from gateway.session_local import create_local_session
+    from gateway.session_local_recovery import local_adapter_map
+    from gateway.session_policy import LocalSessionPolicy
+
+    env = origin_env
+    monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
+    actor = Principal("test-owner", env.authority.profile_id,
+                      frozenset({"session:create", "session:submit", "session:read"}), "fixture")
+    ref = create_local_session(env.authority, actor, {
+        "request_id": "local-plugin-toolsets", "source": "cli", "cwd": str(env.home),
+        "model": "fixture", "toolsets": ["terminal"],
+    })
+    adapter = local_adapter_map(env.authority)[Platform.LOCAL]
+    policy = adapter.policies[ref.session_id]
+    runner = env.runner
+    original_adapters = runner.adapters
+    runner.adapters = {Platform.LOCAL: adapter}
+    source = env.authority.sessions[ref.session_id].source
+
+    @contextmanager
+    def plugin_turn():
+        token = plugin_origin_turn.set(True)
+        try:
+            yield
+        finally:
+            plugin_origin_turn.reset(token)
+
+    try:
+        assert isinstance(policy, LocalSessionPolicy)
+        with plugin_turn():
+            display = GatewayRunner._run_agent_display_settings(runner, source)
+        assert display.enabled_toolsets == ["discord"]
+    finally:
+        runner.adapters = original_adapters
 
