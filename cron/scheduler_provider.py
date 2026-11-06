@@ -174,6 +174,7 @@ class CronScheduler(ABC):
         from cron.executions import (
             create_shutdown_replay, recover_interrupted_executions,
             replayable_shutdown_occurrences, finish_execution,
+            release_shutdown_replay_reservation,
         )
         from cron.jobs import claim_job_for_fire
 
@@ -198,9 +199,11 @@ class CronScheduler(ABC):
                     replay["id"], success=False,
                     error=f"Shutdown replay claim failed: {type(exc).__name__}: {exc}",
                 )
+                release_shutdown_replay_reservation(replay["id"])
                 raise
             if not isinstance(claimed, dict):
                 finish_execution(replay["id"], success=False, error="Shutdown replay claim was not acquired")
+                release_shutdown_replay_reservation(replay["id"])
                 continue
             claimed["execution_id"] = replay["id"]
             claimed["_scheduled_instant"] = occurrence["scheduled_instant"]

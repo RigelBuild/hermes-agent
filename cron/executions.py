@@ -769,6 +769,53 @@ def latest_execution(job_id: str) -> Optional[dict[str, Any]]:
     return rows[0] if rows else None
 
 
+def _reclaim_abandoned_shutdown_replays(conn, *, job_id: Optional[str] = None,
+                                        scheduled_instant: Optional[str] = None) -> None:
+    """Clear unbound replay reservations whose owner died or exceeded its claim bound."""
+    clauses = ["replay_of IS NOT NULL", "fire_claim_by IS NULL"]
+    params: list[Any] = []
+    if job_id is not None:
+        clauses.append("job_id=?")
+        params.append(str(job_id))
+    if scheduled_instant is not None:
+        clauses.append("scheduled_instant=?")
+        params.append(scheduled_instant)
+    rows = conn.execute(
+        "SELECT id, pid, process_started_at, claimed_at FROM executions WHERE "
+        + " AND ".join(clauses),
+        params,
+    ).fetchall()
+    stale_after: Optional[float] = None
+    stale_after_resolved = False
+    for row in rows:
+        abandoned = not _owner_is_live(int(row["pid"]), row["process_started_at"])
+        if not abandoned:
+            if not stale_after_resolved:
+                stale_after = _live_owner_stale_after_seconds()
+                stale_after_resolved = True
+            abandoned = (
+                stale_after is not None
+                and _claim_age_seconds(row["claimed_at"]) > stale_after
+            )
+        if abandoned:
+            conn.execute(
+                "UPDATE executions SET replay_of=NULL WHERE id=? AND replay_of IS NOT NULL "
+                "AND fire_claim_by IS NULL AND pid=? AND process_started_at IS ? AND claimed_at=?",
+                (row["id"], row["pid"], row["process_started_at"], row["claimed_at"]),
+            )
+
+
+def release_shutdown_replay_reservation(execution_id: str) -> bool:
+    """Release a replay reservation only when its fire claim was never bound."""
+    with _transaction() as conn:
+        cur = conn.execute(
+            "UPDATE executions SET replay_of=NULL WHERE id=? AND replay_of IS NOT NULL "
+            "AND fire_claim_by IS NULL AND status IN ('claimed','failed')",
+            (str(execution_id),),
+        )
+        return cur.rowcount == 1
+
+
 def create_shutdown_replay(job_id: str, scheduled_instant: str, replay_of: str) -> Optional[dict[str, Any]]:
     """Atomically reserve the single replay of a shutdown-interrupted occurrence."""
     from cron.occurrences import scheduled_instant as canonical_instant
@@ -780,6 +827,9 @@ def create_shutdown_replay(job_id: str, scheduled_instant: str, replay_of: str) 
     execution_id = uuid.uuid4().hex
     pid = os.getpid()
     with _transaction() as conn:
+        _reclaim_abandoned_shutdown_replays(
+            conn, job_id=str(job_id), scheduled_instant=instant,
+        )
         original = conn.execute(
             "SELECT job_id, status, shutdown_interrupted, scheduled_instant FROM executions WHERE id=?",
             (str(replay_of),),
@@ -813,18 +863,16 @@ def create_shutdown_replay(job_id: str, scheduled_instant: str, replay_of: str) 
         record = _fetch(conn, execution_id)
     _emit_execution_state(record)
     return record
-def replayable_shutdown_occurrences() -> list[dict[str, Any]]:
-    """Return eligible recurring occurrences marked interrupted by gateway shutdown.
 
-    A shutdown ambiguity is replayed once by recording a separate attempted execution before the
-    scheduler claims it. The interrupted marker stays on the original ledger row as the durable
-    replay-attempt fence; a completed execution for the exact instant always wins.
-    """
+
+def replayable_shutdown_occurrences() -> list[dict[str, Any]]:
+    """Return recurring shutdown-interrupted occurrences not already claimed for replay."""
     from cron.jobs import get_job, is_job_runnable, is_terminal_job
 
     from datetime import timedelta
     cutoff = (_hermes_now() - timedelta(seconds=7200)).isoformat()
     with _transaction() as conn:
+        _reclaim_abandoned_shutdown_replays(conn)
         rows = conn.execute(
             """SELECT e.* FROM executions e
                WHERE e.shutdown_interrupted=1 AND e.status IN ('failed','unknown')

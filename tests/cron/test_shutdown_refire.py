@@ -559,6 +559,53 @@ def test_concurrent_recovery_reserves_and_dispatches_one_replay(temp_home, monke
     replay_ids = [row["id"] for row in rows if row["replay_of"] is not None]
     assert len(replay_ids) == 1
     assert dispatched == replay_ids
+
+def test_shutdown_replay_claim_race_releases_reservation(temp_home, monkeypatch):
+    job_id, scheduled, _first_id = _interrupted_recurring_job(temp_home)
+    assert jobs.claim_job_for_fire(job_id, scheduled_at=scheduled)
+
+    assert _recover_and_fire(monkeypatch) == []
+    reservations = [
+        row for row in executions.list_executions(job_id=job_id) if row["replay_of"] is not None
+    ]
+    assert reservations == []
+
+    stored = jobs.load_jobs()
+    next(job for job in stored if job["id"] == job_id)["fire_claim"] = None
+    jobs.save_jobs(stored)
+    replayed = _recover_and_fire(monkeypatch)
+    assert [item["_scheduled_instant"] for item in replayed] == [scheduled]
+    assert _recover_and_fire(monkeypatch) == []
+
+
+@pytest.mark.parametrize("owner_state", ["dead", "stale"])
+def test_shutdown_recovery_reclaims_unbound_reservation(temp_home, monkeypatch, owner_state):
+    job_id, scheduled, first_id = _interrupted_recurring_job(temp_home)
+    abandoned = executions.create_shutdown_replay(job_id, scheduled, first_id)
+    assert abandoned is not None
+    with executions._transaction() as conn:
+        conn.execute(
+            "UPDATE executions SET process_id=?, pid=?, process_started_at=NULL, fire_claim_by=NULL "
+            "WHERE id=?",
+            ("exited-provider", 99999999, abandoned["id"]),
+        )
+    if owner_state == "dead":
+        monkeypatch.setattr(executions, "_owner_is_live", lambda *_args: False)
+    else:
+        monkeypatch.setattr(executions, "_owner_is_live", lambda *_args: True)
+        monkeypatch.setattr(executions, "_live_owner_stale_after_seconds", lambda: 1)
+        monkeypatch.setattr(executions, "_claim_age_seconds", lambda _claimed_at: 2)
+
+    replayed = _recover_and_fire(monkeypatch)
+
+    assert [item["_scheduled_instant"] for item in replayed] == [scheduled]
+    reservations = [
+        row for row in executions.list_executions(job_id=job_id) if row["replay_of"] is not None
+    ]
+    assert len(reservations) == 1
+    assert reservations[0]["id"] != abandoned["id"]
+
+
 def test_completed_interrupted_occurrence_does_not_refire(temp_home, monkeypatch):
     job = jobs.create_job(prompt="run", schedule="every 1h", name="already-completed")
     scheduled = (now() - timedelta(minutes=1)).isoformat()

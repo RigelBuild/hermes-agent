@@ -184,10 +184,11 @@ dropped silently. The mechanics, in the order the due scan applies them
    `scheduled_instant` once when no completed attempt exists. The interrupted attempt does not
    consume a repeat slot. Its replay does, except when the occurrence was already counted and the
    replay is an unreachable-retry ladder rung; that rung identity stays persisted through shutdown,
-   so its replay does not spend the slot again. A replay claim is persisted before dispatch, so
-   another shutdown does not replay it again. Ordinary failures, one-shots, stale occurrences,
-   paused or disabled jobs, and terminal jobs are not replayed. If side effects completed before
-   shutdown was recorded, replay can duplicate them; that ambiguity is accepted.
+   so its replay does not spend the slot again. An unbound replay reservation is released when the
+   fire claim fails, and recovery clears reservations owned by dead or stale providers; once bound
+   to a fire claim, the replay remains fenced across shutdown. Ordinary failures, one-shots, stale
+   occurrences, paused or disabled jobs, and terminal jobs are not replayed. If side effects
+   completed before shutdown was recorded, replay can duplicate them; that ambiguity is accepted.
 5. **Late within grace → fire late.** Grace = half the period clamped to
    `[120 s, 2 h]` (`_compute_grace_seconds`); the dispatch is stamped
    `last_dispatch.kind = late`.
