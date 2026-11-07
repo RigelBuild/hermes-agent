@@ -2898,8 +2898,6 @@ approvals:
 | `off` | Skip all approval checks. Equivalent to `HERMES_YOLO_MODE=true`. **Use with caution.** |
 
 Smart mode is particularly useful for reducing approval fatigue — it lets the agent work more autonomously on safe operations while still catching genuinely destructive commands.
-The smart reviewer receives the working directory used for the command, including an explicit terminal `workdir`. It receives the session directory when no per-command directory is set.
-
 
 
 :::warning

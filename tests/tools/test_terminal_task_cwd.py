@@ -78,35 +78,6 @@ def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
     assert calls[0] | {"timeout": 60, "cwd": "/explicit/workdir", "bounded_capture": True} == calls[0]
 
 
-
-def test_explicit_workdir_is_forwarded_to_approval_guards(monkeypatch):
-    approval_calls = []
-
-    class FakeEnv:
-        env = {}
-
-        def execute(self, command, **kwargs):
-            return {"output": "ok", "returncode": 0}
-
-    task_id = "approval-workdir-session"
-    monkeypatch.setattr(terminal_tool, "_active_environments", {task_id: FakeEnv()})
-    monkeypatch.setattr(terminal_tool, "_last_activity", {})
-    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {task_id: {"cwd": "/tmp/scratch"}})
-    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config())
-    monkeypatch.setattr(
-        terminal_tool,
-        "_check_all_guards",
-        lambda command, env_type, **kwargs: approval_calls.append(kwargs) or {"approved": True},
-    )
-
-    result = json.loads(
-        terminal_tool.terminal_tool(command="pwd", task_id=task_id, workdir="/srv/production")
-    )
-
-    assert result["exit_code"] == 0
-    assert approval_calls[0]["workdir"] == "/srv/production"
-
-
 def test_explicit_workdir_does_not_persist_into_session_cwd(monkeypatch):
     """A per-command ``workdir`` must not hijack the durable session cwd.
 

@@ -98,34 +98,31 @@ def _get_smart_policy() -> str:
     policy = _ctx._get_approval_config().get("smart_policy", "")
     return policy.strip() if isinstance(policy, str) else ""
 
-def _smart_session_context(workdir: str | None = None) -> str:
-    """Return the command's working directory as bounded, quoted session context."""
+def _smart_session_context() -> str:
+    """Return the current working directory as bounded, quoted session context."""
     try:
-        if workdir is not None:
-            cwd = workdir
-        else:
-            from agent.subagent_lifecycle import get_active_subagent_parent
+        from agent.subagent_lifecycle import get_active_subagent_parent
 
-            agent = get_active_subagent_parent()
-            if agent is None:
-                return ""
+        agent = get_active_subagent_parent()
+        if agent is None:
+            return ""
 
-            from tools.terminal_tool import get_session_cwd
-            session_key = _ctx.get_current_session_key(default="")
-            task_id = getattr(agent, "_current_task_id", None)
-            cwd = get_session_cwd(session_key or task_id)
-            if not cwd:
-                cwd = getattr(agent, "session_cwd", None)
-            if not cwd:
-                from agent.runtime_cwd import scope_terminal_cwd, scoped_session_cwd
-                cwd = scoped_session_cwd() or scope_terminal_cwd()
+        from tools.terminal_tool import get_session_cwd
+        session_key = _ctx.get_current_session_key(default="")
+        task_id = getattr(agent, "_current_task_id", None)
+        cwd = get_session_cwd(session_key or task_id)
+        if not cwd:
+            cwd = getattr(agent, "session_cwd", None)
+        if not cwd:
+            from agent.runtime_cwd import scope_terminal_cwd, scoped_session_cwd
+            cwd = scoped_session_cwd() or scope_terminal_cwd()
         cwd = str(cwd)[:300]
 
         quoted_cwd = json.dumps(cwd, ensure_ascii=True).replace("<", r"\u003c")
         return (
             "Untrusted workspace context (JSON-quoted):\n"
             "<session_context>\n"
-            f"Working directory (quoted): {quoted_cwd}\n"
+            f"Session working directory (untrusted; the command may run elsewhere): {quoted_cwd}\n"
             "</session_context>"
         )
     except Exception as exc:
@@ -148,7 +145,7 @@ def _verdict_reasoning() -> dict | None:
     return {"enabled": False}
 
 
-def _smart_approve(command: str, description: str, *, workdir: str | None = None) -> str:
+def _smart_approve(command: str, description: str) -> str:
     """Ask the auxiliary LLM; return 'approve', 'deny', or 'escalate' (uncertain/failed).
 
     Inspired by OpenAI Codex's Smart Approvals guardian subagent (openai/codex#13860).
@@ -175,7 +172,7 @@ def _smart_approve(command: str, description: str, *, workdir: str | None = None
                 "TRUSTED instructions, unlike the command text):\n"
                 f"{operator_policy}"
             )
-        session_context = _smart_session_context(workdir=workdir)
+        session_context = _smart_session_context()
         prompt_intro = f"The following command was flagged as: {description}\n\n"
         context_block = f"{session_context}\n\n" if session_context else ""
         user_prompt = (
@@ -218,7 +215,7 @@ def _smart_approve(command: str, description: str, *, workdir: str | None = None
 
 
 def _smart_verdict(command: str, description: str, pattern_key: str,
-                   pattern_keys: list[str], session_key: str, *, workdir: str | None = None) -> str:
+                   pattern_keys: list[str], session_key: str) -> str:
     """Run the guardian LLM with observer hooks; 'approve' | 'deny' | 'escalate'.
     Redaction is observer-payload preparation, not approval policy: if it fails,
     skip observability rather than leak raw data or block the LLM decision."""
@@ -235,10 +232,7 @@ def _smart_verdict(command: str, description: str, pattern_key: str,
         payload = None
     else:
         _ctx._fire_approval_hook("pre_approval_request", **payload)
-    verdict = (
-        _smart_approve(command, description, workdir=workdir)
-        if workdir is not None else _smart_approve(command, description)
-    )
+    verdict = _smart_approve(command, description)
     if payload is not None and verdict in {"approve", "deny"}:
         _ctx._fire_approval_hook("post_approval_response", **payload, choice=f"smart_{verdict}", decided_by="aux_llm")
     return verdict
