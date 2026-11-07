@@ -335,7 +335,7 @@ def _build_job_prompt(
 
     from tools import approval_context
     execute_code_hint = (
-        "When approvals.cron_mode is deny, execute_code is blocked; "
+        "If cron approvals block execute_code, "
         "use terminal and file tools instead. "
         if approval_context._get_cron_approval_mode() == "deny" else ""
     )

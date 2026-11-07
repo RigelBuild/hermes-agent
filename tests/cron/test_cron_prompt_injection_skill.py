@@ -144,7 +144,7 @@ def test_prompt_mentions_terminal_when_cron_mode_denies_execute_code(cron_env, m
 
     prompt = scheduler._build_job_prompt({"id": "cron-hint", "prompt": "run"})
 
-    assert "execute_code is blocked" in prompt
+    assert "If cron approvals block execute_code" in prompt
     assert "use terminal and file tools instead" in prompt
 
 
@@ -156,7 +156,7 @@ def test_prompt_omits_terminal_hint_when_cron_mode_approves(cron_env, monkeypatc
 
     prompt = scheduler._build_job_prompt({"id": "cron-hint", "prompt": "run"})
 
-    assert "execute_code is blocked" not in prompt
+    assert "If cron approvals block execute_code" not in prompt
     assert "use terminal and file tools instead" not in prompt
 
 
