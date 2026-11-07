@@ -136,6 +136,30 @@ class TestScanAssembledCronPrompt:
 # ---------------------------------------------------------------------------
 
 
+def test_prompt_mentions_terminal_when_cron_mode_denies_execute_code(cron_env, monkeypatch):
+    from tools import approval_context
+
+    _, scheduler = cron_env
+    monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "deny")
+
+    prompt = scheduler._build_job_prompt({"id": "cron-hint", "prompt": "run"})
+
+    assert "If cron approvals block execute_code" in prompt
+    assert "use terminal and file tools instead" in prompt
+
+
+def test_prompt_omits_terminal_hint_when_cron_mode_approves(cron_env, monkeypatch):
+    from tools import approval_context
+
+    _, scheduler = cron_env
+    monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "approve")
+
+    prompt = scheduler._build_job_prompt({"id": "cron-hint", "prompt": "run"})
+
+    assert "If cron approvals block execute_code" not in prompt
+    assert "use terminal and file tools instead" not in prompt
+
+
 class TestBuildJobPromptScansSkillContent:
 
     @pytest.mark.parametrize(

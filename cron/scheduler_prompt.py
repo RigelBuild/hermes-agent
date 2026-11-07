@@ -333,7 +333,13 @@ def _build_job_prompt(
         prompt = f"{notepad_section}{prompt}"
         has_injected_data = True
 
-    prompt = _CRON_HINT + prompt
+    from tools import approval_context
+    execute_code_hint = (
+        "If cron approvals block execute_code, "
+        "use terminal and file tools instead. "
+        if approval_context._get_cron_approval_mode() == "deny" else ""
+    )
+    prompt = _CRON_HINT + execute_code_hint + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(
