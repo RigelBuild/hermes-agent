@@ -13,15 +13,22 @@ def _response(answer="APPROVE"):
     return MagicMock(choices=[MagicMock(message=MagicMock(content=answer))])
 
 
-def _review_prompt(user_message, *, session_cwd="/workspace/project"):
-    parent = SimpleNamespace(
-        _session_messages=[{"role": "user", "content": user_message}],
-        session_cwd=session_cwd,
-    )
+def _review_prompt(
+    user_message, *, session_cwd="/workspace/project", messages=None, recorded_cwd=None, **parent_attrs,
+):
+    parent_fields = {
+        "_session_messages": messages if messages is not None else [{"role": "user", "content": user_message}],
+        "session_cwd": session_cwd,
+        "_current_task_id": "task-1",
+    }
+    parent_fields.update(parent_attrs)
+    parent = SimpleNamespace(**parent_fields)
     with bind_subagent_parent(parent), patch(
         "agent.auxiliary_client.call_llm", return_value=_response()
-    ) as call_llm:
+    ) as call_llm, patch("tools.terminal_tool.get_session_cwd", return_value=recorded_cwd) as get_session_cwd:
         assert _smart_approve("python -c 'print(1)'", "script execution") == "approve"
+    if recorded_cwd is not None:
+        get_session_cwd.assert_called_once_with("task-1")
     return call_llm.call_args.kwargs["messages"]
 
 
@@ -48,6 +55,41 @@ def test_user_message_is_limited_to_500_characters():
     _, _, quoted_message = _context_and_message(_review_prompt(message))
     assert quoted_message == message[:500]
     assert len(quoted_message) == 500
+
+
+def test_context_uses_current_turn_message_not_later_synthetic_nudge():
+    message = "Please inspect the project files."
+    messages = [
+        {"role": "user", "content": message},
+        {"role": "assistant", "content": "I will inspect them."},
+        {"role": "user", "content": "Internal verification nudge", "_verification_stop_synthetic": True},
+    ]
+
+    _, _, quoted_message = _context_and_message(_review_prompt(
+        message, messages=messages, _persist_user_message_idx=0, _current_task_id="task-1",
+    ))
+
+    assert quoted_message == message
+
+
+def test_recorded_terminal_cwd_precedes_agent_session_cwd():
+    messages = _review_prompt(
+        "Run this command.", session_cwd="/configured/workspace", recorded_cwd="/recorded/workspace",
+    )
+
+    _, context, _ = _context_and_message(messages)
+
+    assert 'Working directory (quoted): "/recorded/workspace"' in context
+
+
+def test_working_directory_is_limited_to_300_characters():
+    cwd = "/" + "x" * 4999
+    messages = _review_prompt("Run this command.", session_cwd=cwd, recorded_cwd=cwd)
+
+    _, context, _ = _context_and_message(messages)
+    quoted_cwd = json.loads(re.search(r"Working directory \(quoted\): (.*)", context).group(1))
+    assert quoted_cwd == cwd[:300]
+    assert len(quoted_cwd) == 300
 
 
 def test_user_markup_and_verdict_words_stay_quoted_in_context_block():

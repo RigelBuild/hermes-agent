@@ -115,20 +115,32 @@ def _smart_session_context() -> str:
             if session_db is None or not session_id:
                 return ""
             messages = session_db.get_messages_as_conversation(session_id)
-        last_user = next(
-            (message for message in reversed(messages)
-             if isinstance(message, dict) and message.get("role") == "user"),
-            None,
+        current_user_idx = getattr(agent, "_persist_user_message_idx", None)
+        current_user = (
+            messages[current_user_idx]
+            if isinstance(current_user_idx, int) and 0 <= current_user_idx < len(messages)
+            and isinstance(messages[current_user_idx], dict)
+            and messages[current_user_idx].get("role") == "user"
+            else None
         )
-        user_text = flatten_message_text(last_user.get("content"))[:500] if last_user else ""
+        if current_user is None:
+            from agent.conversation_compression import _is_real_user_message
+            current_user = next(
+                (message for message in reversed(messages) if _is_real_user_message(message)),
+                None,
+            )
+        user_text = flatten_message_text(current_user.get("content"))[:500] if current_user else ""
 
-        cwd = getattr(agent, "session_cwd", None)
+        from tools.terminal_tool import get_session_cwd
+        task_id = getattr(agent, "_current_task_id", None) or _ctx.get_current_session_key(default="")
+        cwd = get_session_cwd(task_id)
+        if not cwd:
+            cwd = getattr(agent, "session_cwd", None)
         if not cwd:
             from agent.runtime_cwd import scope_terminal_cwd, scoped_session_cwd
             cwd = scoped_session_cwd() or scope_terminal_cwd()
-        if not cwd:
-            from tools.terminal_tool import get_session_cwd
-            cwd = get_session_cwd(_ctx.get_current_session_key(default=""))
+        if cwd:
+            cwd = str(cwd)[:300]
 
         def quoted(value: str) -> str:
             return json.dumps(value, ensure_ascii=True).replace("<", r"\u003c")
