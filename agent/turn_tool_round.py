@@ -163,7 +163,6 @@ def run_tool_round(
         with suppress(Exception):
             agent.stream_delta_callback(None)
 
-    agent._session_messages = messages
     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
     from hermes_cli.observability.shared_metrics_harness import finish_tool_round
 

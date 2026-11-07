@@ -7,10 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.chat_completion_helpers import _assistant_tool_call_dict
-from agent.subagent_lifecycle import bind_subagent_parent
 from run_agent import AIAgent
-from tools.approval_smart import _smart_session_context
-
 
 def _tool_call(raw_id, n, **extra):
     return SimpleNamespace(
@@ -137,68 +134,6 @@ def test_final_staged_batch_never_reaches_wire_all_provider_prefixed(shape, monk
     assert ids == [m["tool_call_id"] for m in wire[1:]]
     assert not any(i.startswith("chatcmpl-tool-") for i in ids), ids
 
-
-def test_run_tool_round_publishes_live_messages_before_execution(monkeypatch):
-    import agent.turn_tool_round as round_module
-
-    agent = _agent()
-    agent.quiet_mode, agent.verbose_logging = True, False
-    agent.valid_tool_names = {"read_file"}
-    agent._deduplicate_tool_calls = lambda calls: calls
-    agent._cap_delegate_task_calls = lambda calls: calls
-    agent._build_assistant_message = lambda *_: {"role": "assistant", "content": "", "tool_calls": []}
-    agent._has_content_after_think_block = lambda content: bool(content)
-    agent._last_content_with_tools = None
-    agent._last_content_tools_all_housekeeping = False
-    agent._mute_post_response = False
-    agent._interim_assistant_visible_text = lambda _message: ""
-    agent._post_tool_empty_retried = False
-    agent._dropped_toolcall_retries = 0
-    agent._invalid_json_retries = 0
-    agent._thinking_prefill_retries = 0
-    agent._empty_content_retries = 0
-    agent._flush_messages_to_session_db = lambda *_: True
-    agent._emit_interim_assistant_message = lambda *_: None
-    agent.stream_delta_callback = None
-    agent._incremental_persistence_failed = False
-    agent._tool_guardrail_halt_decision = None
-    agent._session_messages = []
-
-    messages = [{"role": "user", "content": "older ask"}]
-    observed = []
-
-    from agent.prompt_builder import steer_user_row
-
-    def _execute(_assistant_message, live_messages, *_args):
-        assert agent._session_messages is live_messages
-        steer = steer_user_row("newer steer")
-        live_messages.append(steer)
-        observed.append(steer)
-
-    agent._execute_tool_calls = _execute
-    agent._touch_activity = lambda *_: None
-    monkeypatch.setattr(round_module, "compress_after_tool_results", lambda _agent, **kwargs: SimpleNamespace(
-        messages=kwargs["messages"], active_system_prompt=kwargs["active_system_prompt"],
-        conversation_history=kwargs["conversation_history"], compression_attempts=kwargs["compression_attempts"],
-        final_response=kwargs["final_response"], turn_exit_reason=kwargs["turn_exit_reason"],
-        current_turn_user_idx=kwargs["current_turn_user_idx"], end_turn=False,
-    ))
-    call = _tool_call("call_live", 1)
-
-    verdict = round_module.run_tool_round(
-        agent, assistant_message=SimpleNamespace(content="", tool_calls=[call]), finish_reason="tool_calls",
-        messages=messages, conversation_history=[], api_call_count=1, effective_task_id="t", user_message="old",
-        system_message="", active_system_prompt="", compression_attempts=0, max_compression_attempts=1,
-        final_response=None, failed=False, _turn_exit_reason=None, truncated_tool_call_retries=0,
-        current_turn_user_idx=0,
-    )
-
-    assert verdict.action == "continue"
-    assert observed[0] in agent._session_messages
-    parent = SimpleNamespace(_session_messages=agent._session_messages)
-    with bind_subagent_parent(parent):
-        context = _smart_session_context()
-    assert 'Last user message (quoted): "newer steer"' in context
 
 
 @pytest.mark.parametrize("api", ["responses", "chat"])
