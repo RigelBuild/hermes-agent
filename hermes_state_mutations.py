@@ -31,6 +31,10 @@ def validate_action(operation, payload):
     # hands the store only its fingerprint, so no transport credential reaches a receipt.
     if operation == 'editor_mcp' and set(payload) == {'mcp_servers'} and _valid_editor_fingerprint(payload):
         return
+    # An ACP session's edit approval policy (gateway/session_mutation_policy.py prepare_edit_policy).
+    if (operation == 'edit_policy' and set(payload) == {'policy'} and isinstance(payload['policy'], str)
+            and payload['policy'] in {'ask', 'workspace_session', 'session'}):
+        return
     if operation == 'compress' and _valid_compress_payload(payload):
         return
     if operation in {'delete', 'reset'} and not payload:
@@ -86,7 +90,7 @@ def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
     if operation == 'compress':
         from hermes_state_mutation_compress import compress_in_transaction
         return compress_in_transaction(db, conn, session_id, payload, prepared)
-    if operation in {'model', 'reasoning', 'workspace', 'editor_mcp'}:
+    if operation in {'model', 'reasoning', 'workspace', 'editor_mcp', 'edit_policy'}:
         from hermes_state_mutation_prepared import POLICY_HANDLERS
         return POLICY_HANDLERS[operation](db, conn, session_id, payload, prepared)
     if operation == 'branch':
@@ -107,6 +111,9 @@ def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
             column = 'last_read_at' if key == 'unread' else key
             stored = (0.0 if value else time.time()) if key == 'unread' else int(value)
             affected.update(db._set_lineage_column_in_transaction(conn, column, session_id, stored))
+            if key == 'archived' and value:
+                # Desktop's Archive lands here, not in set_session_archived: same retire (#139779).
+                affected.update(db._retire_canonical_bot_chat_in_transaction(conn, session_id))
             result[key] = value
     return affected, result
 
@@ -145,6 +152,8 @@ def _rewind(db, conn, session_id, payload):
     target = db._row_to_message_dict(target, warn_context='rewind receipt', summary_flag=True)
     if live is not None:
         target['content'] = live.get('content')
+    from agent.message_metadata import typed_prompt_content  # /retry, /undo: the typed ask, not the placeholder
+    target['content'] = typed_prompt_content(target.get('content'), target)
     conn.execute('UPDATE sessions SET runtime_generation=runtime_generation+1 WHERE id=?', (session_id,))
     return {session_id, physical}, {'rewound_count': len(ids), 'target_message': target,
         'new_head_id': head, 'replacement_message_id': replacement}
