@@ -116,12 +116,21 @@ def _smart_session_context() -> str:
                 return ""
             messages = session_db.get_messages_as_conversation(session_id)
         from agent.context_compressor import split_user_originated_turn
+        from agent.conversation_compression import _extract_steer_text_from_message, _is_real_user_message
 
         current_user = next(
-            (view for message in reversed(messages) if (view := split_user_originated_turn(message)[1]) is not None),
+            (
+                view for message in reversed(messages)
+                if _is_real_user_message(message)
+                and (view := split_user_originated_turn(message)[1]) is not None
+            ),
             None,
         )
-        user_text = flatten_message_text(current_user.get("content"))[:500] if current_user else ""
+        steer_text = _extract_steer_text_from_message(current_user) if current_user else None
+        user_text = (
+            (steer_text if steer_text is not None else flatten_message_text(current_user.get("content")))[:500]
+            if current_user else ""
+        )
 
         from tools.terminal_tool import get_session_cwd
         session_key = _ctx.get_current_session_key(default="")

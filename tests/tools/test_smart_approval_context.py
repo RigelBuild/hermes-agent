@@ -183,3 +183,48 @@ def test_context_lookup_failure_does_not_stop_review_or_add_context_block():
 
     prompt = call_llm.call_args.kwargs["messages"][1]["content"]
     assert "<session_context>" not in prompt
+
+
+def test_context_skips_verification_nudge_built_by_producer(tmp_path, monkeypatch):
+    from agent.verification_evidence import mark_workspace_edited
+    from agent.verification_stop import build_verify_on_stop_nudge
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "package.json").write_text('{"scripts":{"test":"vitest"}}', encoding="utf-8")
+    (project / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    changed_path = str(project / "src" / "app.ts")
+    mark_workspace_edited(session_id="smart-approval-context", cwd=project, paths=[changed_path])
+    nudge = build_verify_on_stop_nudge(
+        session_id="smart-approval-context", changed_paths=[changed_path],
+    )
+    assert nudge is not None
+
+    ask = "Please update the application."
+    messages = [
+        {"role": "user", "content": ask},
+        {"role": "assistant", "content": "I will make the change."},
+        {"role": "user", "content": nudge, "_verification_stop_synthetic": True},
+    ]
+    _, _, quoted_message = _context_and_message(_review_prompt(ask, messages=messages))
+
+    assert quoted_message == ask
+
+
+def test_context_keeps_steer_text_after_500_characters():
+    suffix = "DO-NOT-DELETE"
+    steer = "x" * (480 - len(suffix)) + suffix
+    messages = [
+        {"role": "user", "content": "Please inspect the files."},
+        {"role": "assistant", "content": "I will inspect them."},
+        {"role": "tool", "content": "Inspection complete."},
+        steer_user_row(steer),
+    ]
+
+    _, _, quoted_message = _context_and_message(_review_prompt(steer, messages=messages))
+
+    assert quoted_message.endswith(suffix)
+    assert "OUT-OF-BAND USER MESSAGE" not in quoted_message
+    assert quoted_message == steer
