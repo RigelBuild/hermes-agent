@@ -89,26 +89,30 @@ def parse_launchd_exit_timeout(print_output: object) -> float | None:
     return float(match.group(1))
 
 
+_HOME_MANAGER_LABEL_PREFIX = "org.nix-community.home.hermes"
+
+
 def launchd_job_label(environ: Mapping[str, str] | None = None) -> str | None:
-    """The ``ai.hermes.*`` launchd job label in *environ*, or ``None`` (no darwin gate).
+    """The Hermes launchd job label in *environ* (``ai.hermes*`` or Home Manager), or ``None``.
 
     launchd stamps ``XPC_SERVICE_NAME`` only on the job process it spawns. The generated plist
     runs the stderr-timestamp wrapper there, so the gateway grandchild reads ``XPC_SERVICE_NAME=0``
-    and finds its label only in the wrapper's re-export, ``HERMES_LAUNCHD_LABEL``. Both go through
-    the same ``ai.hermes`` predicate: app-coalition labels (``application.<bundle>…``, exported
-    into IDE integrated terminals) are not our job. ONE seam for every reader of launchd identity
-    (drain cap, restart route, control-socket supervisor declaration).
+    and finds its label only in the wrapper's re-export, ``HERMES_LAUNCHD_LABEL``. App-coalition
+    labels (``application.<bundle>…``, exported into IDE terminals) are not our job. ONE seam for
+    every reader of launchd identity (drain cap, restart route, control-socket supervisor).
     """
     env = os.environ if environ is None else environ
     for var in ("XPC_SERVICE_NAME", LAUNCHD_LABEL_ENV):
         label = str(env.get(var, "") or "").strip()
         if label.startswith("ai.hermes"):
             return label
+        if label.startswith(_HOME_MANAGER_LABEL_PREFIX):
+            return label
     return None
 
 
 def launchd_service_label(environ: Mapping[str, str] | None = None, *, platform: str = sys.platform) -> str | None:
-    """Return this process's ``ai.hermes.*`` launchd job label, or ``None`` off darwin.
+    """Return this process's Hermes launchd job label, or ``None`` off darwin.
 
     ``launchctl print`` reports ``exit timeout = 1`` for app-coalition labels — treating those as
     a budget would cap the drain to 0 for a gateway Ctrl+C'd in an IDE terminal, hence the
@@ -131,7 +135,7 @@ def read_launchd_exit_timeout_s(
     """Live ``ExitTimeOut`` (seconds) launchd enforces for this gateway's job.
 
     Returns ``None`` — meaning "no launchd budget applies" — when the process
-    is not launchd-owned (non-darwin, or no ``ai.hermes`` job label — see :func:`launchd_job_label`), ``launchctl`` is missing
+    is not launchd-owned (non-darwin, or no Hermes job label — see :func:`launchd_job_label`), ``launchctl`` is missing
     or fails, or the print output carries no ``exit timeout`` line. Callers
     must treat ``None`` as fail-open: the configured drain stands unchanged.
     """
