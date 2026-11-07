@@ -112,7 +112,7 @@ def launchd_job_label(environ: Mapping[str, str] | None = None) -> str | None:
 
 
 def launchd_service_label(environ: Mapping[str, str] | None = None, *, platform: str = sys.platform) -> str | None:
-    """Return this process's ``ai.hermes.*`` launchd job label, or ``None`` off darwin.
+    """Return this process's Hermes launchd job label, or ``None`` off darwin.
 
     ``launchctl print`` reports ``exit timeout = 1`` for app-coalition labels — treating those as
     a budget would cap the drain to 0 for a gateway Ctrl+C'd in an IDE terminal, hence the
@@ -135,7 +135,7 @@ def read_launchd_exit_timeout_s(
     """Live ``ExitTimeOut`` (seconds) launchd enforces for this gateway's job.
 
     Returns ``None`` — meaning "no launchd budget applies" — when the process
-    is not launchd-owned (non-darwin, or no ``ai.hermes`` job label — see :func:`launchd_job_label`), ``launchctl`` is missing
+    is not launchd-owned (non-darwin, or no Hermes job label — see :func:`launchd_job_label`), ``launchctl`` is missing
     or fails, or the print output carries no ``exit timeout`` line. Callers
     must treat ``None`` as fail-open: the configured drain stands unchanged.
     """
