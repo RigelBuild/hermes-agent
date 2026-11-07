@@ -57,7 +57,7 @@ def managed_policy(authority, ref):
     return policy
 
 
-def _bootstrap(authority, ref, row, policy, scope, text=None):
+def _bootstrap(authority, ref, row, policy, scope, text=None, *, plugin_origin=False):
     from gateway.session_ingress import row_turn_author
     from gateway.session_policy import route_launch_key
     from gateway.session_policy_credentials import recover_config_secrets
@@ -67,12 +67,10 @@ def _bootstrap(authority, ref, row, policy, scope, text=None):
             if path[0] is None:
                 terminal[path[1]] = value
     live = authority.sessions[ref.session_id]
-    # This turn's facts ride the per-turn hydrated request (the bootstrap field set is closed):
-    # the admission's one-shot flags, the route's YOLO as of now (never the frozen launch flag) and
-    # the committed surface (HUD / live voice / voice turn) when admission recorded one.
     request = dict(json.loads(policy.request_json), turn_v1={
         'finite': row['payload'].get('finite', False), 'unattended': row['payload'].get('unattended') is True,
         'yolo': _session_yolo(authority, live.route, policy),
+        **({'plugin_origin': True} if plugin_origin else {}),
         **({'surface_v1': row['payload']['surface_v1']} if row['payload'].get('surface_v1') else {}),
         **({'display_v1': row['payload']['display_v1']} if row['payload'].get('display_v1') else {})})
     from gateway.session_worker_construct import construct_inputs
@@ -85,8 +83,8 @@ def _bootstrap(authority, ref, row, policy, scope, text=None):
             'text': row['payload']['text'] if text is None else text, 'route': live.route,
             **({'attachments_v1': row['payload']['attachments_v1']} if 'attachments_v1' in row['payload'] else {}),
             'user_id': live.source.user_id, 'chat_id': live.source.chat_id,
-            'turn_author': row_turn_author(policy, row),
-            'safe_mode': policy.safe_mode, 'ignore_user_config': policy.ignore_user_config}
+            'turn_author': row_turn_author(policy, row), 'safe_mode': policy.safe_mode,
+            'ignore_user_config': policy.ignore_user_config}
 
 
 def _worker_config(authority, policy):
@@ -120,20 +118,21 @@ def _session_yolo(authority, route, policy):
 
 @contextmanager
 def worker_turn_scope(frame):
-    """Child side of ``turn_v1``: bind what the in-process turn binds on the owner
-    (execute_finite_admission, the route's YOLO, the committed surface), so ``chat -q``/``-z``
-    never park a prompt, the session's current YOLO governs this child and a HUD / live-voice /
-    voice turn reaches the model as it does in process. Frames without it bind nothing."""
+    """Bind the owner's one-turn policy in the managed child."""
     from gateway.session_finite import finite_turn_scope
     from gateway.session_display import display_turn_scope, restore_display
     from gateway.session_surface import restore_surface, surface_turn_scope
+    from gateway.session_ingress import plugin_origin_turn
     turn = json.loads(frame['policy'].get('request_json') or '{}').get('turn_v1')
     if turn is None:
         yield
         return
     flags = {k: v for k, v in turn.items() if k not in ('surface_v1', 'display_v1')} if isinstance(turn, dict) else None
-    if (flags is None or set(flags) != {'finite', 'unattended', 'yolo'}
-            or any(type(v) is not bool for v in flags.values()) or (turn['unattended'] and not turn['finite'])):
+    plugin = turn.get('plugin_origin', False) if isinstance(turn, dict) else False
+    if (flags is None or set(flags) not in ({'finite', 'unattended', 'yolo'},
+                                           {'finite', 'unattended', 'yolo', 'plugin_origin'})
+            or type(plugin) is not bool or any(type(v) is not bool for v in flags.values())
+            or (turn['unattended'] and not turn['finite'])):
         raise ValueError('invalid_managed_worker_bootstrap')
     try:
         surface = restore_surface(turn['surface_v1']) if 'surface_v1' in turn else None
@@ -143,9 +142,13 @@ def worker_turn_scope(frame):
     if turn['yolo']:
         from tools.approval import enable_session_yolo
         enable_session_yolo(frame['route'])
-    with finite_turn_scope(turn['finite'], turn['unattended']), surface_turn_scope(surface), \
-            display_turn_scope(frame['scope']['execution_id'], display):
-        yield
+    token = plugin_origin_turn.set(plugin)
+    try:
+        with finite_turn_scope(turn['finite'], turn['unattended']), surface_turn_scope(surface), \
+                display_turn_scope(frame['scope']['execution_id'], display):
+            yield
+    finally:
+        plugin_origin_turn.reset(token)
 
 
 class ManagedWorker:
@@ -616,7 +619,7 @@ async def _spawn_registered_worker(authority, ref, row):
     return worker, process
 
 
-async def admit_managed(authority, ref, row, policy):
+async def admit_managed(authority, ref, row, policy, *, plugin_origin=False):
     """The ingress route into a managed worker. A removed folder is refused before a worker exists,
     like the in-process runner: a worker failing in its policy scope reads as a LOST execution
     (``unknown``) and parks every follower behind it."""
@@ -625,7 +628,7 @@ async def admit_managed(authority, ref, row, policy):
         result = workspace_unavailable_result(policy)
         authority.pending_results[row['admission_id']] = {'result': result, 'usage': {}}
         return result['final_response']
-    return await execute_managed(authority, ref, row, policy)
+    return await execute_managed(authority, ref, row, policy, plugin_origin=plugin_origin)
 
 
 async def _finalize_managed_refusal(authority, session_id, accepted):
@@ -644,7 +647,7 @@ async def _finalize_managed_refusal(authority, session_id, accepted):
             session_id, None, accepted.get('refused_turn_boundary_row_id'))
 
 
-async def execute_managed(authority, ref, row, policy):
+async def execute_managed(authority, ref, row, policy, *, plugin_origin=False):
     from gateway.run_turn_progress import publish_worker_tool_event
     # This route never passes the inbound prepare step, so the worker would read ``@`` tokens as typed.
     from gateway.session_context_refs import managed_turn_text, refused_turn_result
@@ -684,7 +687,8 @@ async def execute_managed(authority, ref, row, policy):
                     worker_subject=owner_worker_subject()))
         worker.worker = (scope['pid'], scope['birth'])
         # The child reads nothing else until the exact reservation has committed.
-        frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope, text)
+        frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope, text,
+                                        plugin_origin=plugin_origin)
         worker.secrets.extend(v for v in (frame['api_key'], scope['secret']) if isinstance(v, str) and v)
         await asyncio.to_thread(worker.send, frame)
         worker.writer.start()

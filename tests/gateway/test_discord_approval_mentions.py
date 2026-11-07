@@ -36,21 +36,58 @@ async def test_exec_approval_mentions_allowed_users_when_enabled(monkeypatch):
     adapter._client = _FakeClient(channel)
     adapter._allowed_user_ids = {"222", "111", "alice"}
     adapter._allowed_role_ids = set()
-    adapter.config = SimpleNamespace(extra=None)
+    adapter.config = SimpleNamespace(extra={"approval_mentions": True, "approval_mentions_target": "session"})
 
     result = await adapter.send_exec_approval(
-        chat_id="99",
-        command="make check",
-        session_key="session-1",
-        description="dangerous command",
+        chat_id="99", command="make check", session_key="session-1", description="dangerous command",
     )
 
     assert result.success is True
-    # Mentions are prepended to the (always present) content mirror.
     assert channel.sent_kwargs["content"].startswith("<@111> <@222>\n")
     assert "make check" in channel.sent_kwargs["content"]
     assert "allowed_mentions" in channel.sent_kwargs
 
+
+@pytest.mark.asyncio
+async def test_exec_approval_mentions_can_move_to_index(monkeypatch):
+    monkeypatch.setenv("DISCORD_APPROVAL_MENTIONS", "true")
+    channel = _FakeChannel()
+    adapter = object.__new__(DiscordAdapter)
+    adapter._client = _FakeClient(channel)
+    adapter._allowed_user_ids = {"111"}
+    adapter._allowed_role_ids = set()
+    adapter.config = SimpleNamespace(extra={"approval_mentions": True, "approval_mentions_target": "index"})
+
+    result = await adapter.send_exec_approval(
+        chat_id="99", command="make check", session_key="session-1", description="dangerous command",
+    )
+
+    assert result.success is True
+    assert "<@111>" not in channel.sent_kwargs["content"]
+    assert "allowed_mentions" not in channel.sent_kwargs
+
+
+@pytest.mark.asyncio
+async def test_exec_approval_mentions_disabled_does_not_ping(monkeypatch):
+    monkeypatch.delenv("DISCORD_APPROVAL_MENTIONS", raising=False)
+    channel = _FakeChannel()
+    adapter = object.__new__(DiscordAdapter)
+    adapter._client = _FakeClient(channel)
+    adapter._allowed_user_ids = {"111"}
+    adapter._allowed_role_ids = set()
+    adapter.config = SimpleNamespace(extra={"approval_mentions": False})
+
+    result = await adapter.send_exec_approval(
+        chat_id="99", command="make check", session_key="session-1", description="dangerous command",
+    )
+
+    assert result.success is True
+    assert "<@111>" not in channel.sent_kwargs["content"]
+    assert "allowed_mentions" not in channel.sent_kwargs
+
+def test_yaml_config_bridges_approval_mentions_target():
+    seeded = _apply_yaml_config({}, {"approval_mentions_target": "index"})
+    assert seeded == {"approval_mentions_target": "index"}
 
 def test_yaml_config_seeds_websocket_health_with_primary_precedence(monkeypatch):
     for key in (

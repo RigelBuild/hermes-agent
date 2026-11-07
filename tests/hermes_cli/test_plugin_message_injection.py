@@ -236,21 +236,27 @@ def test_published_gateway_host_reaches_existing_and_future_profile_managers(tmp
 
     owner = object()
     injector = MagicMock(return_value=True)
+    resetter = MagicMock(return_value=True)
     try:
         launch_manager = manager_for(homes[0])
         secondary_manager = manager_for(homes[1])
         assert secondary_manager is not launch_manager
         assert secondary_manager.has_gateway_message_injector is False
+        assert secondary_manager.has_gateway_session_resetter is False
 
         plugins_mod.publish_gateway_message_host(owner, injector)
+        plugins_mod.publish_gateway_session_reset_host(owner, resetter)
         assert launch_manager.has_gateway_message_injector is True
         assert secondary_manager.has_gateway_message_injector is True
+        assert secondary_manager.has_gateway_session_resetter is True
 
         late_manager = manager_for(homes[2])
         assert late_manager.has_gateway_message_injector is True
+        assert late_manager.has_gateway_session_resetter is True
         # A -> B -> A: returning to the launch home resolves the same, still-stamped manager.
         assert manager_for(homes[0]) is launch_manager
         assert launch_manager.has_gateway_message_injector is True
+        assert launch_manager.has_gateway_session_resetter is True
 
         token = set_hermes_home_override(str(homes[1]))
         try:
@@ -258,25 +264,31 @@ def test_published_gateway_host_reaches_existing_and_future_profile_managers(tmp
                 PluginManifest(name="notify-plugin", key="notify-plugin", source="user"),
                 secondary_manager,
             )
+            assert secondary_manager.reset_gateway_session(session_id="sid") is True
             assert context.inject_message(
                 "continue", session_key="agent:secondary:telegram:dm:42"
             ) is True
         finally:
             reset_hermes_home_override(token)
 
-        # The calling manager's immutable home, not the launch home, rides with the key.
         injector.assert_called_once_with(
             session_key="agent:secondary:telegram:dm:42",
             plugin_home=secondary_manager.home_path,
             content="continue",
             plugin_id="notify-plugin",
         )
+        resetter.assert_called_once_with(session_id="sid")
 
+        plugins_mod.clear_published_gateway_session_reset_host(owner)
         plugins_mod.clear_published_gateway_message_host(owner)
+        assert launch_manager.has_gateway_session_resetter is False
+        assert secondary_manager.has_gateway_session_resetter is False
+        assert late_manager.has_gateway_session_resetter is False
         assert launch_manager.has_gateway_message_injector is False
         assert secondary_manager.has_gateway_message_injector is False
         assert late_manager.has_gateway_message_injector is False
     finally:
+        plugins_mod.clear_published_gateway_session_reset_host(owner)
         plugins_mod.clear_published_gateway_message_host(owner)
         plugins_mod._reset_plugin_managers_for_tests()
         secret_scope.set_multiplex_active(was_active)

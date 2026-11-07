@@ -1,9 +1,8 @@
 """The smart-approval guardian asks for its verdict with thinking off, unless the operator chose.
 
-Its budget is 16 tokens for one word. A reasoning model left to think spends the whole budget on
-reasoning and returns nothing: a press reviewer's local Qwen 27B returned 45 empty verdicts out of
-45. With thinking off, the managed llama-server answers ``APPROVE`` in 4 tokens. An operator who
-set ``auxiliary.approval.reasoning_effort`` keeps that setting.
+The 2048-token output cap leaves room for a useful reason; a reasoning model left to think can still
+spend its budget without returning a verdict. A press reviewer's local Qwen 27B returned 45 empty
+verdicts out of 45. Operators who set ``auxiliary.approval.reasoning_effort`` keep that setting.
 """
 
 from unittest.mock import MagicMock, patch
@@ -43,3 +42,4 @@ def test_verdict_goes_out_with_thinking_off():
 ])
 def test_operator_reasoning_setting_wins(task_config):
     assert _verdict_wire(task_config)["reasoning_effort"] == "high"
+

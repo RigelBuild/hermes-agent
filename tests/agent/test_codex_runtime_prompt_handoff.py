@@ -139,3 +139,33 @@ def test_runtime_gives_no_approval_callback_when_nobody_can_answer(monkeypatch):
         set_approval_callback(None)
     assert interactive._codex_session._approval_callback is panel
     assert single_query._codex_session._approval_callback is None
+
+
+def test_plugin_origin_turn_never_inherits_codex_auto_approve(monkeypatch):
+    """approvals.mode off arms codex auto-approve for operator turns only; a reused session drops it for a
+    plugin-origin turn and restores it for the next operator turn."""
+    from gateway.session_ingress import plugin_origin_turn
+    from tools import approval_context
+
+    monkeypatch.setattr(sess_mod, "CodexAppServerClient", lambda **kw: _FakeClient())
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "off")
+
+    def flags(agent):
+        routing = agent._codex_session._routing
+        return routing.auto_approve_exec, routing.auto_approve_apply_patch
+
+    operator_first = _agent()
+    codex_runtime._ensure_codex_session(operator_first)
+    assert flags(operator_first) == (True, True)
+    token = plugin_origin_turn.set(True)
+    try:
+        codex_runtime._ensure_codex_session(operator_first)
+        assert flags(operator_first) == (False, False)
+        plugin_first = _agent()
+        codex_runtime._ensure_codex_session(plugin_first)
+        assert flags(plugin_first) == (False, False)
+    finally:
+        plugin_origin_turn.reset(token)
+    codex_runtime._ensure_codex_session(operator_first)
+    codex_runtime._ensure_codex_session(plugin_first)
+    assert flags(operator_first) == flags(plugin_first) == (True, True)

@@ -107,8 +107,7 @@ class TestTrustGateAtCallTime:
         fake_session.call_tool.assert_awaited_once()
 
     def test_approval_card_shows_redacted_bounded_arguments(self, fake_session, monkeypatch):
-        """The approver sees the call's arguments, never its secrets (even with redaction turned off
-        for logs), and the card stays inside the smallest messaging cap."""
+        """The approver sees arguments without secrets, within the messaging cap."""
         import agent.redact
         monkeypatch.setattr(agent.redact, "_REDACT_ENABLED", False)
         _set_trust("srv", "untrusted")
@@ -124,13 +123,8 @@ class TestTrustGateAtCallTime:
             "target": "prod\u202e",
             "notes": "x" * 5_000,
         }
-
-        with patch(
-            "tools.approval_prompt.request_elicitation_consent",
-            return_value="decline",
-        ) as consent:
+        with patch("tools.approval_prompt.request_elicitation_consent", return_value="decline") as consent:
             handler(args)
-
         message = consent.call_args.args[0]
         assert '"job": "release"' in message
         for secret in ("sk-supersecretcredential123456", "hunter2-correct-horse-battery",
@@ -141,6 +135,32 @@ class TestTrustGateAtCallTime:
         assert len(message) < 2_000
         fake_session.call_tool.assert_not_awaited()
 
+    def test_untrusted_approval_shows_capped_safe_arguments(self, fake_session):
+        _set_trust("srv", "untrusted")
+        handler = _mcp_handlers._make_tool_handler("srv", "sync_source", 30.0)
+        with patch("tools.approval_prompt.request_elicitation_consent", return_value="decline") as consent:
+            handler({"source": "production", "api_token": "never show me", "notes": "x" * 5000})
+        message, description = consent.call_args.args
+        assert '"source": "production"' in message
+        assert "sync_source" in message and "sync_source" in description
+        assert "never show me" not in message + description
+        assert '"notes":' in message and "truncated" in message
+        assert len(message) < 1800
+
+    def test_untrusted_approval_redacts_authorization_bearers_recursively(self, fake_session):
+        _set_trust("srv", "untrusted")
+        handler = _mcp_handlers._make_tool_handler("srv", "sync_source", 30.0)
+        args = {
+            "Authorization": "Bearer top-secret-token",
+            "options": [{"Proxy-Authorization": "Bearer nested-secret-token", "mode": "safe"}],
+        }
+        with patch("tools.approval_prompt.request_elicitation_consent", return_value="decline") as consent:
+            handler(args)
+        message, description = consent.call_args.args
+        assert "top-secret-token" not in message + description
+        assert "nested-secret-token" not in message + description
+        assert "Authorization" in message + description
+        assert "Proxy-Authorization" in message + description
 
     def test_denied_approval_blocks_rpc(self, fake_session):
         """'decline' blocks the call — the RPC must never fire."""

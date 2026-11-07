@@ -271,6 +271,30 @@ class OnePasswordLoginBackend(LoginBackend):
                 return data
         raise RuntimeError("1Password item not found" + (f": {last[:120]}" if last else ""))
 
+    def describe_item(self, item: str) -> dict:
+        """Fetch one item for approval metadata without asking op to reveal field values."""
+        item_id = item.removeprefix(self.prefix)
+        if not item_id or item_id.startswith("-"):
+            raise RuntimeError("1Password item not found; search again")
+        accounts = [self._any_accounts[item_id]] if item_id in self._any_accounts else self._accounts()
+        last = ""
+        for account in accounts:
+            try:
+                raw = self._run("item", "get", item_id, "--format", "json", account=account)
+            except RuntimeError as exc:
+                last = str(exc)
+                continue
+            data = json.loads(raw or "{}")
+            if isinstance(data, dict) and data.get("id"):
+                self._any_accounts[item_id] = account
+                fields = data.get("fields") or []
+                data["fields"] = [
+                    {key: value for key, value in entry.items() if key != "value"}
+                    for entry in fields if isinstance(entry, dict)
+                ]
+                return data
+        raise RuntimeError("1Password item not found" + (f": {last[:120]}" if last else ""))
+
     def item_fields(self, item: str) -> list[dict]:
         """Field ids and labels of one item. Values are dropped here and never returned."""
         data = self._get_item(item)

@@ -401,6 +401,11 @@ class PluginContext(PluginCapabilityCtxMixin):
         from hermes_cli.plugins_injection import inject_plugin_message
         return inject_plugin_message(self, content, role, session_key=session_key, origin=origin)
 
+    def reset_session(self, session_id: str, reason: str) -> bool:
+        """Schedule a reset; the result reports acceptance, not completion."""
+        from hermes_cli.plugins_session_reset import reset_plugin_session
+        return reset_plugin_session(self, session_id, reason)
+
     def session_cwd(self) -> str:
         """The calling session's recorded cwd, never the gateway's own (``plugin_session``)."""
         from hermes_cli.plugin_session import context_cwd

@@ -89,6 +89,29 @@ def test_forwarded_label_marks_grandchild_supervised_for_every_reader():
     assert is_gateway_supervisor_process(_grandchild("application.com.x.1")) is False
 
 
+def test_home_manager_launchd_label_is_accepted_by_gateway_and_wrapper():
+    from gateway.restart import launchd_job_label
+    from hermes_cli.stderr_timestamp import _child_launchd_label_env
+
+    label = "org.nix-community.home.hermes-agent"
+    environ = _direct(label)
+
+    assert launchd_job_label(environ) == label
+    assert launchd_service_label(environ, platform="darwin") == label
+    assert _child_launchd_label_env(environ) == {LAUNCHD_LABEL_ENV: label}
+
+
+@pytest.mark.parametrize("label", ["application.foo", "org.nix-community.home.syncthing"])
+def test_foreign_launchd_label_is_not_forwarded_by_wrapper(label):
+    from gateway.restart import launchd_job_label
+    from hermes_cli.stderr_timestamp import _child_launchd_label_env
+
+    environ = _direct(label)
+
+    assert launchd_job_label(environ) is None
+    assert _child_launchd_label_env(environ) == {}
+
+
 def _runner(*, drain: float, launchd: float | None, by_signal: bool):
     return SimpleNamespace(
         _restart_drain_timeout=drain, _launchd_exit_timeout_s=launchd, _stop_requested_by_signal=by_signal,

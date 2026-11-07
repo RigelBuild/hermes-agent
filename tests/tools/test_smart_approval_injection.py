@@ -175,10 +175,8 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         response = self._make_response("")
         response.choices[0].finish_reason = "length"
         mock_call_llm.return_value = response
-        with self.assertLogs("tools.approval", level="WARNING") as logs:
-            assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
-        assert any("empty answer" in message and "length" in message
-                   for message in logs.output), logs.output
+        with self.assertLogs("tools.approval", level="WARNING"):
+            self.assertEqual(_smart_approve("rm -rf /", "recursive delete"), "escalate")
 
     @patch("agent.auxiliary_client.call_llm")
     def test_empty_answer_without_finish_reason_still_warns(self, mock_call_llm):
@@ -190,6 +188,20 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         with self.assertLogs("tools.approval", level="WARNING") as logs:
             assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
         assert any("finish_reason=None" in message for message in logs.output), logs.output
+
+    @patch("agent.auxiliary_client.call_llm")
+    def test_truncated_verdict_escalates_even_when_content_is_a_verdict(self, mock_call_llm):
+        for answer in ("APPROVE", "DENY"):
+            response = self._make_response(answer)
+            response.choices[0].finish_reason = "length"
+            mock_call_llm.return_value = response
+            with self.subTest(answer=answer):
+                self.assertEqual(_smart_approve("rm -rf /", "recursive delete"), "escalate")
+
+    @patch("agent.auxiliary_client.call_llm")
+    def test_malformed_response_escalates(self, mock_call_llm):
+        mock_call_llm.return_value = MagicMock(choices=[])
+        self.assertEqual(_smart_approve("rm -rf /", "recursive delete"), "escalate")
 
     @patch("agent.auxiliary_client.call_llm")
     def test_recognized_verdict_does_not_warn(self, mock_call_llm):
@@ -223,10 +235,10 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
 
     @patch("agent.auxiliary_client.call_llm")
-    def test_budget_fits_a_sentence(self, mock_call_llm):
+    def test_budget_leaves_room_for_a_reason(self, mock_call_llm):
         mock_call_llm.return_value = self._make_response("APPROVE")
         _smart_approve("ls", "x")
-        assert mock_call_llm.call_args.kwargs["max_tokens"] >= 64
+        self.assertEqual(mock_call_llm.call_args.kwargs["max_tokens"], 2048)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,8 +1,7 @@
 """Plugin approval rules: show the real request and let the smart reviewer gate first.
 
-A plugin ``pre_tool_call`` ``approve`` directive may carry ``display`` (shown in the prompt's
 code block instead of ``<tool> (plugin approval rule)``) and ``review`` (run the smart reviewer
-as a gate before the human: DENY blocks, anything else still asks the human).
+before the human: APPROVE and ESCALATE still ask; DENY asks for a one-operation owner override).
 """
 
 import pytest
@@ -59,20 +58,21 @@ def test_without_display_the_label_is_unchanged(monkeypatch):
     assert seen["command"] == "<terminal> (plugin approval rule)"
 
 
+def test_explicit_display_is_not_enriched_or_changed(monkeypatch):
+    seen = _capture_human(monkeypatch)
+    request_tool_approval(
+        "browser_vault", "fill login", display="resolved title on https://example.test",
+        args={"action": "fill", "handle": "vault_123"},
+    )
+    assert seen["command"] == "resolved title on https://example.test"
+
+
+
 def test_reviewer_is_not_called_unless_requested(monkeypatch):
     _capture_human(monkeypatch)
     calls = _verdict(monkeypatch, "approve")
     request_tool_approval("terminal", "why", rule_key="k", display="cmd")
     assert calls == []
-
-
-def test_reviewer_deny_blocks_before_the_human(monkeypatch):
-    monkeypatch.setattr(approval, "_human_decision", lambda *a, **k: pytest.fail("human must not be asked"))
-    calls = _verdict(monkeypatch, "deny")
-    result = request_tool_approval("terminal", "why", rule_key="k", display="cmd", review=True)
-    assert calls == ["cmd"]
-    assert result["approved"] is False
-    assert "approval reviewer" in result["message"]
 
 
 def test_reviewer_approve_still_asks_the_human(monkeypatch):
@@ -85,6 +85,22 @@ def test_reviewer_approve_still_asks_the_human(monkeypatch):
     assert "passed" in seen["description"]
 
 
+def test_vault_metadata_is_in_reviewer_display_and_human_prompt(monkeypatch):
+
+    monkeypatch.setattr("agent.vault_backends.describe_ref", lambda item, field=None: {
+        "title": "Production login", "username": "owner@example.test",
+        "allowed_origins": ["https://example.test"], "field_label": "API key",
+    })
+    seen = _capture_human(monkeypatch)
+    calls = _verdict(monkeypatch, "approve")
+    request_tool_approval("browser_vault", "fill login", args={"action": "fill", "handle": "vault_123"}, review=True)
+
+    assert len(calls) == 1
+    assert "Production login" in calls[0]
+    assert "owner@example.test" in calls[0]
+    assert "https://example.test" in calls[0]
+    assert "Production login" in seen["command"]
+
 def test_reviewer_escalate_still_asks_the_human(monkeypatch):
     seen = _capture_human(monkeypatch)
     _verdict(monkeypatch, "escalate")
@@ -92,11 +108,21 @@ def test_reviewer_escalate_still_asks_the_human(monkeypatch):
     assert "carefully" in seen["description"]
 
 
+
 def test_reviewer_runs_even_in_manual_mode(monkeypatch):
     _capture_human(monkeypatch)
     calls = _verdict(monkeypatch, "approve")
     request_tool_approval("terminal", "why", rule_key="k", display="cmd", review=True)
     assert calls == ["cmd"]
+def test_terminal_approval_displays_full_command_without_600_character_clipping(monkeypatch, capsys):
+    from tools import approval_prompt
+
+    command = "x" * 1200
+    monkeypatch.setattr(approval_prompt, "_read_choice", lambda *_args: "o")
+    monkeypatch.setattr("agent.i18n.t", lambda key, **_kwargs: "Choose once or deny" if key.startswith("approval.choose") else "Once?")
+
+    assert approval_prompt.prompt_dangerous_approval(command, "run command", timeout_seconds=1) == "once"
+    assert command in capsys.readouterr().out
 
 
 def test_directive_carries_display_and_review(monkeypatch):
@@ -153,11 +179,37 @@ def test_reviewer_reason_reaches_the_human_prompt(monkeypatch):
                                    "Runs a script by path; its contents are not shown.")
 
 
-def test_reviewer_reason_is_in_the_deny_message(monkeypatch):
-    monkeypatch.setattr(approval, "_human_decision", lambda *a, **k: pytest.fail("human must not be asked"))
+@pytest.mark.parametrize(("choice", "approved", "outcome"), [
+    ("once", True, None),
+    ("deny", False, "denied"),
+    ("timeout", False, "timeout"),
+])
+def test_reviewer_deny_reaches_human_and_final_choice_controls_result(
+    monkeypatch, choice, approved, outcome,
+):
+    monkeypatch.setattr(approval, "_presence", lambda cb=None: (cb, True, False, False))
+    seen = {}
+
+    def _approve(command, description, **kwargs):
+        seen.update(command=command, description=description, **kwargs)
+        return choice
+
     _verdict_with_note(monkeypatch, "deny", "Pipes the key to a remote host.")
-    result = request_tool_approval("vault_secret", "why", rule_key="k", display="cmd", review=True)
-    assert "Reviewer: Pipes the key to a remote host." in result["message"]
+    result = request_tool_approval(
+        "vault_secret", "why", rule_key="k", display="cmd", review=True,
+        approval_callback=_approve,
+    )
+
+    assert seen["command"] == "cmd"
+    assert seen["description"] == (
+        "why\n**Reviewer:** flagged as dangerous: Pipes the key to a remote host."
+    )
+    assert seen["allow_permanent"] is False
+    assert seen["smart_denied"] is True
+    assert result["approved"] is approved
+    assert result.get("outcome") == outcome
+    if choice == "deny":
+        assert "**Reviewer:** flagged as dangerous: Pipes the key to a remote host." in result["message"]
 
 
 def test_a_stale_reason_does_not_leak_into_the_next_prompt(monkeypatch):

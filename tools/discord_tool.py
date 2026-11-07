@@ -640,6 +640,72 @@ def _require_post_scope(
         f"Channel {channel_id} is outside discord.post_channels; allowed: {', '.join(sorted(allowed)) or '<none>'}")
 
 
+_MESH_WRITE_ACTIONS = frozenset({"create_thread", "create_forum_post", "post_message"})
+_DM_CHANNEL_TYPES = frozenset({1, 3})
+
+
+@functools.lru_cache(maxsize=128)
+def _operator_guilds(token: str, post_channels: frozenset[str]) -> frozenset[str] | None:
+    """Resolve each configured channel to its guild; one invalid entry closes the scope."""
+    if not post_channels:
+        return None
+    guilds = set()
+    try:
+        for channel_id in post_channels:
+            channel = _discord_request("GET", f"/channels/{channel_id}", token)
+            if not isinstance(channel, dict):
+                return None
+            resolved_id = channel.get("id")
+            guild_id = channel.get("guild_id")
+            if not isinstance(resolved_id, str) or resolved_id != channel_id:
+                return None
+            if not isinstance(guild_id, str) or not guild_id.strip():
+                return None
+            guilds.add(guild_id)
+    except Exception as exc:
+        logger.debug("discord: could not resolve discord.post_channels guild scope: %s", exc)
+        return None
+    return frozenset(guilds)
+
+
+def _require_mesh_scope(token: str, action: str, *, channel_id: str, guild_id: str) -> None:
+    """Limit core Discord actions on cotal peer-mesh and plugin-origin turns."""
+    from tools.approval_context import _is_peer_mesh_approval_context, is_plugin_origin_turn
+
+    if not (_is_peer_mesh_approval_context() or is_plugin_origin_turn()):
+        return
+    if action not in _CORE_ACTION_NAMES:
+        return
+    try:
+        allowed = _load_post_channels_config()
+    except _PostScopeConfigError as exc:
+        raise ValueError(f"Could not read discord.post_channels; refusing mesh scope: {exc}") from exc
+    if not allowed:
+        raise ValueError("discord.post_channels is not set; mesh turns may not use the discord tool")
+
+    if action in _MESH_WRITE_ACTIONS:
+        _require_post_scope(
+            token, channel_id, allow_thread_parent=action != "create_forum_post", allowed=allowed)
+        return
+
+    operator_guilds = _operator_guilds(token, frozenset(allowed))
+    if operator_guilds is None:
+        raise ValueError("Could not resolve every discord.post_channels entry to a guild; refusing mesh reads")
+    if action == "search_members":
+        if guild_id not in operator_guilds:
+            raise ValueError(f"Guild {guild_id} is outside the operator guilds; refusing mesh search")
+        return
+
+    channel = _discord_request("GET", f"/channels/{channel_id}", token)
+    if not isinstance(channel, dict):
+        raise ValueError(f"Could not resolve channel {channel_id}; refusing mesh read")
+    if channel.get("type") in _DM_CHANNEL_TYPES:
+        raise ValueError("Discord DM and group DM channels are not available to mesh turns")
+    channel_guild = channel.get("guild_id")
+    if not isinstance(channel_guild, str) or channel_guild not in operator_guilds:
+        raise ValueError(f"Channel {channel_id} is outside the operator guilds; refusing mesh read")
+
+
 def _allowed_mentions() -> dict[str, Any]:
     """Resolve the current profile's Discord mention policy, defaulting to safe mentions."""
     try:
@@ -1043,6 +1109,8 @@ def _run_discord_action(action: str, valid_actions: dict[str, Any], tool_label: 
         return tool_error(f"Missing required parameters for '{action}': {', '.join(missing)}")
     try:
         _require_cron_scope(token, action, kwargs.get("channel_id") or "")
+        _require_mesh_scope(
+            token, action, channel_id=kwargs.get("channel_id") or "", guild_id=kwargs.get("guild_id") or "")
         return action_fn(token=token, **kwargs)
     except ValueError as e:
         return tool_error(str(e))

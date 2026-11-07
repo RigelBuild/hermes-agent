@@ -35,8 +35,8 @@ _SYSTEM_PROMPT = (
 )
 _VERDICTS = {"APPROVE": "approve", "DENY": "deny"}
 _NOTE_LIMIT = 300
-# One word plus one sentence; the old 16-token budget fit only the word.
-_MAX_TOKENS = 120
+# Keep room for a short reason even when a reasoning model uses part of the budget to think.
+_MAX_TOKENS = 2048
 _last_note = threading.local()
 
 
@@ -98,10 +98,11 @@ def _get_smart_policy() -> str:
 
 
 def _verdict_reasoning() -> dict | None:
-    """Thinking off for the verdict, unless the operator set reasoning for the approval task
-    (``auxiliary.approval.reasoning_effort`` or ``extra_body.reasoning``). A one-word verdict needs
-    no thinking, and a reasoning model otherwise spends the whole 16-token budget thinking and
-    returns nothing (a local Qwen 27B: 45 of 45 verdicts came back empty)."""
+    """Disable thinking unless the operator set approval-task reasoning explicitly.
+
+    A reasoning model without this override can spend the full output budget on hidden reasoning
+    and return no verdict (a local Qwen 27B returned 45 empty verdicts out of 45).
+    """
     from agent.auxiliary_task_config import _get_auxiliary_task_config
 
     config = _get_auxiliary_task_config("approval")
@@ -153,14 +154,16 @@ def _smart_approve(command: str, description: str) -> str:
             reasoning_config=_verdict_reasoning(),
         )
         logger.debug("Smart approvals: LLM call completed in %.1fs", time.monotonic() - _smart_t0)
-        raw = (response.choices[0].message.content or "").strip()
+        choice = response.choices[0]
+        finish_reason = getattr(choice, "finish_reason", None)
+        if finish_reason == "length":
+            logger.warning("Smart approvals: guardian response was truncated, escalating")
+            return "escalate"
+        raw = (choice.message.content or "").strip()
         if not raw:
             # WARNING, not DEBUG: an empty-but-200 body is an infrastructure failure, not a
-            # verdict — typically finish_reason=="length" after a reasoning model spent the
-            # whole max_tokens budget on hidden reasoning (#117428). It escalates like any
-            # uncertain outcome, but is indistinguishable from a genuine ESCALATE in the logs
-            # unless this fires above DEBUG.
-            finish_reason = getattr(response.choices[0], "finish_reason", None)
+            # verdict. It is indistinguishable from a genuine ESCALATE in the logs unless this
+            # fires above DEBUG.
             logger.warning("Smart approvals: guardian returned an empty answer "
                            "(finish_reason=%s), escalating", finish_reason)
             return "escalate"

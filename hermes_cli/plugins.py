@@ -274,6 +274,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._plugin_secret_sources_reconciled: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         self._gateway_message_injector: tuple[object, Callable] | None = None
+        self._gateway_session_resetter: tuple[object, Callable] | None = None
         # Ink TUI / desktop. Must not alias ``_gateway_message_injector``: a live
         # messaging gateway and a TUI in one process would otherwise clobber each other.
         self._tui_message_injector: tuple[object, Callable] | None = None
@@ -362,6 +363,25 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def inject_gateway_message(self, **kwargs: Any) -> bool:
         """Submit a plugin-triggered turn to the live gateway."""
         registered = self._gateway_message_injector
+        return registered is not None and bool(registered[1](**kwargs))
+
+    @property
+    def has_gateway_session_resetter(self) -> bool:
+        """Return whether a live gateway can accept plugin-triggered session resets."""
+        return self._gateway_session_resetter is not None
+
+    def set_gateway_session_resetter(self, owner: object, resetter: Callable[..., bool]) -> None:
+        """Publish a live gateway reset scheduler and its lifecycle owner."""
+        self._gateway_session_resetter = (owner, resetter)
+
+    def clear_gateway_session_resetter(self, owner: object) -> None:
+        """Clear the reset scheduler only when it still belongs to ``owner``."""
+        if self._gateway_session_resetter is not None and self._gateway_session_resetter[0] is owner:
+            self._gateway_session_resetter = None
+
+    def reset_gateway_session(self, **kwargs: Any) -> bool:
+        """Submit a plugin-triggered session reset to the live gateway."""
+        registered = self._gateway_session_resetter
         return registered is not None and bool(registered[1](**kwargs))
 
     @property
@@ -710,6 +730,7 @@ _plugin_managers_lock = threading.RLock()
 # isolated in per-profile managers, so every manager in this process must see the same live host.
 _published_gateway_message_injector: tuple[object, Callable] | None = None
 _published_gateway_host_lock = threading.Lock()
+_published_gateway_session_resetter: tuple[object, Callable] | None = None
 
 # Process-wide Ink TUI / desktop host. Not the messaging-gateway slot. Stamped onto
 # each profile's manager so a multiplexed desktop process does not drop injects
@@ -773,12 +794,34 @@ def clear_published_gateway_message_host(owner: object) -> None:
             manager.clear_gateway_message_injector(owner)
 
 
+def publish_gateway_session_reset_host(owner: object, resetter: Callable[..., bool]) -> None:
+    """Remember the process gateway reset host and stamp managers that already exist."""
+    global _published_gateway_session_resetter
+    with _published_gateway_host_lock:
+        _published_gateway_session_resetter = (owner, resetter)
+        for manager in _known_plugin_managers():
+            manager.set_gateway_session_resetter(owner, resetter)
+
+
+def clear_published_gateway_session_reset_host(owner: object) -> None:
+    """Forget this owner's reset host without clobbering a newer runner."""
+    global _published_gateway_session_resetter
+    with _published_gateway_host_lock:
+        if (_published_gateway_session_resetter is not None
+                and _published_gateway_session_resetter[0] is owner):
+            _published_gateway_session_resetter = None
+        for manager in _known_plugin_managers():
+            manager.clear_gateway_session_resetter(owner)
+
 def _attach_published_gateway_host(manager: PluginManager) -> None:
     """Give a newly resolved profile manager the live process gateway host, if any."""
     with _published_gateway_host_lock:
         host = _published_gateway_message_injector
         if host is not None and manager._gateway_message_injector is None:
             manager.set_gateway_message_injector(*host)
+        resetter = _published_gateway_session_resetter
+        if resetter is not None and manager._gateway_session_resetter is None:
+            manager.set_gateway_session_resetter(*resetter)
 
 
 def publish_tui_message_host(owner: object, injector: Callable[..., bool]) -> None:
@@ -836,7 +879,8 @@ def get_plugin_manager() -> PluginManager:
 
 def _reset_plugin_managers_for_tests() -> None:
     """Test-only: drop every cached manager and its submodules for a fully clean slate."""
-    global _plugin_manager, _published_gateway_message_injector, _published_tui_message_injector
+    global _plugin_manager, _published_gateway_message_injector, _published_gateway_session_resetter
+    global _published_tui_message_injector
     with _plugin_managers_lock:
         managers = list(dict.fromkeys(_plugin_managers_by_home.values()))
         if _plugin_manager is not None and _plugin_manager not in managers:
@@ -851,6 +895,7 @@ def _reset_plugin_managers_for_tests() -> None:
         _plugin_manager = None
     with _published_gateway_host_lock:
         _published_gateway_message_injector = None
+        _published_gateway_session_resetter = None
     with _published_tui_host_lock:
         _published_tui_message_injector = None
     # Dashboard-auth providers are persistent and survive a routine unload, so the clean-slate

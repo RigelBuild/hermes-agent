@@ -93,6 +93,29 @@ def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monk
     assert json.loads(events[1]['result'])['error'] == 'file missing'
 
 
+def test_managed_child_scope_preserves_plugin_origin_and_forces_approval(tmp_path, monkeypatch):
+    from gateway.session_managed_worker import _bootstrap, worker_turn_scope
+    from gateway.session_ingress import plugin_origin_turn
+    from tools.approval import clear_session, is_approval_bypass_active, request_tool_approval
+    from tools import approval_context
+
+    frame, (authority, ref, row, policy, scope) = assignment(tmp_path, monkeypatch, yolo=True)
+    frame = _bootstrap(authority, ref, row, policy, scope, plugin_origin=True)
+    monkeypatch.setattr(approval_context, '_get_approval_mode', lambda: 'off')
+    monkeypatch.setattr('tools.approval._YOLO_MODE_FROZEN', True)
+    monkeypatch.setenv('HERMES_EXEC_ASK', '1')
+    monkeypatch.setenv('HERMES_GATEWAY_SESSION', '1')
+    observed = []
+
+    with worker_turn_scope(frame):
+        observed.append((plugin_origin_turn.get(), is_approval_bypass_active()))
+        result = request_tool_approval('fixture_tool', 'guarded worker action', rule_key='worker-action')
+
+    assert observed == [(True, False)]
+    assert result['approved'] is False
+    assert result['status'] == 'approval_required'
+    clear_session('managed-contract')
+
 def test_current_yolo_revocation_overrides_frozen_launch(tmp_path, monkeypatch):
     from gateway.session_managed_worker import _bootstrap
     from tools.approval import disable_session_yolo, clear_session, is_session_yolo_enabled

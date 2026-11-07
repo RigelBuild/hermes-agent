@@ -60,8 +60,8 @@ Or in-session:
 | `cronjob` | `cronjob_manage` | Schedule and manage recurring tasks. |
 | `debugging` | composite (`file` + `terminal` + `web`) | Debug bundle — file, process/terminal, web extract/search. |
 | `delegation` | `delegate_task` | Spawn isolated subagent instances for parallel work. |
-| `discord` | `discord` | Core Discord text/embed/DM actions. Active on the `hermes-discord` toolset; cron can opt in, limited to the forum actions inside `discord.post_channels`. |
-| `discord_admin` | `discord_admin` | Discord moderation (bans, role changes, channel management). Active on the `hermes-discord` toolset; requires the bot to hold the relevant Discord permissions. |
+| `discord` | `discord` | Core Discord text/embed/DM actions. Active on `hermes-discord`; cron can opt in for forum actions inside `discord.post_channels`, and cotal can opt in. Peer-mesh and plugin-origin turns have writes limited to listed channels or their threads, reads limited to their guilds, and DMs refused. |
+| `discord_admin` | `discord_admin` | Discord moderation (bans, role changes, channel management). Active on `hermes-discord` only; requires the bot to hold the relevant Discord permissions. |
 | `feishu_doc` | `feishu_doc_read` | Read Feishu/Lark document content. Used by the Feishu document-comment intelligent-reply handler. |
 | `feishu_drive` | `feishu_drive_add_comment`, `feishu_drive_list_comments`, `feishu_drive_list_comment_replies`, `feishu_drive_reply_comment` | Feishu/Lark drive comment operations. Scoped to the comment agent; not exposed on `hermes-cli` or other messaging toolsets. |
 | `file` | `patch`, `read_file`, `search_files`, `write_file` | File reading, writing, searching, and editing. |
