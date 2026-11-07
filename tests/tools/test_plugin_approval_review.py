@@ -1,7 +1,7 @@
 """Plugin approval rules: show the real request and let the smart reviewer gate first.
 
 code block instead of ``<tool> (plugin approval rule)``) and ``review`` (run the smart reviewer
-as a gate before the human: DENY blocks, anything else still asks the human).
+before the human: APPROVE and ESCALATE still ask; DENY asks for a one-operation owner override).
 """
 
 import pytest
@@ -73,15 +73,6 @@ def test_reviewer_is_not_called_unless_requested(monkeypatch):
     calls = _verdict(monkeypatch, "approve")
     request_tool_approval("terminal", "why", rule_key="k", display="cmd")
     assert calls == []
-
-
-def test_reviewer_deny_blocks_before_the_human(monkeypatch):
-    monkeypatch.setattr(approval, "_human_decision", lambda *a, **k: pytest.fail("human must not be asked"))
-    calls = _verdict(monkeypatch, "deny")
-    result = request_tool_approval("terminal", "why", rule_key="k", display="cmd", review=True)
-    assert calls == ["cmd"]
-    assert result["approved"] is False
-    assert "approval reviewer" in result["message"]
 
 
 def test_reviewer_approve_still_asks_the_human(monkeypatch):
@@ -188,11 +179,37 @@ def test_reviewer_reason_reaches_the_human_prompt(monkeypatch):
                                    "Runs a script by path; its contents are not shown.")
 
 
-def test_reviewer_reason_is_in_the_deny_message(monkeypatch):
-    monkeypatch.setattr(approval, "_human_decision", lambda *a, **k: pytest.fail("human must not be asked"))
+@pytest.mark.parametrize(("choice", "approved", "outcome"), [
+    ("once", True, None),
+    ("deny", False, "denied"),
+    ("timeout", False, "timeout"),
+])
+def test_reviewer_deny_reaches_human_and_final_choice_controls_result(
+    monkeypatch, choice, approved, outcome,
+):
+    monkeypatch.setattr(approval, "_presence", lambda cb=None: (cb, True, False, False))
+    seen = {}
+
+    def _approve(command, description, **kwargs):
+        seen.update(command=command, description=description, **kwargs)
+        return choice
+
     _verdict_with_note(monkeypatch, "deny", "Pipes the key to a remote host.")
-    result = request_tool_approval("vault_secret", "why", rule_key="k", display="cmd", review=True)
-    assert "Reviewer: Pipes the key to a remote host." in result["message"]
+    result = request_tool_approval(
+        "vault_secret", "why", rule_key="k", display="cmd", review=True,
+        approval_callback=_approve,
+    )
+
+    assert seen["command"] == "cmd"
+    assert seen["description"] == (
+        "why\n**Reviewer:** flagged as dangerous: Pipes the key to a remote host."
+    )
+    assert seen["allow_permanent"] is False
+    assert seen["smart_denied"] is True
+    assert result["approved"] is approved
+    assert result.get("outcome") == outcome
+    if choice == "deny":
+        assert "**Reviewer:** flagged as dangerous: Pipes the key to a remote host." in result["message"]
 
 
 def test_a_stale_reason_does_not_leak_into_the_next_prompt(monkeypatch):
