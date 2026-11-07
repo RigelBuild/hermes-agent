@@ -107,19 +107,15 @@ def _is_hermes_gateway_run_argv(command: Sequence[str]) -> bool:
 
 
 def _child_launchd_label_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Env vars that carry this wrapper's launchd identity to the grandchild.
+    """Carry this wrapper's Hermes launchd label to the gateway grandchild.
 
-    launchd stamps ``XPC_SERVICE_NAME=<job label>`` only on this wrapper (its direct child; an
-    interactive shell has none, the grandchild sees ``XPC_SERVICE_NAME=0``). Re-exporting the
-    label lets the gateway resolve its job without it (the stop-drain cap reading the live
-    ``ExitTimeOut``, the exit-75 restart route, the control-socket supervisor declaration — all
-    via ``gateway.restart.launchd_job_label``). Only ``ai.hermes.*`` labels are exported;
-    app-coalition labels are meaningless as a job identity.
+    Same predicate as ``gateway.restart.launchd_job_label``, kept inline so the wrapper stays
+    stdlib-only: ``ai.hermes*`` or Home Manager ``org.nix-community.home.hermes*``.
     """
     env = os.environ if environ is None else environ
     for variable in ("XPC_SERVICE_NAME", _LAUNCHD_LABEL_ENV):
         label = str(env.get(variable, "") or "").strip()
-        if label.startswith("ai.hermes"):
+        if label.startswith(("ai.hermes", "org.nix-community.home.hermes")):
             return {_LAUNCHD_LABEL_ENV: label}
     return {}
 
