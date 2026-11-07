@@ -1136,11 +1136,19 @@ class SessionStore(
             entry = self._entry_locked(session_key)
             return dict(entry.model_override) if entry and entry.model_override else None
 
-    def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
-        """Force reset a session, creating a new session ID."""
+    def reset_session(
+        self, session_key: str, display_name: Optional[str] = None, *,
+        expected_session_id: Optional[str] = None,
+    ) -> Optional[SessionEntry]:
+        """Force reset a session, creating a new session ID.
+
+        When ``expected_session_id`` is set, return ``None`` without mutation if the route no longer
+        points to that session.
+        """
         with self._lock:
             old_entry = self._entry_locked(session_key)
-            if old_entry is None:
+            if (old_entry is None or
+                    (expected_session_id is not None and old_entry.session_id != expected_session_id)):
                 return None
             now = _now()
             session_id = _new_session_id(now)
