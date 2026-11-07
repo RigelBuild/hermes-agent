@@ -72,6 +72,25 @@ def test_context_skips_process_notification_to_find_latest_human_message():
 
     assert quoted_message == message
 
+def test_context_skips_unflagged_late_lsp_note_to_find_latest_human_message():
+    ask = "Please inspect the project files."
+    messages = [
+        {"role": "user", "content": ask},
+        {"role": "assistant", "content": "I will inspect them."},
+        {
+            "role": "user",
+            "content": (
+                "[System note: the language server reported problems in files you edited this turn, after "
+                "those tool results had returned. Fix them if they are real, then give your final answer.]\n\n"
+                "agent/lsp/example.py: unresolved import"
+            ),
+        },
+    ]
+
+    _, _, quoted_message = _context_and_message(_review_prompt(ask, messages=messages))
+
+    assert quoted_message == ask
+
 
 def test_context_uses_newest_steer_row_after_original_ask():
     ask = "Please inspect the project files."
@@ -211,6 +230,49 @@ def test_context_skips_verification_nudge_built_by_producer(tmp_path, monkeypatc
     _, _, quoted_message = _context_and_message(_review_prompt(ask, messages=messages))
 
     assert quoted_message == ask
+
+
+def test_context_skips_kanban_stop_nudge_built_by_producer(monkeypatch):
+    from agent.kanban_stop import build_kanban_stop_nudge
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-smart-approval")
+    ask = "Please update the application."
+    nudge = build_kanban_stop_nudge(messages=[{"role": "user", "content": ask}])
+    assert nudge is not None
+
+    messages = [
+        {"role": "user", "content": ask},
+        {"role": "assistant", "content": "I will make the change."},
+        {"role": "user", "content": nudge, "_kanban_stop_synthetic": True},
+    ]
+    _, _, quoted_message = _context_and_message(_review_prompt(ask, messages=messages))
+
+    assert quoted_message == ask
+
+
+def test_context_projects_live_ask_from_newest_compaction_carrier():
+    from agent.context_compressor import (
+        COMPRESSED_SUMMARY_HAS_USER_TURN_KEY,
+        COMPRESSED_SUMMARY_METADATA_KEY,
+        HISTORICAL_TASK_HEADING,
+        SUMMARY_PREFIX,
+        _SUMMARY_END_MARKER,
+    )
+
+    carrier = {
+        "role": "user",
+        "content": (
+            f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\n"
+            "User asked: 'finish the already-done refactor'\n\n"
+            f"{_SUMMARY_END_MARKER}\n\nREAL ASK"
+        ),
+        COMPRESSED_SUMMARY_METADATA_KEY: True,
+        COMPRESSED_SUMMARY_HAS_USER_TURN_KEY: True,
+    }
+
+    _, _, quoted_message = _context_and_message(_review_prompt("REAL ASK", messages=[carrier]))
+
+    assert quoted_message == "REAL ASK"
 
 
 def test_context_keeps_steer_text_after_500_characters():

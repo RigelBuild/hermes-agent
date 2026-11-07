@@ -121,8 +121,17 @@ def _smart_session_context() -> str:
         current_user = next(
             (
                 view for message in reversed(messages)
-                if _is_real_user_message(message)
-                and (view := split_user_originated_turn(message)[1]) is not None
+                if isinstance(message, dict)
+                if not any(
+                    isinstance(key, str)
+                    and key.startswith("_")
+                    and key.endswith("_synthetic")
+                    and value
+                    for key, value in message.items()
+                )
+                if (view := split_user_originated_turn(message)[1]) is not None
+                if not flatten_message_text(view.get("content")).lstrip().startswith("[System")
+                if _is_real_user_message(view)
             ),
             None,
         )
