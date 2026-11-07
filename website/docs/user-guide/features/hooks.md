@@ -573,6 +573,10 @@ return {"action": "approve", "message": "Why approval is required", "rule_key": 
 
 Precedence is `block` > `approve` > no directive, regardless of registration order: any plugin's valid `block` wins over an earlier plugin's `approve`, and among `approve` directives the first valid one wins (Python plugins are registered first, then shell hooks). `block` requires a non-empty `message` and short-circuits the tool with that text as the error returned to the model. `approve` escalates the call to the existing human-approval gate; `message` and `rule_key` are optional, and denial, timeout, or gate error fails closed. Other return values are ignored, so existing observer-only callbacks keep working unchanged.
 
+An approval directive may set `review: True` to run the smart reviewer first. Its APPROVE and
+ESCALATE results still go to you for a decision. A DENY shows the reviewer's reason as a warning
+and also asks you; your approval allows this call once, while your denial or a timeout blocks it.
+
 **Return value — rewrite the tool's arguments:**
 
 ```python

@@ -814,12 +814,14 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
-                    is_ask: bool, smart: bool = False, pending_body=None,
-                    plugin_origin: bool = False) -> dict:
-    """Ask a human and turn the answer into a gate result."""
+                    is_ask: bool, smart: bool = False, smart_denied: bool = False,
+                    pending_body=None, plugin_origin: bool = False) -> dict:
+    """Ask a human and turn the answer into a gate result.
+
+    A smart-DENY owner override reduces every surface to once/deny and persists nothing.
+    """
     from agent.redact import redact_sensitive_text
 
-    smart_denied = False
     if smart:
         _gate_note.text = ""
         result, smart_denied = _smart_gate(spec, command, description, pattern_key, pattern_keys,
@@ -1016,9 +1018,9 @@ def _run_approval_gate(
     never runs ungated.
     Unattended deny text is ``ctx.block_message(subject, noun, advice)`` unless the caller passes
     an explicit ``*_deny_message`` (the file-tool write gates word their own).
-    ``review_first``: run the smart reviewer as a gate BEFORE the human, whatever
-    ``approvals.mode`` is. A DENY blocks without asking; any other verdict still asks the human,
-    with the verdict appended to the reason, so the reviewer can never approve on its own.
+    ``review_first``: run the smart reviewer before the human, whatever ``approvals.mode`` is.
+    Every verdict asks the human; a reviewer DENY is a one-operation owner override, so the
+    reviewer can never approve or block the request on its own.
     """
     plugin_origin = approval_context.is_plugin_origin_turn()
     session_key = get_current_session_key()
@@ -1070,17 +1072,17 @@ def _run_approval_gate(
         note = pop_review_note()
         if verdict == "deny":
             _record_denial(session_key)
-            why = f" Reviewer: {note}" if note else ""
-            return _blocked(
-                f"BLOCKED by the approval reviewer before reaching the user: {description}.{why} "
-                f"Do NOT retry.{_denial_breaker_addendum(session_key)}",
-                pattern_key=pattern_key, description=description)
+            reviewer_denied = True
+        else:
+            reviewer_denied = False
         description = f"{description}\n{_review_line(verdict, note)}"
+    else:
+        reviewer_denied = False
     return _human_decision(
         _ACTION_GATE, command=display_target, description=description, pattern_key=pattern_key,
         pattern_keys=[pattern_key], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
-        plugin_origin=plugin_origin,
+        plugin_origin=plugin_origin, smart_denied=reviewer_denied,
     )
 
 
