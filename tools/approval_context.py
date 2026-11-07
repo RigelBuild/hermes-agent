@@ -113,6 +113,15 @@ def is_viewer_turn_with_approver() -> bool:
         return any("session:approve" in member.capabilities for member in live.subscribers.values())
 
 
+def is_plugin_origin_turn() -> bool:
+    """True while the executing turn runs an allowed plugin's injected row (``plugin_origin_turn``)."""
+    try:
+        from gateway.session_ingress import plugin_origin_turn
+    except ImportError:  # install without the gateway package: no admission is executing
+        return False
+    return plugin_origin_turn.get()
+
+
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
     """Bind the active approval session key to the current context."""
     return _approval_session_key.set(session_key or "")

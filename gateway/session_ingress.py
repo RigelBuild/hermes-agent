@@ -1,5 +1,6 @@
 """Trusted messaging admission and the existing TurnRunner invocation boundary."""
 import asyncio
+import json
 import logging
 from contextvars import ContextVar
 from contextlib import nullcontext
@@ -21,6 +22,8 @@ busy_acceptance = ContextVar('busy_acceptance', default=None)
 # commit task, which command barriers and /restart wait on): ``busy_acceptance`` may already resolve
 # once the input's FIFO position is fixed behind an earlier input of its chat still capturing.
 busy_commit = ContextVar('busy_commit', default=None)
+# True while an allowed plugin's injected row executes: narrows toolsets and forces approval cards.
+plugin_origin_turn: ContextVar[bool] = ContextVar('plugin_origin_turn', default=False)
 # ``_validate_native`` clauses about the message's own content, safe to name to the sender's chat.
 _CONTENT_CLAUSES = frozenset({
     'text', 'auto_skill', 'channel_prompt', 'channel_context', 'reply_expected',
@@ -209,6 +212,9 @@ def row_turn_author(policy, row):
     """Who wrote the admitted input, for memory attribution only: the producer's stamp when it
     left one, else the forwarded peer bound into the session policy; never grants anything."""
     payload = row['payload']
+    descriptor = payload.get('plugin_origin_v1')
+    if isinstance(descriptor, dict) and isinstance(descriptor.get('plugin_id'), str):
+        return {'id': f"plugin:{descriptor['plugin_id']}", 'is_bot': True}
     for key in ('local_automation_v1', 'api_turn_v1', 'cli_turn_v1'):
         author = (payload.get(key) or {}).get('turn_author')
         if author is not None:
@@ -222,20 +228,51 @@ async def execute_admission(authority, ref, row):
     noted = await note_if_unviewed(authority, ref, row)  # #134889 LC-7: no viewer, no turn
     if noted is not None:
         return noted
+    plugin_origin = 'plugin_origin_v1' in row['payload']
+    if plugin_origin:
+        from gateway.plugin_origin_session import PluginOriginRefused, check
+        source = authority.sessions[ref.session_id].source
+        try:
+            await check(authority, ref, row, source=source,
+                        adapter=authority.runner._adapter_for_source(source))
+        except PluginOriginRefused as exc:
+            logger.warning('Plugin-origin admission %s refused at execution: %s',
+                           row.get('admission_id'), exc.reason)
+            raise RuntimeStoreError('permission_denied') from exc
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if policy is not None and policy.source == 'cron':
         from gateway.session_cron import execute
         return await execute(authority, ref, row, policy)
     local_policy = policy
+    from gateway.plugin_origin_session import narrowed
+    plugin_turn = narrowed(authority, row)
     from gateway.session_managed_worker import managed_policy, execute_managed
     policy = managed_policy(authority, ref)
     if policy is not None:
+        if plugin_turn:
+            from hermes_cli.toolset_validation import saved_toolset_resolver
+            config = policy.config()
+            resolver = saved_toolset_resolver(config)
+            from hermes_cli.tools_config import _get_platform_tools
+            toolsets = tuple(sorted(_get_platform_tools(config, 'cotal')))
+            if any(not resolver(name) for name in toolsets):
+                raise RuntimeStoreError('permission_denied')
+            config.setdefault('platform_toolsets', {})['cli'] = list(toolsets)
+            policy = replace(policy, toolsets=toolsets, config_json=json.dumps(config))
+            token = plugin_origin_turn.set(True)
+            try:
+                return await execute_managed(authority, ref, row, policy, plugin_origin=True)
+            finally:
+                plugin_origin_turn.reset(token)
         return await execute_managed(authority, ref, row, policy)
     live = authority.sessions[ref.session_id]
     native = row['admission_id'] in authority.native_waiters
     authority.native_waiters.discard(row['admission_id'])
-    if 'native_text_v1' in row['payload']:
+    if 'plugin_origin_v1' in row['payload']:
+        from gateway.plugin_origin_session import restore
+        event = restore(authority, ref, row)
+    elif 'native_text_v1' in row['payload']:
         event = restore_native(row['payload'], authority.runner)
     else:
         from gateway.session_ingress_media import restore_attachments
@@ -271,6 +308,10 @@ async def execute_admission(authority, ref, row):
     result_token = execution_result.set(captured)
     token = executing_admission.set(True)
     # This drain, not the handler's unwind, releases the turn's crash marker (see below).
+    plugin_token = None
+    from gateway.plugin_origin_session import narrowed
+    if narrowed(authority, row):
+        plugin_token = plugin_origin_turn.set(True)
     event._turn_marker_handoff = True
     handed = False
     try:
@@ -327,6 +368,8 @@ async def execute_admission(authority, ref, row):
         api_execution.reset(api_token)
         admission_author.reset(author_token)
         viewer_turn.reset(viewer_token)
+        if plugin_token is not None:
+            plugin_origin_turn.reset(plugin_token)
 
 
 async def _execution_scope(authority, home):

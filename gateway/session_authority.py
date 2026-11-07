@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from functools import partial
@@ -587,31 +588,56 @@ class SessionAuthority:
             try:
                 if counts[sid] != 1:
                     raise RuntimeStoreError('admission_conflict')
+                refused = []
                 rows = list_session_admissions(self.db, session_id=sid, pending_only=False)
                 native = [row for row in rows if 'native_text_v1' in row['payload']]
-                if not native:
-                    raise RuntimeStoreError('not_found')
-                target = self.physical_target(SessionRef(self.profile_id, sid))
-                source, route = await check_native_route(self.runner, native[-1]['payload'], target,
-                                                    available_source, adapter)
+                ref = SessionRef(self.profile_id, sid)
+                target = self.physical_target(ref)
+                if native:
+                    source, route = await check_native_route(self.runner, native[-1]['payload'], target,
+                                                             available_source, adapter)
+                else:
+                    queued = [row for row in rows if row['status'] == 'queued']
+                    queued_origins = [row for row in queued if 'plugin_origin_v1' in row['payload']]
+                    if not queued_origins or len(queued_origins) != len(queued):
+                        raise RuntimeStoreError('not_found')
+                    # check() below pins every queued descriptor's route and target before binding.
+                    source = available_source
+                    route = queued_origins[0]['payload']['plugin_origin_v1']['route']
+                    if adapter is None or self.runner._adapter_for_source(source) is not adapter:
+                        raise RuntimeStoreError('admission_conflict')
                 for row in rows:
                     if row['status'] != 'queued':
                         continue
                     if 'native_text_v1' in row['payload']:
                         await check_native_route(self.runner, row['payload'], target, available_source, adapter)
+                    elif 'plugin_origin_v1' in row['payload']:
+                        from gateway.plugin_origin_session import PluginOriginRefused, check
+                        try:
+                            await check(self, ref, row, source=source, adapter=adapter)
+                        except PluginOriginRefused:
+                            refused.append(row['admission_id'])
+                        continue
                     elif 'local_automation_v1' in row['payload']:
                         from gateway.session_automation import check_local_automation
-                        check_local_automation(
-                            self, SessionRef(self.profile_id, sid), row, route=route)
+                        check_local_automation(self, ref, row, route=route)
                     else:
                         from gateway.session_operator import check_local_input
-                        check_local_input(
-                            self, SessionRef(self.profile_id, sid), row, source=source)
+                        check_local_input(self, ref, row, source=source)
                 self._require_admission_open()
                 self.sessions.setdefault(sid, LiveSession(source, route))
                 if any(row['status'] == 'unknown' for row in rows):
                     raise RuntimeStoreError('unknown_execution')
-                self._schedule(SessionRef(self.profile_id, sid))
+                if refused:
+                    from functools import partial
+                    from gateway.session_runtime_workers import tracked_write
+                    from hermes_state_runtime import cancel_session_input
+                    for admission_id in refused:
+                        cancelled = await tracked_write(self, partial(
+                            cancel_session_input, self.db, epoch=self.epoch, admission_id=admission_id))
+                        if (cancelled['status'], cancelled['outcome']) == ('terminal', 'cancelled'):
+                            self._settle_cancelled(ref, admission_id)
+                self._schedule(ref)
                 results[sid] = 'ready'
             except RuntimeStoreError as exc:
                 results[sid] = exc.reason
@@ -1000,8 +1026,6 @@ class SessionAuthority:
                         if service is None:
                             raise RuntimeStoreError('permission_denied')
                         await asyncio.to_thread(service.check_admission, ref, first)
-                    # Cancellation may advance the FIFO while the source owner is awaited;
-                    # the successor must earn its own reauthorization, not inherit this one.
                     current = get_session_admission(self.db, admission_id=first['admission_id'])
                     if current is None or current['status'] != 'queued':
                         return False, first
@@ -1011,46 +1035,49 @@ class SessionAuthority:
                 else:
                     from gateway.session_operator import check_local_input
                     check_local_input(self, ref, first)
-                # Editor MCP schema drift re-freezes here, at this admission's start (a turn boundary),
-                # once the head is authorized: a refused head spawns no server and commits no change.
+            if first is not None and live.source.platform == Platform.API_SERVER:
+                from gateway.session_api_turn import check_api_turn
+                check_api_turn(self, ref, first['payload'])
+            if first is not None and live.source.platform == Platform.LOCAL:
                 from gateway.session_local_mcp import refreeze_editor_mcp
                 await refreeze_editor_mcp(self, ref, live)
-                # The first real turn reopens a finalized row (#85303): mounts are reads, and
-                # SessionStore would route a stamped row as stale onto a FRESH session. A write: off-loop,
-                # tracked so retirement and the shutdown close gate count it.
                 from gateway.session_local_recovery import reopen_local_session
                 from gateway.session_runtime_workers import tracked_write
                 from gateway.session_completion_notes import noted_completion
-                if not noted_completion(first):  # a note leaves a closed row closed (session_completion_notes)
+                if not noted_completion(first):
                     await tracked_write(self, partial(reopen_local_session, self, ref))
             if first is not None and 'native_text_v1' in first['payload']:
                 from gateway.session_envelope import check_native_route
                 await check_native_route(self.runner, first['payload'], self.physical_target(ref), live.source,
-                                   self.runner._adapter_for_source(live.source))
-                # Cancellation may advance FIFO while the connector is awaited.
-                # Never let the successor inherit this row's fresh verdict.
+                                         self.runner._adapter_for_source(live.source))
                 current = get_session_admission(self.db, admission_id=first['admission_id'])
                 if current is None or current['status'] != 'queued':
                     return False, first
-            if first is not None and live.source.platform == Platform.API_SERVER:
-                from gateway.session_api_turn import check_api_turn
-                check_api_turn(self, ref, first['payload'])
+            if (first is not None and live.source.platform not in (Platform.LOCAL, Platform.API_SERVER)
+                    and ({key for key in first['payload'] if key.endswith('_v1')} - {
+                        'attachments_v1', 'api_turn_v1', 'cli_turn_v1', 'display_v1', 'local_automation_v1',
+                        'local_operator_v1', 'native_text_v1', 'plugin_origin_v1', 'surface_v1'})):
+                raise RuntimeStoreError('permission_denied')
+            if first is not None and 'plugin_origin_v1' in first['payload']:
+                from gateway.plugin_origin_session import PluginOriginRefused, check
+                try:
+                    await check(self, ref, first, source=live.source,
+                                adapter=self.runner._adapter_for_source(live.source))
+                except PluginOriginRefused:
+                    return 'refused', first
+                current = get_session_admission(self.db, admission_id=first['admission_id'])
+                if current is None or current['status'] != 'queued':
+                    return False, first
             if first is not None and self._classic_turn_holds(live.route):
-                # A classic turn (fallback wake, CLI handoff, legacy resume) holds the route's slot:
-                # a claim now would hand this row to its busy path and settle it unrun. The head
-                # waits queued, as main's pending slot did; /stop and /new still cancel it.
+                # A classic turn holds the route's slot; leave its queued head untouched.
                 return 'classic_busy', first
             self._require_admission_open()
             from gateway.session_runtime_workers import tracked_write
-            live.rescan = False  # a _schedule from here on may not be visible to this claim's read
-            # The row these checks validated, never whichever is first when the write runs: a
-            # cancellation commits from a worker thread and can advance the FIFO at any point.
+            live.rescan = False
             row = await tracked_write(self, partial(claim_session_input, self.db, epoch=self.epoch,
                                                     session_id=ref.session_id, _guard=self._admission_gate(),
                                                     head=first['admission_id'] if first is not None else None),
                                       then=partial(self._stamp_claim, ref, live))
-            # Input scheduled while this claim's transaction ran may postdate its read: re-read
-            # instead of letting the drain exit idle over a committed admission.
             return (False if row is None and live.rescan else row), first
 
     def _stamp_claim(self, ref, live, row):
@@ -1102,7 +1129,9 @@ class SessionAuthority:
                 await asyncio.sleep(backoff)
                 continue
             backoff = 0.0
-            if row != 'classic_busy':
+            if row not in ('classic_busy', 'refused'):
+                return row, first
+            if row == 'refused':
                 return row, first
             if self._drain_stopping(ref, live):
                 return None
@@ -1134,6 +1163,7 @@ class SessionAuthority:
 
     async def _drain(self, ref):
         from gateway.session_managed_worker import ManagedExecutionUnknown
+        from gateway.session_runtime_workers import tracked_write
         live = self.sessions[ref.session_id]
         while True:
             claimed = await self._claim_with_retry(ref, live)
@@ -1147,6 +1177,14 @@ class SessionAuthority:
                 # pause episode, so its notice is not repeated for every message queued behind it.
                 self._pause(ref, 'session_busy')
                 return
+            if row == 'refused':
+                from hermes_state_runtime import cancel_session_input
+                cancelled = await tracked_write(self, partial(
+                    cancel_session_input, self.db, epoch=self.epoch,
+                    admission_id=first['admission_id']))
+                if (cancelled['status'], cancelled['outcome']) == ('terminal', 'cancelled'):
+                    self._settle_cancelled(ref, first['admission_id'])
+                continue
             # The FIFO is moving again (or empty): the next pause is a new episode.
             live.pause_notified = False
             if row is None:
@@ -1164,7 +1202,11 @@ class SessionAuthority:
                 return
             admission_id = row['admission_id']
             try:
-                response, outcome = await self._execute_claimed(ref, live, row)
+                from gateway.session_ingress import plugin_origin_turn
+                row_context = contextvars.Context()
+                row_context.run(plugin_origin_turn.set, 'plugin_origin_v1' in row['payload'])
+                task = asyncio.create_task(self._execute_claimed(ref, live, row), context=row_context)
+                response, outcome = await task
             except BaseException as exc:
                 # No settlement follows (a lost managed worker, a cancelled drain): the turn is never
                 # replayed, so its deferred reset is dropped (the next turn re-detects the overflow),

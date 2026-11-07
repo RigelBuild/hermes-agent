@@ -24,6 +24,20 @@ def _clear_approval_state():
     approval_module.clear_session("session-b")
 
 
+def test_approval_bypass_is_disabled_for_plugin_origin_turn(monkeypatch):
+    from gateway.session_ingress import plugin_origin_turn
+
+    monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "off")
+    token = plugin_origin_turn.set(True)
+    try:
+        assert approval_module.is_approval_bypass_active() is False
+    finally:
+        plugin_origin_turn.reset(token)
+
+    assert approval_module.is_approval_bypass_active() is True
+
+
 class TestYoloMode:
     """When HERMES_YOLO_MODE is set, all dangerous commands are auto-approved."""
 

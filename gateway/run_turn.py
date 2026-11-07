@@ -461,15 +461,20 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         validated through the SAME ``_get_platform_tools`` path (unknown / platform-restricted
         toolsets dropped, not trusted)."""
         from hermes_cli.tools_config import _get_platform_tools
-        try:
-            adapter = self._delivery_adapter_for(source)
-            override = adapter.toolsets_for_source(source) if adapter is not None else None
-        except Exception:
-            override = None
-        if override and isinstance(override, list):
-            pts = dict(user_config.get("platform_toolsets") or {})
-            pts[platform_key] = [str(x) for x in override]
-            user_config = {**user_config, "platform_toolsets": pts}
+        from gateway.session_ingress import plugin_origin_turn
+        if plugin_origin_turn.get():
+            platform_key = "cotal"
+            adapter = None
+        else:
+            try:
+                adapter = self._delivery_adapter_for(source)
+                override = adapter.toolsets_for_source(source) if adapter is not None else None
+            except Exception:
+                override = None
+            if override and isinstance(override, list):
+                pts = dict(user_config.get("platform_toolsets") or {})
+                pts[platform_key] = [str(x) for x in override]
+                user_config = {**user_config, "platform_toolsets": pts}
         return sorted(_get_platform_tools(user_config, platform_key))
 
     def _resolve_turn_toolsets(self, user_config: dict, source: SessionSource, platform_key: str):
@@ -1015,7 +1020,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         user_config = policy.config(active_authority(self), secrets=False) if policy else _load_gateway_config()
         platform_key = policy.platform if policy else _platform_config_key(source.platform)
         enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
-        if policy:
+        from gateway.session_ingress import plugin_origin_turn
+        # A plugin-origin turn keeps the cotal set; the session's own toolsets never widen it.
+        if policy and not plugin_origin_turn.get():
             enabled_toolsets = list(policy.current_toolsets(user_config))
         adapter = self._delivery_adapter_for(source)
         # Tool preview length (0 = no limit) and friendly tool labels (default on), per-platform.

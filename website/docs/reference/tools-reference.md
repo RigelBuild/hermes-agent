@@ -360,11 +360,11 @@ The single `video_generate` tool covers both modalities — pass `image_url` to 
 
 ## `discord` toolset
 
-Registered on the `hermes-discord` platform toolset. Cron jobs can opt in to the core `discord` toolset in `platform_toolsets.cron`; there it is limited to `list_forum_posts`, `create_forum_post`, `post_message`, and `fetch_messages` inside `discord.post_channels`, and refuses everything when that list is unset. `discord_admin` stays Discord-only. Uses the same bot token as the messaging adapter.
+Registered on the `hermes-discord` platform toolset. Cron jobs can opt in to core `discord` via `platform_toolsets.cron`; there it is limited to `list_forum_posts`, `create_forum_post`, `post_message`, and `fetch_messages` inside `discord.post_channels`. Cotal sessions may opt in via `platform_toolsets.cotal`; peer-mesh turns and plugin-origin turns allow writes only to listed channels or their threads and reads only from non-DM channels in guilds reached from those entries. An unset list or any unresolved entry refuses all reads and searches. `discord_admin` stays Discord-only. Uses the same bot token as the messaging adapter.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `discord` | Read and participate in a Discord server. Actions include `search_members`, `fetch_messages`, `list_forum_posts`, `create_forum_post`, and `post_message` (find-or-create a dated forum post and add messages; `discord.post_channels` limits where they post). Forum listing is capped at 10 archived pages; `has_more` indicates when results may be incomplete or cut by `limit`. | `DISCORD_BOT_TOKEN` |
+| `discord` | Read and participate in a Discord server. Actions include `search_members`, `fetch_messages`, `list_forum_posts`, `create_thread`, `create_forum_post`, and `post_message`. Cotal mesh/plugin-origin turns restrict writes to `discord.post_channels` (thread writes may target a thread under a listed parent), reads to non-DM channels in those entries' guilds, and `search_members` to those guilds. Forum listing is capped at 10 archived pages; `has_more` indicates when results may be incomplete or cut by `limit`. | `DISCORD_BOT_TOKEN` |
 
 ## `discord_admin` toolset
 

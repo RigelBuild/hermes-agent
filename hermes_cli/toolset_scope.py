@@ -3,10 +3,9 @@
 from typing import Set
 
 
-# Toolsets without a restriction entry are available on every platform. ``discord`` also runs in
-# cron so scheduled jobs can post into a forum; its posting actions stay limited to
-# ``discord.post_channels``. ``discord_admin`` (pins, roles, server listing) stays Discord-only.
-_TOOLSET_PLATFORM_RESTRICTIONS = {"discord": {"discord", "cron"}, "discord_admin": {"discord"}}
+# Toolsets without a restriction entry are available on every platform. Core discord permits cron and cotal;
+# cotal calls are mesh-scoped, and discord_admin stays Discord-only.
+_TOOLSET_PLATFORM_RESTRICTIONS = {"discord": {"discord", "cron", "cotal"}, "discord_admin": {"discord"}}
 
 
 def toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
