@@ -25,13 +25,14 @@ class _Message:
         self.embeds = kwargs.get("embeds", [])
         self.guild = channel.guild
         self.edits = []
-
+        self.edit_kwargs = []
     async def create_thread(self, *, name, **kwargs):
         return await self.channel.create_thread(name=name, **kwargs)
 
     async def edit(self, *, content=None, **kwargs):
         self.content = content
         self.edits.append(content)
+        self.edit_kwargs.append(kwargs)
 
 
 class _Channel:
@@ -92,7 +93,7 @@ class _Client:
         return self.channels[int(channel_id)]
 
 
-def _adapter(home, *, channel_id="900", client=None, forum=False):
+def _adapter(home, *, channel_id="900", client=None, forum=False, extra=None):
     home.mkdir(parents=True, exist_ok=True)
     import os
     os.environ["HERMES_HOME"] = str(home)
@@ -100,7 +101,7 @@ def _adapter(home, *, channel_id="900", client=None, forum=False):
     prompt_channel = client.channel("555")
     index_channel = client.channel(channel_id, channel_type=15 if forum else 0) if channel_id else None
     adapter = DiscordAdapter(PlatformConfig(
-        enabled=True, token="***", extra={"approval_index_channel": channel_id or ""},
+        enabled=True, token="***", extra={"approval_index_channel": channel_id or "", **(extra or {})},
     ))
     adapter._client = client
     return adapter, client, prompt_channel, index_channel
@@ -173,12 +174,18 @@ async def test_stalled_settlement_edit_does_not_delay_approval_wait(tmp_path, mo
 
 
 def _line_messages(index_channel):
+    statuses = ("🟡 pending ·", "✅ approved", "❌ denied", "⌛ timed out", "⛔ cancelled")
     return [message for thread in index_channel.threads for message in thread.messages.values()
-            if message.content.startswith(("🟡 pending", "✅ approved", "❌ denied", "⌛ timed out", "⛔ cancelled"))]
+            if any(status in message.content for status in statuses)]
 
 
 @pytest.mark.asyncio
-async def test_approval_prompt_posts_a_line_with_the_sent_messages_jump_url(tmp_path):
+async def test_approval_prompt_posts_a_line_with_the_sent_messages_jump_url(tmp_path, monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    fixed_now = datetime(2026, 11, 5, 23, 30, tzinfo=ZoneInfo("America/New_York"))
+    monkeypatch.setattr("hermes_time.now", lambda: fixed_now)
     adapter, _client, prompt_channel, index_channel = _adapter(tmp_path / "home")
 
     result = await _send_prompt(adapter)
@@ -190,11 +197,18 @@ async def test_approval_prompt_posts_a_line_with_the_sent_messages_jump_url(tmp_
     assert line.content == (
         f"🟡 pending · make release · https://discord.com/channels/777/{prompt_channel.id}/{prompt.id}"
     )
-    assert index_channel.threads[0].name == f"Approvals {dt.date.today().isoformat()}"
-
+    assert index_channel.threads[0].name == "Thu Nov 5"
+    assert json.loads((tmp_path / "home" / "gateway" / "discord_approval_index.json").read_text()) == {
+        fixed_now.date().isoformat(): str(index_channel.threads[0].id)
+    }
 
 @pytest.mark.asyncio
-async def test_approval_index_reuses_its_daily_thread_and_persisted_thread(tmp_path):
+async def test_approval_index_reuses_its_daily_thread_and_persisted_thread(tmp_path, monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    local_now = datetime(2026, 11, 5, 23, 30, tzinfo=ZoneInfo("America/New_York"))
+    monkeypatch.setattr("hermes_time.now", lambda: local_now)
     home = tmp_path / "home"
     adapter, client, _prompt_channel, index_channel = _adapter(home)
 
@@ -206,9 +220,10 @@ async def test_approval_index_reuses_its_daily_thread_and_persisted_thread(tmp_p
     assert len(index_channel.threads) == 1
     state_path = home / "gateway" / "discord_approval_index.json"
     persisted = json.loads(state_path.read_text())
-    date_key = dt.date.today().isoformat()
+    date_key = local_now.date().isoformat()
     thread_id = str(index_channel.threads[0].id)
     assert persisted == {date_key: thread_id}
+    assert index_channel.threads[0].name == "Thu Nov 5"
 
     restarted, _same_client, _prompt_channel, _index_channel = _adapter(home, client=client)
     third = await _send_prompt(restarted, "approval-3", "git status")
@@ -329,11 +344,13 @@ async def test_interrupt_after_committed_choice_settles_index_as_cancelled(tmp_p
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("config_yaml,expected_channel", [
-    ("discord:\n  enabled: true\n  approval_index_channel: 901\n", "901"),
-    ("platforms:\n  discord:\n    enabled: true\n    extra:\n      approval_index_channel: 902\n", "902"),
+@pytest.mark.parametrize("config_yaml,expected_channel,expected_target", [
+    ("discord:\n  enabled: true\n  approval_index_channel: 901\n  approval_mentions_target: index\n", "901", "index"),
+    ("platforms:\n  discord:\n    enabled: true\n    extra:\n      approval_index_channel: 902\n      approval_mentions_target: index\n", "902", "index"),
 ])
-async def test_approval_index_channel_config_enables_adapter(tmp_path, monkeypatch, config_yaml, expected_channel):
+async def test_approval_index_channel_config_enables_adapter(
+    tmp_path, monkeypatch, config_yaml, expected_channel, expected_target,
+):
     from gateway.config import Platform, load_gateway_config
     from hermes_cli.plugins import discover_plugins
 
@@ -347,6 +364,7 @@ async def test_approval_index_channel_config_enables_adapter(tmp_path, monkeypat
     adapter = DiscordAdapter(config.platforms[Platform.DISCORD])
 
     assert config.platforms[Platform.DISCORD].extra["approval_index_channel"] == expected_channel
+    assert config.platforms[Platform.DISCORD].extra["approval_mentions_target"] == expected_target
     assert adapter._approval_index._channel_id == expected_channel
 
 
@@ -359,8 +377,11 @@ async def test_approval_index_creates_a_forum_post_for_the_day(tmp_path):
 
     assert result.success is True
     assert len(forum.threads) == 1
-    assert forum.threads[0].name == f"Approvals {dt.date.today().isoformat()}"
-    assert forum.threads[0].sent[0][0] == f"Approvals {dt.date.today().isoformat()}"
+    from hermes_time import now, safe_strftime
+    today = now().date()
+    title = f"{safe_strftime(today, '%a %b')} {today.day}"
+    assert forum.threads[0].name == title
+    assert forum.threads[0].sent[0][0] == title
     assert _line_messages(forum)[0].content.startswith("🟡 pending · make release · ")
 
 
@@ -700,19 +721,84 @@ async def test_index_summary_uses_prompt_preview_before_normalizing(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_index_summary_is_escaped_and_mentions_are_disabled(tmp_path):
-    adapter, _client, _prompt_channel, index_channel = _adapter(tmp_path / "home")
+async def test_index_pending_line_pings_only_allowed_users_and_settle_edit_does_not_ping(tmp_path, monkeypatch):
+    from tests.gateway.conftest import _ensure_discord_mock
+    _ensure_discord_mock()
+    import discord
 
-    await _send_prompt(adapter, command="**run <@123456789012345678>**")
+    class _AllowedMentions:
+        def __init__(self, *, users=True, roles=True, everyone=True, replied_user=True):
+            self.users, self.roles, self.everyone, self.replied_user = users, roles, everyone, replied_user
+
+        @classmethod
+        def none(cls):
+            return cls(users=False, roles=False, everyone=False, replied_user=False)
+
+    monkeypatch.setattr(discord, "AllowedMentions", _AllowedMentions)
+    monkeypatch.setenv("DISCORD_APPROVAL_MENTIONS", "true")
+    adapter, _client, prompt_channel, index_channel = _adapter(
+        tmp_path / "home", extra={"approval_mentions": True, "approval_mentions_target": "index"},
+    )
+    adapter._allowed_user_ids = {"222", "111", "alice"}
+    adapter._allowed_role_ids = {"999"}
+
+    result = await _send_prompt(adapter, request_id="mention-index")
     await _wait_for_index(adapter)
 
+    assert result.success
+    assert "<@111>" not in prompt_channel.sent[0][0]
     line = _line_messages(index_channel)[0]
-    sent_kwargs = index_channel.threads[0].sent[-1][1]
-    assert "\\*\\*" in line.content
-    assert "@\u200b" in line.content
-    assert sent_kwargs["allowed_mentions"] is not None
-    assert sent_kwargs["suppress_embeds"] is True
+    pending_kwargs = index_channel.threads[0].sent[-1][1]
+    assert line.content.startswith("<@111> <@222> 🟡 pending")
+    assert pending_kwargs["allowed_mentions"].users is True
+    assert pending_kwargs["allowed_mentions"].roles is False
+    assert pending_kwargs["allowed_mentions"].everyone is False
+    assert pending_kwargs["allowed_mentions"].replied_user is False
+    await adapter._approval_index.resolve("mention-index", "once")
+    edit_kwargs = index_channel.threads[0].messages[int(line.id)].edit_kwargs[-1]
+    assert edit_kwargs["allowed_mentions"].users is False
+    assert edit_kwargs["allowed_mentions"].roles is False
+    assert edit_kwargs["allowed_mentions"].everyone is False
+    assert edit_kwargs["allowed_mentions"].replied_user is False
 
+
+@pytest.mark.asyncio
+async def test_truncated_approval_attaches_full_command(tmp_path, monkeypatch):
+    from tests.gateway.conftest import _ensure_discord_mock
+    _ensure_discord_mock()
+    import discord
+
+    import plugins.platforms.discord.adapter as discord_adapter
+    captured_file = []
+    monkeypatch.setattr(discord_adapter.discord, "File", lambda *args, **kwargs: (captured_file.append((args, kwargs)) or SimpleNamespace(filename=kwargs["filename"])))
+    adapter, _client, prompt_channel, _index_channel = _adapter(tmp_path / "home", channel_id="")
+    command = "printf 'complete command'\n" + "x" * 5000
+
+    result = await adapter.send_exec_approval(
+        chat_id="555", command=command, description="review this command", session_key="discord:555",
+    )
+
+    assert result.success
+    content, kwargs, _message = prompt_channel.sent[0]
+    assert "truncated" in content.lower()
+    assert "command.txt" in content
+    assert kwargs["files"][0].filename == "command.txt"
+    args, file_kwargs = captured_file[0]
+    assert file_kwargs["filename"] == "command.txt"
+    assert args[0].read().decode() == command
+@pytest.mark.asyncio
+async def test_untruncated_approval_has_no_command_attachment(tmp_path, monkeypatch):
+    from tests.gateway.conftest import _ensure_discord_mock
+    _ensure_discord_mock()
+    import discord
+
+    monkeypatch.setattr(discord, "File", lambda fp, filename: SimpleNamespace(fp=fp, filename=filename))
+    adapter, _client, prompt_channel, _index_channel = _adapter(tmp_path / "home", channel_id="")
+    result = await adapter.send_exec_approval(
+        chat_id="555", command="echo ok", description="short command", session_key="discord:555",
+    )
+    assert result.success
+    assert "files" not in prompt_channel.sent[0][1]
 
 @pytest.mark.asyncio
 async def test_resolve_during_failed_post_clears_temporary_state(tmp_path, monkeypatch):
