@@ -9,7 +9,6 @@ import pytest
 from agent.chat_completion_helpers import _assistant_tool_call_dict
 from run_agent import AIAgent
 
-
 def _tool_call(raw_id, n, **extra):
     return SimpleNamespace(
         id=raw_id, type="function",
@@ -134,6 +133,7 @@ def test_final_staged_batch_never_reaches_wire_all_provider_prefixed(shape, monk
     assert len(ids) == 2
     assert ids == [m["tool_call_id"] for m in wire[1:]]
     assert not any(i.startswith("chatcmpl-tool-") for i in ids), ids
+
 
 
 @pytest.mark.parametrize("api", ["responses", "chat"])
