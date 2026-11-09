@@ -92,6 +92,7 @@ gateway:
     child_row: "  - alt ajan {index}: {calls} API çağrısı · {doing}"
     active_ago: " · {seconds} sn önce aktifti"
   approve:
+    own_card: "İnceleyicinin reddettiği istekler kendi kartlarında yanıtlanmalıdır."
     no_pending: "Onaylanacak bekleyen komut yok."
     once_singular: "✅ Komut onaylandı. Ajan devam ediyor..."
     once_plural: "✅ Komutlar onaylandı ({count} komut). Ajan devam ediyor..."

@@ -1206,9 +1206,11 @@ class GatewaySlashCommandsMixin(
         count = resolve_gateway_approval(session_key, choice, resolve_all="all" in args)
         if not count:
             if any(entry.get("smart_denied") for entry in list_gateway_approvals(session_key)):
-                return "Reviewer DENY requests must be answered on their own card."
+                return t("gateway.approve.own_card")
             return t("gateway.approve.no_pending")
         confirmation_text = t(f"gateway.approve.{choice}_{'plural' if count > 1 else 'singular'}", count=count)
+        if "all" in args and any(entry.get("smart_denied") for entry in list_gateway_approvals(session_key)):
+            confirmation_text += "\n" + t("gateway.approve.own_card")
         logger.info("User approved %d dangerous command(s) via /approve (%s)", count, choice)
         return await self._deliver_approval_confirmation(event, confirmation_text, "approve")
 

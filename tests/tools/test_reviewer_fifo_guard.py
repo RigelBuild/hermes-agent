@@ -1,15 +1,4 @@
 from tools import approval
-from tools.approval_gateway_wait import _ApprovalEntry
-
-
-def test_unnamed_approval_skips_reviewer_denial(monkeypatch):
-    denied = _ApprovalEntry({"request_id": "a", "smart_denied": True})
-    ordinary = _ApprovalEntry({"request_id": "b"})
-    monkeypatch.setitem(approval._gateway_queues, "fifo-test", [denied, ordinary])
-    assert approval.resolve_gateway_approval("fifo-test", "once") == 1
-    assert ordinary.result == "once"
-    assert denied.result is None
-    assert approval.resolve_gateway_approval("fifo-test", "once") == 0
 
 
 def test_review_first_ignores_cached_approval(monkeypatch):

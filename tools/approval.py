@@ -169,11 +169,11 @@ def resolve_gateway_approval(session_key: str, choice: str,
                 targets = [entry for entry in queue if not entry.data.get("smart_denied")]
                 queue[:] = [entry for entry in queue if entry.data.get("smart_denied")]
         else:
-            target = next((entry for entry in queue
-                           if choice == "deny" or not entry.data.get("smart_denied")), None)
-            targets = [target] if target else []
-            if target:
-                queue.remove(target)
+            target = queue[0]
+            if choice != "deny" and target.data.get("smart_denied"):
+                return 0
+            targets = [target]
+            queue.pop(0)
         if not queue:
             _gateway_queues.pop(session_key, None)
         # Popping the entry and committing its outcome are ONE critical section: the waiter's
@@ -1035,8 +1035,8 @@ def _run_approval_gate(
     Unattended deny text is ``ctx.block_message(subject, noun, advice)`` unless the caller passes
     an explicit ``*_deny_message`` (the file-tool write gates word their own).
     ``review_first``: run the smart reviewer before the human, whatever ``approvals.mode`` is.
-    Every verdict asks the human; a reviewer DENY is a one-operation owner override, so the
-    reviewer can never approve or block the request on its own.
+    A reviewer DENY is a one-operation owner override and always asks the human; other verdicts
+    honour cached human grants.
     """
     plugin_origin = approval_context.is_plugin_origin_turn()
     session_key = get_current_session_key()
@@ -1091,6 +1091,8 @@ def _run_approval_gate(
             reviewer_denied = True
         else:
             reviewer_denied = False
+        if not reviewer_denied and not plugin_origin and is_approved(session_key, pattern_key):
+            return _approved()
         description = f"{description}\n{_review_line(verdict, note)}"
     else:
         reviewer_denied = False

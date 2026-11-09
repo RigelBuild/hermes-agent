@@ -4,6 +4,8 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import cli as cli_module
 from agent.i18n import t
 from cli import HermesCLI
@@ -211,7 +213,8 @@ class TestCliApprovalUi:
         assert t("cli.tui.approval_command_truncated") in rendered
 
 
-    def test_reviewer_deny_warning_is_visible_with_long_reason_and_short_terminal(self):
+    @pytest.mark.parametrize("height", [11, 12, 14])
+    def test_reviewer_deny_warning_is_visible_with_long_reason_and_short_terminal(self, height):
         cli = _make_cli_stub()
         cli._approval_state = {
             "command": "guarded action",
@@ -226,7 +229,7 @@ class TestCliApprovalUi:
         import shutil as _shutil
 
         with patch("cli.shutil.get_terminal_size",
-                   return_value=_shutil.os.terminal_size((60, 12))):
+                   return_value=_shutil.os.terminal_size((60, height))):
             fragments = cli._get_approval_display_fragments()
 
         rendered = "".join(text for _style, text in fragments)
@@ -235,7 +238,7 @@ class TestCliApprovalUi:
         assert rendered.index("flagged as dangerous") < rendered.index("guarded action")
         assert "…" in rendered
         from hermes_cli.cli_tui_mixin import _PANEL_RESERVED_BELOW
-        assert rendered.count("\n") <= 12 - _PANEL_RESERVED_BELOW
+        assert rendered.count("\n") <= height - _PANEL_RESERVED_BELOW
 
     def test_background_task_registers_thread_local_approval_callbacks(self):
         """Background /btw tasks must use the prompt_toolkit approval UI.

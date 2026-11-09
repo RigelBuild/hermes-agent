@@ -92,6 +92,7 @@ gateway:
     child_row: "  - kind {index}: {calls} API-oproepe · {doing}"
     active_ago: " · {seconds}s gelede aktief"
   approve:
+    own_card: "Versoeke wat die beoordelaar afgekeur het, moet op hul eie kaart beantwoord word."
     no_pending: "Geen hangende opdrag om goed te keur nie."
     once_singular: "✅ Opdrag goedgekeur. Die agent gaan voort..."
     once_plural: "✅ Opdragte goedgekeur ({count} opdragte). Die agent gaan voort..."

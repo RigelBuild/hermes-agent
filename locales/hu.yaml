@@ -92,6 +92,7 @@ gateway:
     child_row: "  - gyerek {index}: {calls} API-hívás · {doing}"
     active_ago: " · {seconds} mp-e volt aktív"
   approve:
+    own_card: "Az ellenőrző által elutasított kéréseket a saját kártyájukon kell megválaszolni."
     no_pending: "Nincs jóváhagyásra váró parancs."
     once_singular: "✅ Parancs jóváhagyva. Az ügynök folytatja..."
     once_plural: "✅ Parancsok jóváhagyva ({count} parancs). Az ügynök folytatja..."

@@ -88,6 +88,18 @@ def test_reviewer_approve_still_asks_the_human(monkeypatch):
     assert "passed" in seen["description"]
 
 
+@pytest.mark.parametrize("verdict, prompts", [("approve", False), ("escalate", False), ("deny", True)])
+def test_review_first_honours_cached_grant_except_deny(monkeypatch, verdict, prompts):
+    monkeypatch.setattr(approval, "is_approved", lambda *_: True)
+    seen = _capture_human(monkeypatch)
+    calls = _verdict(monkeypatch, verdict)
+    result = request_tool_approval("terminal", "why", rule_key="k", display="cmd", review=True)
+    assert calls == ["cmd"]
+    assert result["approved"] is True
+    assert bool(seen) is prompts
+    if prompts:
+        assert seen["smart_denied"] is True
+
 def test_vault_metadata_is_in_reviewer_display_and_human_prompt(monkeypatch):
 
     monkeypatch.setattr("agent.vault_backends.describe_ref", lambda item, field=None: {

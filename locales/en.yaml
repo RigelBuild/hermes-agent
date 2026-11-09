@@ -95,6 +95,7 @@ gateway:
     child_row: "  - child {index}: {calls} api calls · {doing}"
     active_ago: " · active {seconds}s ago"
   approve:
+    own_card: "Reviewer DENY requests must be answered on their own card."
     no_pending: "No pending command to approve."
     once_singular: "✅ Command approved. The agent is resuming..."
     once_plural: "✅ Commands approved ({count} commands). The agent is resuming..."

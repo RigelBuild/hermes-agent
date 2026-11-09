@@ -170,7 +170,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         _approval._gateway_queues.setdefault(session_key, []).append(entry)
 
     # Lookup and enqueue must be atomic to coalesce concurrent identical requests.
-    # Once releases followers to reprompt; reviewer DENY never shares consent.
+    # When the leader finishes, followers re-enter and prompt again. Reviewer DENY never shares consent.
     while True:
         with _approval._lock:
             leader = None

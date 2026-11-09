@@ -303,3 +303,16 @@ def test_bulk_ordinary_approval_does_not_resolve_smart_denied():
     assert not denied.event.is_set()
     assert mod.resolve_gateway_approval(SESSION_KEY, "once", request_id="deny") == 1
     assert denied.result == "once"
+
+
+def test_unbound_once_does_not_skip_smart_denied_queue_head():
+    _clear()
+    denied = wait_mod._ApprovalEntry({**APPROVAL, "smart_denied": True, "request_id": "deny"})
+    ordinary = wait_mod._ApprovalEntry({**APPROVAL, "request_id": "ordinary"})
+    with mod._lock:
+        mod._gateway_queues[SESSION_KEY] = [denied, ordinary]
+
+    assert mod.resolve_gateway_approval(SESSION_KEY, "once") == 0
+    assert not denied.event.is_set()
+    assert not ordinary.event.is_set()
+    assert mod.resolve_gateway_approval(SESSION_KEY, "deny", resolve_all=True) == 2

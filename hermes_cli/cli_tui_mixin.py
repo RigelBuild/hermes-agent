@@ -240,8 +240,9 @@ class CLITuiMixin:
         # Compact warning panels place the title in the border.
         use_compact_chrome = 5 + len(cmd_wrapped) + len(choice_wrapped) + len(warning_wrapped) > available
         inline_title = use_compact_chrome and bool(warning_wrapped)
-        chrome_rows = 2 + (0 if inline_title else 1) + (0 if use_compact_chrome else 2)
-        warning_budget = max(0, available - chrome_rows - len(choice_wrapped) - 1)
+        omit_bottom_border = bool(warning_wrapped) and 2 + len(choice_wrapped) + 2 > available
+        chrome_rows = 2 - int(omit_bottom_border) + (0 if inline_title else 1) + (0 if use_compact_chrome else 2)
+        warning_budget = max(1, available - chrome_rows - len(choice_wrapped) - 1)
         if len(warning_wrapped) > warning_budget:
             warning_wrapped = warning_wrapped[:warning_budget]
             if warning_wrapped:
@@ -286,7 +287,7 @@ class CLITuiMixin:
                 panel.blank()
             for wrapped in desc_wrapped:
                 panel.row('class:approval-desc', wrapped)
-        return panel.close()
+        return panel.lines if omit_bottom_border else panel.close()
 
     def _get_tui_prompt_symbols(self) -> tuple[str, str]:
         """Return ``(normal_prompt, state_suffix)`` for the active skin.
