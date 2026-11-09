@@ -2939,6 +2939,7 @@ def _record_fire_ownership_lost(
     if fire_owner is not None and heartbeat_fire_claim(job_id, expected_owner=fire_owner):
         mark_job_run(
             job_id, False, _OWNERSHIP_LOST_INTERRUPTED, expected_fire_owner=fire_owner,
+            shutdown_interrupted=True,
             **({"ladder_rung": True} if is_retry_run(job) else {}),
         )
         finish_execution(execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED)

@@ -68,11 +68,30 @@ def completed_occurrence(job, instant):
 # expired) was never claimed, so it is restored ONCE as the due instant and then flows through
 # the ordinary late / fast-forward / ``cron.catch_up_missed`` policy — never N replays.
 
-def pending_slot_stamp(next_run, now):
-    """Store value for a recurring occurrence about to be handed to the dispatcher."""
+def pending_slot_stamp(next_run, now, replay=None):
+    """Store value for a recurring occurrence about to be handed to the dispatcher.
+
+    ``replay`` marks an interrupted run kept as pending work (RIG-8084); it is stored only when set."""
     from cron.jobs import _machine_id
 
-    return {"scheduled_at": next_run, "at": now.isoformat(), "by": _machine_id()}
+    stamp = {"scheduled_at": next_run, "at": now.isoformat(), "by": _machine_id()}
+    if replay is not None:
+        stamp["replay"] = replay
+    return stamp
+
+
+def slot_replay(job):
+    """The replay marker of a pending slot, or None."""
+    pending = job.get("pending_slot")
+    replay = pending.get("replay") if isinstance(pending, dict) else None
+    return replay if isinstance(replay, dict) else None
+
+
+def claim_replay(job):
+    """The replay marker of a live fire claim, or None."""
+    claim = job.get("fire_claim")
+    replay = claim.get("replay") if isinstance(claim, dict) else None
+    return replay if isinstance(replay, dict) else None
 
 
 def unclaimed_pending_slot(job, now):
