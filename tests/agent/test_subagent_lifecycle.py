@@ -285,6 +285,41 @@ def test_routing_delegation_provider_bundle(routing_lifecycle):
     assert build.call_args.kwargs["model"] == "request-model"
 
 
+
+def test_lifecycle_launch_without_tier_remains_exempt_when_tiers_configured(routing_lifecycle):
+    service, build, config, resolve = routing_lifecycle
+    config.return_value = {
+        "provider": "openrouter", "model": "delegated-model",
+        "base_url": "https://delegation.example/v1",
+        "tiers": {"hard": {"provider": "openrouter", "model": "tier-model"}},
+    }
+
+    handle = service.launch(SubagentLaunchRequest(goal="route"))
+
+    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    assert build.call_args.kwargs["model"] == "delegated-model"
+    assert build.call_args.kwargs["routing_cfg"]["model"] == "delegated-model"
+    resolve.assert_called_once_with(requested="openrouter", target_model="delegated-model")
+
+
+def test_lifecycle_launch_resolves_explicit_tier(routing_lifecycle):
+    service, build, config, resolve = routing_lifecycle
+    config.return_value = {
+        "provider": "nous", "model": "delegated-model",
+        "base_url": "https://delegation.example/v1", "api_key": "delegation-fixture-key",
+        "api_mode": "anthropic_messages",
+        "tiers": {"hard": {"provider": "openrouter", "model": "tier-model"}},
+    }
+
+    handle = service.launch(SubagentLaunchRequest(goal="route"), tier="hard")
+
+    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    routing_cfg = build.call_args.kwargs["routing_cfg"]
+    assert build.call_args.kwargs["model"] == "tier-model"
+    assert routing_cfg["provider"] == "openrouter"
+    assert routing_cfg["model"] == "tier-model"
+    assert not {"base_url", "api_key", "api_mode"} & routing_cfg.keys()
+    resolve.assert_called_once_with(requested="openrouter", target_model="tier-model")
 @pytest.mark.parametrize("wire", [False, True])
 def test_routing_request_provider_wins_without_mixing_bundles(routing_lifecycle, wire):
     from hermes_cli.plugin_host_wire import decode, encode

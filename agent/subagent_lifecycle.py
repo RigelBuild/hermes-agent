@@ -274,7 +274,7 @@ class SubagentLifecycleService:
     def __init__(self, parent_agent_resolver: Callable[[], Any]) -> None:
         self._parent_agent_resolver = parent_agent_resolver
 
-    def launch(self, request: SubagentLaunchRequest | Mapping[str, Any]) -> SubagentHandle:
+    def launch(self, request: SubagentLaunchRequest | Mapping[str, Any], *, tier: Optional[str] = None) -> SubagentHandle:
         parent = self._parent_agent_resolver()
         if parent is None:
             raise SubagentLifecycleError("No active Hermes parent session is available.")
@@ -290,12 +290,20 @@ class SubagentLifecycleService:
                 raise SubagentLifecycleError("Duplicate correlation_id for this parent session.")
         # Lazy: delegate construction stays internal, plugins never import private delegation helpers.
         from tools.delegate_tool import (
-            _build_child_preserving_parent_tools, _credential_overrides, _load_config, _resolve_delegation_credentials,
-            DEFAULT_MAX_ITERATIONS,
+            _build_child_preserving_parent_tools, _credential_overrides, _load_config,
+            _resolve_delegation_credentials, _resolve_delegation_tier_routing_config, DEFAULT_MAX_ITERATIONS,
         )
-        # Routing precedence: request.provider > delegation config > parent.
-        routing_cfg = {"provider": request.provider, "model": request.model or ""} if request.provider is not None else _load_config()
+        config = _load_config()
+        routing_cfg = config
         try:
+            routing_cfg = _resolve_delegation_tier_routing_config(
+                routing_cfg, tier, tier_configs=config.get("tiers"), enforce_tier=tier is not None,
+            )
+            if request.provider is not None:
+                requested_model = request.model or (routing_cfg.get("model") if tier is not None else "") or ""
+                routing_cfg = {"provider": request.provider, "model": requested_model}
+            elif tier is not None and request.model is not None:
+                routing_cfg = {**routing_cfg, "model": request.model}
             creds = _resolve_delegation_credentials(routing_cfg, parent)
         except ValueError as exc:
             raise SubagentLifecycleError(str(exc)) from exc

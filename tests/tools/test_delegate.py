@@ -1555,6 +1555,7 @@ class TestDispatchDelegateTask(unittest.TestCase):
         self.assertNotIn("acp_args", captured)
         self.assertEqual(captured["goal"], "test")
         self.assertNotIn("acp_command", captured["tasks"][0])
+        self.assertNotIn("acp_args", captured["tasks"][0])
 
     def test_tier_is_forwarded_to_delegate_task(self):
         import run_agent
@@ -1573,6 +1574,7 @@ class TestDispatchDelegateTask(unittest.TestCase):
             )
 
         self.assertEqual(captured["tier"], "hard")
+        self.assertTrue(captured["enforce_tier"])
 
 
 

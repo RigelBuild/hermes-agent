@@ -657,10 +657,10 @@ error.
 
 ## Configuration
 
-To select a child model per delegation call, configure `delegation.tiers`. Each tier accepts the
+To select a child model per model-facing delegation call, configure `delegation.tiers`. Each tier accepts the
 same model-routing keys as `delegation` (`model`, `provider`, `base_url`, `api_key`, and optional
-`api_mode`). When this map is present, every `delegate_task` call must name one tier. One tier applies
-to every task in a batch.
+`api_mode`). When this map is present, every model-facing `delegate_task` call must name one tier.
+Control actions such as `action: list` ignore the tier, and one tier applies to every task in a batch.
 
 ```yaml
 delegation:

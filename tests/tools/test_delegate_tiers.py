@@ -1,6 +1,7 @@
 """Per-call delegation model tiers."""
 
 import json
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -29,22 +30,69 @@ def _config(*, tiers=True):
         "api_key": "fixture-key",
     }
     if tiers:
-        config["tiers"] = {tier: {"model": model} for tier, model in TIER_MODELS.items()}
+        config["tiers"] = {
+            tier: {
+                "model": model,
+                "base_url": "https://tiers.example/v1",
+                "api_key": "fixture-key",
+            }
+            for tier, model in TIER_MODELS.items()
+        }
     return config
 
 
-def _dispatch(args, config, monkeypatch, tmp_path):
+def _dispatch(args, config, monkeypatch, tmp_path, *, resolve_credentials=None):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     child = MagicMock()
+    resolver_patch = (
+        patch.object(delegate_tool, "_resolve_delegation_credentials", side_effect=resolve_credentials)
+        if resolve_credentials is not None else nullcontext()
+    )
     with (
         patch.object(delegate_tool, "_load_config", return_value=config),
         patch.object(delegate_tool, "_resolve_workspace_hint", return_value=str(tmp_path)),
         patch.object(delegate_tool, "_model_background_value", return_value=False),
         patch.object(delegate_tool, "_run_batch", return_value='{"ok": true}'),
         patch("run_agent.AIAgent", return_value=child) as agent_class,
+        resolver_patch,
     ):
         result = json.loads(registry.dispatch("delegate_task", args, parent_agent=_parent()))
     return result, agent_class
+
+
+def test_non_mapping_tiers_config_is_rejected(monkeypatch, tmp_path):
+    result, agent_class = _dispatch(
+        {"goal": "Inspect fixture", "tier": "easy"},
+        {**_config(), "tiers": ["easy"]}, monkeypatch, tmp_path,
+    )
+
+    assert "error" in result
+    assert "expected a mapping" in result["error"]
+    agent_class.assert_not_called()
+
+
+def test_tier_provider_does_not_inherit_base_endpoint(monkeypatch, tmp_path):
+    config = _config()
+    config["tiers"]["hard"] = {"model": "openrouter/model", "provider": "openrouter"}
+    resolved = {}
+
+    def resolve_credentials(routing_cfg, _parent):
+        resolved.update(routing_cfg)
+        return {"model": "openrouter/model", "provider": "openrouter", "base_url": None,
+                "api_key": "fixture-key", "api_mode": None, "request_overrides": None,
+                "command": None, "args": None}
+
+    _dispatch(
+        {"goal": "Inspect fixture", "tier": "hard"}, config, monkeypatch, tmp_path,
+        resolve_credentials=resolve_credentials,
+    )
+
+    assert resolved["model"] == "openrouter/model"
+    assert resolved["provider"] == "openrouter"
+    assert not {"base_url", "api_key", "api_mode"} & resolved.keys()
+    assert "fixture/default" not in resolved.values()
+
+
 
 
 @pytest.mark.parametrize("tier", [None, "unknown"])

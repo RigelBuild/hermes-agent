@@ -14,7 +14,8 @@ The facade also works when a plugin runs under `plugins.isolation: host`.
 
 Requests accept `goal`, `context`, `role`, `model`, `provider`, `allowed_toolsets`,
 `blocked_tools`, `working_directory`, `parent_session_id`, `correlation_id`,
-`metadata`, and `timeout_seconds`, subject to the restrictions below.
+`metadata`, and `timeout_seconds`, subject to the restrictions below. `launch()`
+also accepts an optional keyword-only `tier`.
 
 ```python
 from agent.subagent_lifecycle import SubagentLaunchRequest
@@ -72,8 +73,6 @@ timeouts are explicitly rejected until Hermes can
 support them without weakening isolation. Use `allowed_toolsets` to narrow a
 child; Hermes's existing unsafe-tool block remains enforced.
 
-## Routing
-
 Children follow the `delegation` config (`provider`, `model`, `base_url`,
 `api_key`, `api_mode`, `request_overrides`) exactly as `delegate_task` children do.
 The request's `model` overrides the configured model. Its optional `provider`
@@ -82,3 +81,9 @@ delegation config > parent; the selected provider supplies its own credential
 bundle. An unresolvable provider raises `SubagentLifecycleError` before launch.
 Core does not expose `provider` to the model: the plugin chooses it, for example
 from operator config.
+
+When `delegation.tiers` is configured, model-facing `delegate_task` calls must
+name a tier. Plugin lifecycle launches remain exempt unless they pass
+`tier="easy"`, `tier="medium"`, or `tier="hard"` to `launch()`. A supplied
+tier selects its own model-routing bundle instead of inheriting the base
+delegation model, provider, endpoint, key, or API mode.

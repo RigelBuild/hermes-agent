@@ -417,6 +417,35 @@ def _credential_overrides(creds: dict[str, Any], routing_cfg: dict[str, Any]) ->
     }
 
 
+_TIER_ROUTE_KEYS = frozenset({"model", "provider", "base_url", "api_key", "api_mode"})
+_DELEGATION_TIERS = ("easy", "medium", "hard")
+
+
+def _resolve_delegation_tier_routing_config(
+    routing_cfg: dict[str, Any], tier: Optional[str], *, tier_configs: Any, enforce_tier: bool = False,
+) -> dict[str, Any]:
+    """Resolve one configured tier while keeping its route independent of the base delegation route."""
+    if tier_configs is None:
+        return routing_cfg
+    if tier is None and not enforce_tier:
+        return {key: value for key, value in routing_cfg.items() if key != "tiers"}
+    if not isinstance(tier_configs, dict):
+        raise ValueError("Invalid delegation.tiers config: expected a mapping for easy, medium, and hard.")
+    if tier not in _DELEGATION_TIERS:
+        raise ValueError(
+            "A delegation tier is required when delegation.tiers is configured. "
+            f"Allowed tiers: {', '.join(_DELEGATION_TIERS)}."
+        )
+    tier_cfg = tier_configs.get(tier)
+    if not isinstance(tier_cfg, dict):
+        raise ValueError(
+            f"Missing or invalid delegation.tiers.{tier} config; provide a model spec for this tier."
+        )
+    resolved_cfg = {key: value for key, value in routing_cfg.items() if key not in _TIER_ROUTE_KEYS | {"tiers"}}
+    resolved_cfg.update(tier_cfg)
+    return resolved_cfg
+
+
 def _build_children(
     task_list: list[dict[str, Any]], task_schemas: list[Optional[dict[str, Any]]], creds: dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: dict[str, Any],
@@ -490,7 +519,7 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[dict[str, Any]] = None, images: Optional[list[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
-    credentials_cfg: Optional[dict[str, Any]] = None, tier: Optional[str] = None,
+    credentials_cfg: Optional[dict[str, Any]] = None, tier: Optional[str] = None, enforce_tier: bool = False,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -505,23 +534,15 @@ def delegate_task(
     if normalized_action and normalized_action != "spawn":
         return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
 
-    configured_tiers = cfg.get("tiers") if credentials_cfg is None else None
-    tier_cfg = None
-    if configured_tiers is not None:
-        if not isinstance(configured_tiers, dict):
-            return tool_error("Invalid delegation.tiers config: expected a mapping for easy, medium, and hard.")
-        allowed_tiers = ("easy", "medium", "hard")
-        if tier not in allowed_tiers:
-            return tool_error(
-                f"A delegation tier is required when delegation.tiers is configured. "
-                f"Allowed tiers: {', '.join(allowed_tiers)}."
-            )
-        tier_cfg = configured_tiers.get(tier)
-        if not isinstance(tier_cfg, dict):
-            return tool_error(
-                f"Missing or invalid delegation.tiers.{tier} config; provide a model spec for this tier."
-            )
-
+    try:
+        routing_cfg = _resolve_delegation_tier_routing_config(
+            credentials_cfg if credentials_cfg is not None else cfg,
+            tier,
+            tier_configs=cfg.get("tiers"),
+            enforce_tier=enforce_tier,
+        )
+    except ValueError as exc:
+        return tool_error(str(exc))
     # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
     if is_spawn_paused():
         return tool_error(
@@ -534,6 +555,15 @@ def delegate_task(
     # that joins on every child and re-enters as a single consolidated message.
     background = is_truthy_value(background, default=False) if background is not None else False
 
+    default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+    # Caller-supplied max_iterations is ignored: the config value is authoritative
+    # so budgets stay predictable (kwarg kept for internal callers/tests).
+    if max_iterations is not None and max_iterations != default_max_iter:
+        logger.debug(
+            "delegate_task: ignoring caller-supplied max_iterations=%s; using delegation.max_iterations=%s from config",
+            max_iterations, default_max_iter,
+        )
+
     depth = getattr(parent_agent, "_delegate_depth", 0)
     max_spawn = _get_max_spawn_depth()
     if depth >= max_spawn:
@@ -543,21 +573,9 @@ def delegate_task(
             f"multiplies API cost)."
         )
 
-    # Config is loaded above so tier enforcement also applies to control calls.
-    default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
-    # Caller-supplied max_iterations is ignored: the config value is authoritative
-    # so budgets stay predictable (kwarg kept for internal callers/tests).
-    if max_iterations is not None and max_iterations != default_max_iter:
-        logger.debug(
-            "delegate_task: ignoring caller-supplied max_iterations=%s; using delegation.max_iterations=%s from config",
-            max_iterations, default_max_iter,
-        )
     # credentials_cfg (internal callers only, e.g. /review → auxiliary.review) is
     # a per-call routing owner shaped like the delegation config section. Keep
     # the route and its fallback policy together through child construction.
-    routing_cfg = credentials_cfg if credentials_cfg is not None else cfg
-    if tier_cfg is not None:
-        routing_cfg = {**routing_cfg, **tier_cfg}
     try:
         creds = _resolve_delegation_credentials(routing_cfg, parent_agent)
     except ValueError as exc:
@@ -831,7 +849,7 @@ registry.register(
     schema=DELEGATE_TASK_SCHEMA,
     handler=lambda args, **kw: delegate_task(
         goal=args.get("goal"), context=args.get("context"), tasks=_strip_model_hidden_task_fields(args.get("tasks")),
-        max_iterations=args.get("max_iterations"), role=args.get("role"), tier=args.get("tier"),
+        max_iterations=args.get("max_iterations"), role=args.get("role"), tier=args.get("tier"), enforce_tier=True,
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
         parent_agent=kw.get("parent_agent"),

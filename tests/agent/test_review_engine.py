@@ -244,6 +244,37 @@ def test_start_review_dispatches_background_and_completes(monkeypatch):
     assert evt is not None and evt["type"] == "async_delegation"
     assert evt["results"][0]["summary"] == "REVIEW: looks good"
 
+
+
+def test_start_review_is_exempt_from_configured_delegation_tiers(monkeypatch):
+    import tools.delegate_tool as dt
+
+    captured = {}
+
+    def fake_resolve(config, _parent):
+        captured["routing_cfg"] = config
+        return {
+            "model": "parent-model", "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "request_overrides": None,
+            "command": None, "args": None,
+        }
+
+    monkeypatch.setattr(dt, "_load_config", lambda: {
+        "model": "delegation-model",
+        "tiers": {tier: {"model": f"tier-{tier}"} for tier in ("easy", "medium", "hard")},
+    })
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", fake_resolve)
+    monkeypatch.setattr(dt, "_build_child_preserving_parent_tools", lambda **_kwargs: MagicMock(_delegate_role="leaf"))
+    monkeypatch.setattr(dt, "_run_batch", lambda _batch, _background: '{"status": "dispatched"}')
+    monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
+
+    parent = _fake_parent()
+    parent._delegate_depth = 0
+    result = start_review(parent, [{"role": "user", "content": "review"}], "")
+
+    assert result["status"] == "dispatched"
+    assert "tiers" not in captured["routing_cfg"]
+    assert captured["routing_cfg"]["model"] == "delegation-model"
 def test_start_review_rejects_empty_conversation():
     with pytest.raises(ValueError, match="empty"):
         start_review(_fake_parent(), [], "")
