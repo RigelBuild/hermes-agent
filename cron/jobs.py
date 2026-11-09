@@ -2545,6 +2545,11 @@ def skip_unknown_occurrence(
     def apply(jobs, _i, job):
         completed = job.get("canonical_completions")
         if isinstance(completed, list) and execution_id in completed:
+            if isinstance(pause_recorded, dict) and job.get("state") == "paused" \
+                    and (job.get("paused_at"), job.get("paused_reason")) \
+                    == (pause_recorded.get("paused_at"), pause_recorded.get("reason")):
+                job.update(enabled=True, state="scheduled", paused_at=None, paused_reason=None)
+                save_jobs(jobs)
             return True
         now = _hermes_now().isoformat()
         detail = f"Skipped unknown shutdown occurrence: {error}"
