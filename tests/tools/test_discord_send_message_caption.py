@@ -13,6 +13,8 @@ import tempfile
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from plugins.platforms.discord.adapter import _remember_channel_is_forum, _standalone_send
 
 
@@ -66,8 +68,8 @@ def _tmpfile(suffix):
     return f.name
 
 
-def _payload_json_content(form_data):
-    """Extract the 'content' from a FormData's payload_json field, if any."""
+def _payload_json(form_data):
+    """Extract Discord's multipart payload_json object, if present."""
     for field in getattr(form_data, "_fields", []):
         # aiohttp FormData stores (type_options_dict, headers, value)
         try:
@@ -76,8 +78,50 @@ def _payload_json_content(form_data):
         except (IndexError, TypeError):
             continue
         if type_opts.get("name") == "payload_json":
-            return json.loads(value).get("content")
+            return json.loads(value)
     return None
+
+
+def _payload_json_content(form_data):
+    """Extract the message content from a JSON or multipart POST payload."""
+    payload = _payload_json(form_data) or {}
+    return payload.get("message", payload).get("content")
+
+
+@pytest.mark.parametrize(
+    ("message", "caption"),
+    [
+        ("", "Health check-in: Sun Nov 8\nmore"),
+        ("Health check-in: Sun Nov 8\nmore", ""),
+    ],
+)
+def test_forum_thread_name_uses_caption_or_message(message, caption):
+    chat_id = "999000333"
+    _remember_channel_is_forum(chat_id, True)
+    img = _tmpfile(".png")
+    try:
+        session_ctx, calls = _session_with(
+            [_resp(200, {"id": "thread-1", "message": {"id": "starter-1"}})]
+        )
+        with patch("aiohttp.ClientSession", return_value=session_ctx):
+            result = asyncio.run(
+                _standalone_send(
+                    _pconfig(),
+                    chat_id,
+                    message,
+                    media_files=[(img, False)],
+                    caption=caption or None,
+                )
+            )
+        assert result["success"] is True
+        assert len(calls) == 1
+        url, _json, data = calls[0]
+        assert url.endswith("/threads")
+        payload = _payload_json(data)
+        assert payload["name"] == "Health check-in: Sun Nov 8"
+        assert payload["message"]["content"] == (caption or message)
+    finally:
+        os.unlink(img)
 
 
 def test_caption_rides_media_non_forum():
