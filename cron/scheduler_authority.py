@@ -216,6 +216,57 @@ def reconcile_pending(*, allow_connect=True):
                     if current is None:
                         journal.unlink(missing_ok=True)
                         continue
+                    skipped_execution = current.get('canonical_completions') or []
+                    skip_detail = record.get('skip_detail')
+                    already_booked = (
+                        isinstance(skipped_execution, list)
+                        and params['request_id'] in skipped_execution
+                        and current.get('last_status') != 'skipped')
+                    if already_booked:
+                        # A shutdown replay was interrupted a second time. Its occurrence was
+                        # already counted by mark_job_run; settle a pending skip before cleanup.
+                        if skip_detail:
+                            if row is None or row.get('status') != 'unknown':
+                                raise RuntimeError(
+                                    'Cannot retire skipped cron receipt before its unknown ledger row')
+                            from cron.executions import mark_unknown_skipped
+                            if not mark_unknown_skipped(params['request_id'], skip_detail):
+                                raise RuntimeError(
+                                    'Could not record already-booked skipped cron execution')
+                        _lift_pause(params['job_id'], record.get('pause_recorded'))
+                        journal.unlink(missing_ok=True)
+                        continue
+                    is_shutdown_skip = (
+                        current.get('shutdown_interrupted_execution') == params['request_id']
+                        or (current.get('last_status') == 'skipped'
+                            and isinstance(skipped_execution, list)
+                            and params['request_id'] in skipped_execution)
+                        or bool(skip_detail and isinstance(skipped_execution, list)
+                                and params['request_id'] in skipped_execution))
+                    if (current.get('schedule', {}).get('kind') in {'cron', 'interval'}
+                            and is_shutdown_skip):
+                        shutdown_detail = str(current.get('last_error') or error)
+                        if skip_detail:
+                            skipped_detail = skip_detail
+                        elif current.get('last_status') != 'skipped':
+                            skipped_detail = f'Skipped unknown shutdown occurrence: {shutdown_detail}'
+                            record['skip_detail'] = skipped_detail
+                            atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
+                            if not skip_unknown_occurrence(
+                                    params['job_id'], params['request_id'], shutdown_detail,
+                                    pause_recorded=record.get('pause_recorded')):
+                                raise RuntimeError('Could not book skipped unknown cron occurrence')
+                        else:
+                            skipped_detail = shutdown_detail
+                            record['skip_detail'] = skipped_detail
+                            atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
+                        from cron.executions import mark_unknown_skipped
+                        if not mark_unknown_skipped(params['request_id'], skipped_detail):
+                            raise RuntimeError('Could not record skipped unknown cron execution')
+                        record['pause_recorded'] = None
+                        record['unknown_skipped'] = True
+                        atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
+                        continue
                     if current.get('schedule', {}).get('kind') in {'cron', 'interval'}:
                         from cron.occurrences import completed_occurrence
                         scheduled_instant = (row or {}).get('scheduled_instant')
@@ -225,40 +276,6 @@ def reconcile_pending(*, allow_connect=True):
                             _lift_pause(params['job_id'], record.get('pause_recorded'))
                             journal.unlink(missing_ok=True)
                             continue
-                    skipped_execution = current.get('canonical_completions') or []
-                    already_booked = (
-                        isinstance(skipped_execution, list)
-                        and params['request_id'] in skipped_execution
-                        and current.get('last_status') != 'skipped')
-                    if already_booked:
-                        # A shutdown replay was interrupted a second time. Its occurrence was
-                        # already counted by mark_job_run; do not pause or skip it again.
-                        _lift_pause(params['job_id'], record.get('pause_recorded'))
-                        journal.unlink(missing_ok=True)
-                        continue
-                    is_shutdown_skip = (
-                        current.get('shutdown_interrupted_execution') == params['request_id']
-                        or (current.get('last_status') == 'skipped'
-                            and isinstance(skipped_execution, list)
-                            and params['request_id'] in skipped_execution))
-                    if (current.get('schedule', {}).get('kind') in {'cron', 'interval'}
-                            and is_shutdown_skip):
-                        shutdown_detail = str(current.get('last_error') or error)
-                        if current.get('last_status') != 'skipped':
-                            if not skip_unknown_occurrence(
-                                    params['job_id'], params['request_id'], shutdown_detail,
-                                    pause_recorded=record.get('pause_recorded')):
-                                raise RuntimeError('Could not book skipped unknown cron occurrence')
-                            skipped_detail = f'Skipped unknown shutdown occurrence: {shutdown_detail}'
-                        else:
-                            skipped_detail = shutdown_detail
-                        from cron.executions import mark_unknown_skipped
-                        if not mark_unknown_skipped(params['request_id'], skipped_detail):
-                            raise RuntimeError('Could not record skipped unknown cron execution')
-                        record['pause_recorded'] = None
-                        record['unknown_skipped'] = True
-                        atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
-                        continue
                     if not record.get('pause_recorded'):
                         reason = 'Canonical cron unknown; no automatic re-execution'
                         paused = pause_job(params['job_id'], reason=reason)

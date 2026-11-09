@@ -260,14 +260,74 @@ def test_completed_recurring_slot_retires_non_shutdown_unknown_receipt(
         assert executions.mark_execution_running(unknown["id"])
         _make_unknown(unknown["id"], "unknown_execution: non-shutdown outcome")
         journal = _journal(job, unknown["id"])
+        scheduler_authority.pause_for_unknown(
+            job["id"], unknown["id"], "unknown_execution: non-shutdown outcome")
 
         scheduler_authority.reconcile_pending()
-
         saved = jobs.get_job(job["id"])
         assert saved["state"] == "scheduled" and saved["enabled"] is True
+        assert saved.get("paused_reason") is None
         assert saved["next_run_at"] == expected_next
         assert saved["repeat"]["completed"] == 1
         assert notices == []
+        assert not journal.exists()
+
+
+def test_skip_detail_survives_later_success_before_receipt_recovery(
+        tmp_path, monkeypatch):
+    now = [datetime(2026, 11, 9, 8, 0, tzinfo=UTC)]
+    monkeypatch.setattr(jobs, "_hermes_now", lambda: now[0])
+    monkeypatch.setattr(executions, "_hermes_now", lambda: now[0])
+    _peer(monkeypatch)
+
+    with jobs.use_cron_store(tmp_path / "cron"):
+        job = jobs.create_job("report", "every 1h", deliver="local")
+        killed_slot = job["next_run_at"]
+        now[0] = datetime.fromisoformat(killed_slot)
+        execution = executions.create_execution(
+            job["id"], source="builtin", scheduled_instant=killed_slot)
+        claim = jobs.claim_job_for_fire(
+            job["id"], return_job=True, scheduled_at=killed_slot, execution_id=execution["id"])
+        assert executions.mark_execution_running(execution["id"])
+        shutdown_error = _SHUTDOWN_ERROR.format(phase="post-interrupt")
+        assert jobs.mark_job_run(
+            job["id"], False, shutdown_error,
+            expected_fire_owner=claim["fire_claim"]["by"], execution_id=execution["id"],
+            shutdown_interrupted=True,
+        )
+        _make_unknown(execution["id"], shutdown_error)
+        journal = _journal(job, execution["id"])
+        scheduler_authority.pause_for_unknown(
+            job["id"], execution["id"], "unknown_execution: admission was not replayed")
+        real_mark_unknown_skipped = executions.mark_unknown_skipped
+
+        def crash_before_ledger_write(execution_id, detail):
+            assert jobs.get_job(job["id"])["last_status"] == "skipped"
+            assert json.loads(journal.read_text(encoding="utf-8"))["skip_detail"] == detail
+            raise RuntimeError("simulated crash before skipped ledger update")
+
+        monkeypatch.setattr(executions, "mark_unknown_skipped", crash_before_ledger_write)
+        scheduler_authority.reconcile_pending()
+        assert executions.get_execution(execution["id"])["error"] == shutdown_error
+
+        monkeypatch.setattr(executions, "mark_unknown_skipped", real_mark_unknown_skipped)
+        now[0] += timedelta(minutes=1)
+        later = executions.create_execution(
+            job["id"], source="builtin", scheduled_instant=jobs.get_job(job["id"])["next_run_at"])
+        later_claim = jobs.claim_job_for_fire(
+            job["id"], return_job=True, execution_id=later["id"])
+        assert executions.mark_execution_running(later["id"])
+        assert jobs.mark_job_run(
+            job["id"], True, expected_fire_owner=later_claim["fire_claim"]["by"],
+            execution_id=later["id"])
+        assert executions.finish_execution(later["id"], success=True)
+        assert jobs.get_job(job["id"])["last_status"] == "ok"
+
+        scheduler_authority.reconcile_pending()
+
+        saved_execution = executions.get_execution(execution["id"])
+        assert saved_execution["status"] == "unknown"
+        assert "skipped unknown shutdown occurrence" in saved_execution["error"].lower()
         assert not journal.exists()
 
 
