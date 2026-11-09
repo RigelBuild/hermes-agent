@@ -2541,6 +2541,7 @@ def mark_job_run(
 def skip_unknown_occurrence(
     job_id: str, execution_id: str, error: str, *, pause_recorded=None,
 ) -> bool:
+    """Book a shutdown-killed unknown occurrence as skipped, without replaying its side effects."""
     def apply(jobs, _i, job):
         completed = job.get("canonical_completions")
         if isinstance(completed, list) and execution_id in completed:

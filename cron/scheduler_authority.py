@@ -220,11 +220,22 @@ def reconcile_pending(*, allow_connect=True):
                         from cron.occurrences import completed_occurrence
                         scheduled_instant = (row or {}).get('scheduled_instant')
                         if scheduled_instant and completed_occurrence(current, scheduled_instant):
-                            # A shutdown replay already booked this occurrence. Its success owns
-                            # the schedule advancement; this older unknown receipt is now stale.
+                            # A completed execution owns the schedule advancement; this unknown
+                            # receipt is stale and must not leave its recovery pause behind.
+                            _lift_pause(params['job_id'], record.get('pause_recorded'))
                             journal.unlink(missing_ok=True)
                             continue
                     skipped_execution = current.get('canonical_completions') or []
+                    already_booked = (
+                        isinstance(skipped_execution, list)
+                        and params['request_id'] in skipped_execution
+                        and current.get('last_status') != 'skipped')
+                    if already_booked:
+                        # A shutdown replay was interrupted a second time. Its occurrence was
+                        # already counted by mark_job_run; do not pause or skip it again.
+                        _lift_pause(params['job_id'], record.get('pause_recorded'))
+                        journal.unlink(missing_ok=True)
+                        continue
                     is_shutdown_skip = (
                         current.get('shutdown_interrupted_execution') == params['request_id']
                         or (current.get('last_status') == 'skipped'
