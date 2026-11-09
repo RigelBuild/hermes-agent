@@ -2491,6 +2491,8 @@ def mark_job_run(
         if owned is not None and not rung:
             clear_state(job)  # A parked rung for another occurrence is stale.
         pending = job.get("pending_slot") if owned is None else None
+        if not isinstance(pending, dict) or "replay" not in pending:
+            pending = None
         _record_run_outcome(job, success, error, delivery_error, status, now)
         if pending is not None:
             job["pending_slot"] = pending
@@ -2868,7 +2870,7 @@ def claim_job_for_fire(
         if execution_id:
             bind_row(owned)
         # Claimed: the occurrence is now owned by a run (its ledger row + fire claim carry it).
-        if owned is not None:
+        if owned is not None or not manual_fire:
             job.pop("pending_slot", None)
         if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
             nxt = compute_next_run(job["schedule"], now.isoformat())
