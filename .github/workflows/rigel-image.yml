@@ -45,7 +45,7 @@ jobs:
         env:
           REF: ${{ inputs.ref || github.ref_name }}
         run: |
-          if [[ ! "$REF" =~ ^v[0-9][^/]*-rigel\.[^/]+$ ]]; then
+          if [[ ! "$REF" =~ ^v[0-9][^/]*-rigel\.[^/]+$ || ! "$REF" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
             echo "::error::Ref must be a Rigel release tag"
             exit 1
           fi
@@ -81,19 +81,28 @@ jobs:
       - name: Reject profile exports in build context
         run: python3 scripts/ci/check_profile_archive_boundary.py
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - name: Build image for testing
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push image by digest
+        id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/${{ matrix.arch }}
-          load: true
-          tags: hermes-image:test
+          outputs: type=image,name=ghcr.io/rigelbuild/hermes-agent,push-by-digest=true,name-canonical=true,push=true
           labels: |
             org.opencontainers.image.source=https://github.com/RigelBuild/hermes-agent
             org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}
           build-args: SOURCE_DATE_EPOCH=${{ steps.commit.outputs.epoch }}
           cache-from: type=gha,scope=rigel-image-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=rigel-image-${{ matrix.arch }}
+      - name: Pull image for tests
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: docker pull "$IMAGE@$DIGEST"
       - name: Park install stamp
         run: mv install-stamp.json "$RUNNER_TEMP/install-stamp.json"
       - name: Set up test dependencies
@@ -106,42 +115,11 @@ jobs:
         run: mv "$RUNNER_TEMP/install-stamp.json" install-stamp.json
       - name: Run docker integration tests
         env:
-          HERMES_TEST_IMAGE: hermes-image:test
+          HERMES_TEST_IMAGE: ${{ env.IMAGE }}@${{ steps.push.outputs.digest }}
           OPENROUTER_API_KEY: ''
           OPENAI_API_KEY: ''
           NOUS_API_KEY: ''
         run: HERMES_TEST_WORKERS=$(nproc) scripts/run_tests.sh tests/docker/
-      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Push image by digest
-        id: push
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          platforms: linux/${{ matrix.arch }}
-          outputs: type=image,name=ghcr.io/rigelbuild/hermes-agent,push-by-digest=true,name-canonical=true,push=true
-          labels: |
-            org.opencontainers.image.source=https://github.com/RigelBuild/hermes-agent
-            org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}
-          build-args: SOURCE_DATE_EPOCH=${{ steps.commit.outputs.epoch }}
-          cache-from: type=gha,scope=rigel-image-${{ matrix.arch }}
-      - name: Verify pushed image matches tested image
-        env:
-          DIGEST: ${{ steps.push.outputs.digest }}
-          ARCH: ${{ matrix.arch }}
-        run: |
-          set -euo pipefail
-          manifest="$(docker buildx imagetools inspect "$IMAGE@$DIGEST" --raw)"
-          platform_digest="$(jq -r --arg arch "$ARCH" '.manifests[]? | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest' <<< "$manifest")"
-          if [ -n "$platform_digest" ]; then
-            manifest="$(docker buildx imagetools inspect "$IMAGE@$platform_digest" --raw)"
-          fi
-          pushed="$(jq -er '.config.digest' <<< "$manifest")"
-          tested="$(docker image inspect hermes-image:test --format '{{.Id}}')"
-          test "$pushed" = "$tested"
       - name: Save digest
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
@@ -197,6 +175,7 @@ jobs:
           set -euo pipefail
           if response="$(gh api -i "repos/$REPO/releases/tags/$REF" 2>&1)"; then
             gh release upload "$REF" image-digest.txt --clobber -R "$REPO"
+          # The tag can be pushed before its GitHub release exists.
           elif [[ "$response" == HTTP/*' 404 '* ]]; then
             echo "::warning::No GitHub release exists for $REF"
           else
