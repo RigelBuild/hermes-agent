@@ -4732,7 +4732,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             _toast("platform.telegram.approval.toast_already_resolved"))
         if not state:
             return
-        session_key, request_id = state if isinstance(state, tuple) else (state, None)
+        session_key, request_id = state
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
         # Resolve FIRST (unblocks the agent thread), render after: a tap landing after the wait timed out
         # (count == 0) must NOT claim "Approved" — the command was already denied.

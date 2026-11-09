@@ -155,7 +155,7 @@ def resolve_gateway_approval(session_key: str, choice: str,
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
-        if request_id:
+        if request_id is not None:
             targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
             if not targets:
                 return 0
