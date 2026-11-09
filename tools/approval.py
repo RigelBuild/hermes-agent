@@ -161,8 +161,13 @@ def resolve_gateway_approval(session_key: str, choice: str,
                 return 0
             queue[:] = [entry for entry in queue if entry not in targets]
         elif resolve_all:
-            targets = list(queue)
-            queue.clear()
+            if choice == "deny":
+                targets = list(queue)
+                queue.clear()
+            else:
+                # Bulk approval cannot establish consent for an individual warning.
+                targets = [entry for entry in queue if not entry.data.get("smart_denied")]
+                queue[:] = [entry for entry in queue if entry.data.get("smart_denied")]
         else:
             targets = [queue.pop(0)]
         if not queue:
@@ -171,7 +176,10 @@ def resolve_gateway_approval(session_key: str, choice: str,
         # ``_drop_entry`` reads ``entry.result`` under this same lock after its deadline check, so a
         # choice acked to the client here can never be popped-and-lost as a timeout (#112548).
         for entry in targets:
-            entry.result = choice
+            effective_choice = choice
+            if entry.data.get("smart_denied") and choice in {"session", "always"}:
+                effective_choice = "once"
+            entry.result = effective_choice
             if reason:
                 entry.reason = reason
             entry.event.set()
@@ -836,13 +844,14 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     allow_permanent = not one_shot
 
     def deny(template: str, outcome: str, **fmt) -> dict:
-        breaker = ""
-        if "{breaker}" in template:
-            breaker = _denial_breaker_addendum(session_key)
+        has_breaker = "{breaker}" in template
+        breaker = _denial_breaker_addendum(session_key) if has_breaker or smart_denied else ""
         deny_reason = fmt.pop("deny_reason", None)
         extra = {"deny_reason": deny_reason} if "reason" in fmt else {}
-        return _denied(template.format(description=description, breaker=breaker, **fmt),
-                       pattern_key=pattern_key, description=description,
+        message = template.format(description=description, breaker=breaker, **fmt)
+        if smart_denied and not has_breaker:
+            message += breaker
+        return _denied(message, pattern_key=pattern_key, description=description,
                        outcome=outcome, noun=spec.noun, **extra)
 
     def grant(choice: str) -> dict:
@@ -850,8 +859,9 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             _persist_choice(session_key, choice, pattern_keys)
         if spec.user_approved:
             return _user_approved(session_key, description)
+        if smart_denied:
+            _reset_denials(session_key)
         return _approved()
-
     if spec.transport:
         attempt = _present_with_selected_transport(
             command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,

@@ -33,12 +33,7 @@ def _cfg() -> dict:
 
 
 # ── Subagent approval callbacks ─────────────────────────────────────────────
-# Subagent worker threads don't inherit the CLI's threading.local approval
-# callback, so prompt_dangerous_approval() would fall back to input() and
-# deadlock the parent's prompt_toolkit TUI. Every worker gets a non-interactive
-# callback via ThreadPoolExecutor(initializer=...): deny by default, approve when
-# delegation.subagent_auto_approve is true. Both warn for audit. Gateway sessions
-# are unaffected (they resolve approvals via tools/approval.py's per-session queue).
+# Subagent callbacks are non-interactive: reviewer DENY must block rather than auto-approve.
 def _subagent_auto_deny(command: str, description: str, **kwargs) -> str:
     """Auto-deny (safe default): returns 'deny' so the child sees a recoverable refusal."""
     logger.warning(
@@ -48,7 +43,11 @@ def _subagent_auto_deny(command: str, description: str, **kwargs) -> str:
     return "deny"
 
 def _subagent_auto_approve(command: str, description: str, **kwargs) -> str:
-    """Auto-approve (opt-in YOLO via delegation.subagent_auto_approve): returns 'once'."""
+    """Auto-approve ordinary prompts; reviewer DENY still needs a human answer."""
+    if kwargs.get("smart_denied") or "**Reviewer:** flagged as dangerous" in description:
+        logger.warning("Subagent blocked reviewer-denied command without human approval: %s (%s)",
+                       command, description)
+        return "deny"
     logger.warning("Subagent auto-approved dangerous command: %s (%s)", command, description)
     return "once"
 

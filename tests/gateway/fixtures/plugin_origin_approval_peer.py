@@ -14,7 +14,7 @@ PLUGIN_KEYS = ("allow_gateway_injection", "allow_origin_sessions")
 CASES = {
     "review-approve": {"hook": True, "review": True, "answer": "once"},
     "review-escalate": {"hook": True, "review": True, "verdict": "escalate", "answer": "once"},
-    "review-deny": {"hook": True, "review": True, "verdict": "deny", "answer": None},
+    "review-deny": {"hook": True, "review": True, "verdict": "deny", "answer": "once"},
     "human-deny": {"hook": True, "review": True, "answer": "deny"},
     "timeout": {"hook": True, "review": True, "answer": "timeout"},
     "stale-always": {"hook": True, "review": True, "answer": "always"},
@@ -203,6 +203,8 @@ async def run_probe(peer, case_name):
                 assert set(prompt.choices) == {"once", "deny"}, prompt.choices
                 assert "wants to run" in prompt.text.lower(), prompt.text
                 assert adapter._approval_mention_content() == "<@12345>"
+                if case_name == "review-deny":
+                    assert "flagged as dangerous" in prompt.text.lower(), prompt.text
                 if answer not in {None, "timeout"}:
                     assert answer in {"once", "deny", "always"}
                     assert resolve_gateway_approval(session_key, answer) == 1

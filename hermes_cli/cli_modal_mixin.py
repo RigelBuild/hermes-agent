@@ -1091,8 +1091,8 @@ class CLIModalMixin:
         from cli import CLI_CONFIG, _DIM, _RST, _cprint
 
         with self._approval_lock:
-            timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 300))
             response_queue = queue.Queue()
+            timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 300))
             self._approval_state = {
                 "command": command,
                 "description": description,
@@ -1102,6 +1102,7 @@ class CLIModalMixin:
                     allow_session=allow_session,
                     smart_denied=smart_denied),
                 "selected": 0,
+                "smart_denied": smart_denied,
                 "response_queue": response_queue}
             self._approval_deadline = _time.monotonic() + timeout
             self._ring_bell(prompt=True, context=t("cli.approval.bell_context"), detail=command)

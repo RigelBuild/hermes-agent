@@ -199,6 +199,16 @@ class CLITuiMixin:
         wrap = _wrap_panel_text_keep_ws
         command = state["command"]
         description = state["description"]
+        reviewer_warning = None
+        if state.get("smart_denied"):
+            description_lines = description.splitlines()
+            warning_index = next((
+                i for i, line in enumerate(description_lines)
+                if line.startswith("**Reviewer:** flagged as dangerous")
+            ), None)
+            if warning_index is not None:
+                reviewer_warning = description_lines.pop(warning_index)
+                description = "\n".join(description_lines)
         choices = state["choices"]
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)
@@ -213,7 +223,7 @@ class CLITuiMixin:
         box_width = _panel_box_width(title, preview_lines)
         inner_text_width = max(8, box_width - 2)
 
-        # Pre-wrap the mandatory content — command + choices must always render.
+        # Pre-wrap mandatory content so the reviewer warning, command and choices stay visible.
         cmd_wrapped = wrap(command, inner_text_width)
         if not show_full and "view" in choices and len(cmd_wrapped) > 4:
             cmd_wrapped = cmd_wrapped[:3] + wrap(
@@ -222,37 +232,42 @@ class CLITuiMixin:
             f"{'❯' if i == selected else ' '} {_num_prefix(i)}. {_approval_choice_label(choice)}"
             for i, choice in enumerate(choices)]
         choice_wrapped = _wrap_rows(wrap, choice_labels, inner_text_width, "    ")
+        warning_wrapped = wrap(reviewer_warning, inner_text_width) if reviewer_warning else []
 
-        # Row budget so HSplit never clips the command or choices. Full chrome = top border +
-        # title + blank + blank-between-cmd/choices + bottom border (5); when that doesn't fit,
-        # drop the separator blanks (3) so every choice stays on-screen in compact terminals.
+        # Inline the title on compact reviewer-DENY panels to reserve a visible warning row.
         available = max(0, _term_rows() - _PANEL_RESERVED_BELOW)
-        use_compact_chrome = 5 + len(cmd_wrapped) + len(choice_wrapped) > available
-        chrome_rows = 3 if use_compact_chrome else 5
+        use_compact_chrome = 5 + len(cmd_wrapped) + len(choice_wrapped) + bool(warning_wrapped) > available
+        chrome_rows = (2 if warning_wrapped else 3) if use_compact_chrome else (4 if warning_wrapped else 5)
 
-        # A command too long to leave room for the choices (e.g. "view" on a multi-hundred-char
-        # command) is truncated so approve/deny still render; keep at least 1 command row.
-        max_cmd_rows = max(1, available - chrome_rows - len(choice_wrapped))
-        if len(cmd_wrapped) > max_cmd_rows:
+        # Keep the warning first, then truncate the command before dropping its row.
+        warning_budget = max(1, available - chrome_rows - len(choice_wrapped) - 1)
+        warning_wrapped = warning_wrapped[:warning_budget]
+        max_cmd_rows = available - chrome_rows - len(choice_wrapped) - len(warning_wrapped)
+        if max_cmd_rows < 1:
+            cmd_wrapped = []
+        elif len(cmd_wrapped) > max_cmd_rows:
             keep = max(1, max_cmd_rows - 1) if max_cmd_rows > 1 else 1
             cmd_wrapped = cmd_wrapped[:keep] + wrap(
                 t("cli.tui.approval_command_truncated"), inner_text_width)
 
-        # Remaining rows go to the description (minus the blank separator in full mode), capped
-        # at 10 so the panel stays compact even on huge terminals.
-        mandatory_no_desc = chrome_rows + len(cmd_wrapped) + len(choice_wrapped)
+        # Remaining rows go to the description (minus its blank separator), capped at 10.
+        mandatory_no_desc = chrome_rows + len(warning_wrapped) + len(cmd_wrapped) + len(choice_wrapped)
         available_for_desc = available - mandatory_no_desc - (0 if use_compact_chrome else 1)
         available_for_desc = max(0, min(available_for_desc, 10))
         desc_wrapped = wrap(description, inner_text_width) if description else []
         if available_for_desc < 1 or not desc_wrapped:
             desc_wrapped = []
         elif len(desc_wrapped) > available_for_desc:
-            desc_wrapped = desc_wrapped[:max(1, available_for_desc - 1)] + [t("cli.tui.approval_description_truncated")]
-
-        # Render title → command → choices → description; description last so any overflow
-        # clips the least-critical content, never the command or choices.
-        panel = _Panel('class:approval-border', box_width)
-        panel.row('class:approval-title', title)
+            desc_wrapped = desc_wrapped[:max(1, available_for_desc - 1)] + [
+                t("cli.tui.approval_description_truncated")]
+        # Render the warning before the command; compact chrome integrates the title into its border.
+        panel = _Panel('class:approval-border', box_width,
+                       title if use_compact_chrome and warning_wrapped else "",
+                       'class:approval-title')
+        if not (use_compact_chrome and warning_wrapped):
+            panel.row('class:approval-title', title)
+        for wrapped in warning_wrapped:
+            panel.row('class:approval-desc', wrapped)
         if not use_compact_chrome:
             panel.blank()
         for wrapped in cmd_wrapped:

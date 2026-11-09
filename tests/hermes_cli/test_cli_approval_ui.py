@@ -214,6 +214,28 @@ class TestCliApprovalUi:
         # Command got truncated with a marker.
         assert t("cli.tui.approval_command_truncated") in rendered
 
+
+    def test_reviewer_deny_warning_is_visible_with_long_reason_and_short_terminal(self):
+        cli = _make_cli_stub()
+        cli._approval_state = {
+            "command": "guarded action",
+            "description": "plugin reason " + ("x" * 1000)
+            + "\n**Reviewer:** flagged as dangerous: reviewer reason " + ("y" * 1000),
+            "choices": ["once", "deny"],
+            "selected": 0,
+            "smart_denied": True,
+            "response_queue": queue.Queue(),
+        }
+
+        import shutil as _shutil
+
+        with patch("cli.shutil.get_terminal_size",
+                   return_value=_shutil.os.terminal_size((60, 12))):
+            fragments = cli._get_approval_display_fragments()
+
+        rendered = "".join(text for _style, text in fragments)
+        assert "flagged as dangerous" in rendered
+
     def test_background_task_registers_thread_local_approval_callbacks(self):
         """Background /btw tasks must use the prompt_toolkit approval UI.
 

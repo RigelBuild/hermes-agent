@@ -172,13 +172,15 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     # The leader lookup and our enqueue are ONE critical section: split, two identical requests both
     # miss each other, both enqueue and the user gets duplicate prompts. A ``once`` releases the
     # followers to prompt for themselves; they re-coalesce behind whichever re-prompts first, so the
-    # user still sees one prompt at a time (the answered leader is already off the queue).
+    # user still sees one prompt at a time (the answered leader is already off the queue). Reviewer
+    # DENY requests never share consent: every one must show its own warning to the human.
     while True:
         with _approval._lock:
             leader = None
-            if not preparing_terminal_approval():
+            if not preparing_terminal_approval() and not approval_data.get("smart_denied"):
                 leader = next((e for e in _approval._gateway_queues.get(session_key, [])
-                               if e.data.get("command") == approval_data.get("command")
+                               if not e.data.get("smart_denied")
+                               and e.data.get("command") == approval_data.get("command")
                                and list(e.data.get("pattern_keys") or []) == keys), None)
             if leader is None:
                 _enqueue()
