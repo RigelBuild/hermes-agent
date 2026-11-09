@@ -203,3 +203,128 @@ def test_followers_released_by_once_share_one_fresh_prompt(monkeypatch):
             thread.join(0.05)
     assert (prompts, queued) == (2, 1)
     assert [r["choice"] for r in results] == ["once"] * 3
+
+
+def test_smart_denied_follower_gets_its_own_prompt(monkeypatch):
+    _clear()
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kwargs: None)
+    monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: APPROVAL_TIMEOUT)
+    leader_notified = threading.Event()
+    follower_notified = threading.Event()
+    results = {}
+
+    def notify_leader(data):
+        results["leader_id"] = data["request_id"]
+        leader_notified.set()
+
+    def notify_follower(data):
+        results["follower_id"] = data["request_id"]
+        follower_notified.set()
+
+    def run(name, notify, data):
+        results[name] = wait_mod._await_gateway_decision(SESSION_KEY, notify, data)
+
+    leader = threading.Thread(target=run, args=("leader", notify_leader, dict(APPROVAL)), daemon=True)
+    denied_data = {**APPROVAL, "description": "reviewer flagged the request", "smart_denied": True}
+    follower = threading.Thread(target=run, args=("follower", notify_follower, denied_data), daemon=True)
+    leader.start()
+    assert leader_notified.wait(10), "ordinary leader prompt was not sent"
+    follower.start()
+    try:
+        assert follower_notified.wait(10), "DENY follower did not send its own prompt"
+        with mod._lock:
+            pending = list(mod._gateway_queues[SESSION_KEY])
+        assert len(pending) == 2
+        assert pending[1].data["smart_denied"] is True
+
+        assert mod.resolve_gateway_approval(SESSION_KEY, "session", request_id=results["leader_id"]) == 1
+        leader.join(10)
+        assert not leader.is_alive()
+        assert results["leader"]["choice"] == "session"
+        assert follower.is_alive(), "DENY follower adopted the leader's broad approval"
+        with mod._lock:
+            (waiting_deny,) = mod._gateway_queues[SESSION_KEY]
+        assert waiting_deny.data["request_id"] == results["follower_id"]
+
+        assert mod.resolve_gateway_approval(SESSION_KEY, "once", request_id=results["follower_id"]) == 1
+        follower.join(10)
+        assert not follower.is_alive()
+        assert results["follower"]["choice"] == "once"
+    finally:
+        mod.resolve_gateway_approval(SESSION_KEY, "deny", resolve_all=True)
+        leader.join(10)
+        follower.join(10)
+
+
+def test_smart_denied_broad_gateway_reply_is_normalized_to_once(monkeypatch):
+    _clear()
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kwargs: None)
+    result = {}
+
+    def notify(data):
+        assert data["smart_denied"] is True
+        assert mod.resolve_gateway_approval(SESSION_KEY, "always", request_id=data["request_id"]) == 1
+
+    thread = threading.Thread(
+        target=lambda: result.update(wait_mod._await_gateway_decision(
+            SESSION_KEY, notify, {**APPROVAL, "smart_denied": True})),
+        daemon=True,
+    )
+    thread.start()
+    thread.join(10)
+
+    assert not thread.is_alive()
+    assert result["resolved"] is True
+    assert result["choice"] == "once"
+
+
+def test_smart_denied_bulk_approval_waits_for_bulk_deny():
+    _clear()
+    entry = wait_mod._ApprovalEntry({**APPROVAL, "smart_denied": True})
+    with mod._lock:
+        mod._gateway_queues[SESSION_KEY] = [entry]
+
+    assert mod.resolve_gateway_approval(SESSION_KEY, "session", resolve_all=True) == 0
+    assert not entry.event.is_set()
+    assert mod.resolve_gateway_approval(SESSION_KEY, "deny", resolve_all=True) == 1
+    assert entry.result == "deny"
+    assert entry.event.is_set()
+
+
+def test_bulk_ordinary_approval_does_not_resolve_smart_denied():
+    _clear()
+    ordinary = wait_mod._ApprovalEntry(dict(APPROVAL))
+    denied = wait_mod._ApprovalEntry({**APPROVAL, "smart_denied": True, "request_id": "deny"})
+    with mod._lock:
+        mod._gateway_queues[SESSION_KEY] = [ordinary, denied]
+
+    assert mod.resolve_gateway_approval(SESSION_KEY, "session", resolve_all=True) == 1
+    assert ordinary.result == "session"
+    assert not denied.event.is_set()
+    assert mod.resolve_gateway_approval(SESSION_KEY, "once", request_id="deny") == 1
+    assert denied.result == "once"
+
+
+def test_empty_request_id_does_not_resolve_queue_head():
+    _clear()
+    ordinary = wait_mod._ApprovalEntry({**APPROVAL, "request_id": "ordinary"})
+    with mod._lock:
+        mod._gateway_queues[SESSION_KEY] = [ordinary]
+
+    assert mod.resolve_gateway_approval(SESSION_KEY, "once", request_id="") == 0
+    assert mod._gateway_queues[SESSION_KEY] == [ordinary]
+    assert not ordinary.event.is_set()
+    mod._gateway_queues.pop(SESSION_KEY)
+
+
+def test_unbound_once_does_not_skip_smart_denied_queue_head():
+    _clear()
+    denied = wait_mod._ApprovalEntry({**APPROVAL, "smart_denied": True, "request_id": "deny"})
+    ordinary = wait_mod._ApprovalEntry({**APPROVAL, "request_id": "ordinary"})
+    with mod._lock:
+        mod._gateway_queues[SESSION_KEY] = [denied, ordinary]
+
+    assert mod.resolve_gateway_approval(SESSION_KEY, "once") == 0
+    assert not denied.event.is_set()
+    assert not ordinary.event.is_set()
+    assert mod.resolve_gateway_approval(SESSION_KEY, "deny", resolve_all=True) == 2

@@ -701,7 +701,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         self._max_doc_bytes: int = 2 * 1024 * 1024 * 1024 if extra.get("base_url") else 20 * 1024 * 1024
         self._model_picker_state: dict[str, dict] = {}  # per-chat interactive picker state
         self._choice_picker_state: dict[str, dict] = {}
-        self._approval_state: dict[int, str] = {}  # message_id → session_key
+        self._approval_state: dict[int, tuple[str, str]] = {}  # message_id → (session_key, request_id)
         self._slash_confirm_state: dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: dict[str, str] = {}  # clarify_id → session_key
         # "important" (default): only final responses, approvals and slash confirmations notify;
@@ -4240,7 +4240,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
                        for label, choice, _ in prompt.actions]
             return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), (
-                lambda msg: self._approval_state.__setitem__(approval_id, prompt.session_key))
+                lambda msg: self._approval_state.__setitem__(
+                    approval_id, (prompt.session_key, prompt.request_id)))
         return await self._send_prompt(
             "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
             thread_id=self._metadata_thread_id(prompt.metadata), reply_to_mode=self._reply_to_mode)
@@ -4726,11 +4727,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         except (ValueError, IndexError):
             await query.answer(text=_toast("platform.telegram.approval.toast_invalid_data"))
             return
-        session_key = await self._claim_callback_state(
+        state = await self._claim_callback_state(
             query, cb, self._approval_state, approval_id, _unauthorized(),
             _toast("platform.telegram.approval.toast_already_resolved"))
-        if not session_key:
+        if not state:
             return
+        session_key, request_id = state
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
         # Resolve FIRST (unblocks the agent thread), render after: a tap landing after the wait timed out
         # (count == 0) must NOT claim "Approved" — the command was already denied.
@@ -4739,7 +4741,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             # the approval wait timed out (count == 0) must NOT claim "Approved" — the command was already
             # denied and will not run (#63501 regression follow-up: 60s waits made stale taps common).
             from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(session_key, choice)
+            count = resolve_gateway_approval(session_key, choice, request_id=request_id) if request_id else 0
             logger.info(
                 "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
         except Exception as exc:

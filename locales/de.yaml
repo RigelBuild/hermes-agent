@@ -92,6 +92,7 @@ gateway:
     child_row: "  - Kind {index}: {calls} API-Aufrufe · {doing}"
     active_ago: " · vor {seconds}s aktiv"
   approve:
+    own_card: "Vom Prüfer abgelehnte Anfragen müssen auf ihrer eigenen Karte beantwortet werden."
     no_pending: "Kein ausstehender Befehl zum Genehmigen."
     once_singular: "✅ Befehl genehmigt. Der Agent wird fortgesetzt..."
     once_plural: "✅ Befehle genehmigt ({count} Befehle). Der Agent wird fortgesetzt..."

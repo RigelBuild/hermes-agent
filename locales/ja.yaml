@@ -92,6 +92,7 @@ gateway:
     child_row: "  - 子 {index}: API 呼び出し {calls} 回 · {doing}"
     active_ago: " · {seconds} 秒前に活動"
   approve:
+    own_card: "レビュー担当が拒否したリクエストには、それぞれのカードで回答してください。"
     no_pending: "承認待ちのコマンドはありません。"
     once_singular: "✅ コマンドを承認しました。エージェントを再開しています..."
     once_plural: "✅ コマンドを承認しました ({count} 件)。エージェントを再開しています..."

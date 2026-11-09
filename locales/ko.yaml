@@ -92,6 +92,7 @@ gateway:
     child_row: "  - 자식 {index}: API 호출 {calls}회 · {doing}"
     active_ago: " · {seconds}초 전 활동"
   approve:
+    own_card: "검토자가 거부한 요청은 해당 카드에서 응답해야 합니다."
     no_pending: "승인 대기 중인 명령이 없습니다."
     once_singular: "✅ 명령이 승인되었습니다. 에이전트가 재개됩니다..."
     once_plural: "✅ 명령이 승인되었습니다 ({count}개). 에이전트가 재개됩니다..."

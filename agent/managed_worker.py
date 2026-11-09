@@ -204,7 +204,8 @@ class WorkerControls:
                     self.finish.set()
                     return
                 if (set(frame) != {'type', 'prompt_id', 'value'} or frame['type'] not in {'approval', 'clarify'}
-                        or not isinstance(frame['prompt_id'], str) or not isinstance(frame['value'], str)
+                        or not isinstance(frame['prompt_id'], str) or not frame['prompt_id']
+                        or not isinstance(frame['value'], str)
                         or len(frame['value']) > 16384):
                     raise ValueError('invalid_managed_control')
                 if frame['type'] == 'approval':

@@ -155,23 +155,35 @@ def resolve_gateway_approval(session_key: str, choice: str,
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
-        if request_id:
+        if request_id is not None:
             targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
             if not targets:
                 return 0
             queue[:] = [entry for entry in queue if entry not in targets]
         elif resolve_all:
-            targets = list(queue)
-            queue.clear()
+            if choice == "deny":
+                targets = list(queue)
+                queue.clear()
+            else:
+                # Bulk approval cannot establish consent for an individual warning.
+                targets = [entry for entry in queue if not entry.data.get("smart_denied")]
+                queue[:] = [entry for entry in queue if entry.data.get("smart_denied")]
         else:
-            targets = [queue.pop(0)]
+            target = queue[0]
+            if choice != "deny" and target.data.get("smart_denied"):
+                return 0
+            targets = [target]
+            queue.pop(0)
         if not queue:
             _gateway_queues.pop(session_key, None)
         # Popping the entry and committing its outcome are ONE critical section: the waiter's
         # ``_drop_entry`` reads ``entry.result`` under this same lock after its deadline check, so a
         # choice acked to the client here can never be popped-and-lost as a timeout (#112548).
         for entry in targets:
-            entry.result = choice
+            effective_choice = choice
+            if entry.data.get("smart_denied") and choice in {"session", "always"}:
+                effective_choice = "once"
+            entry.result = effective_choice
             if reason:
                 entry.reason = reason
             entry.event.set()
@@ -836,13 +848,14 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     allow_permanent = not one_shot
 
     def deny(template: str, outcome: str, **fmt) -> dict:
-        breaker = ""
-        if "{breaker}" in template:
-            breaker = _denial_breaker_addendum(session_key)
+        has_breaker = "{breaker}" in template
+        breaker = _denial_breaker_addendum(session_key) if has_breaker or smart_denied else ""
         deny_reason = fmt.pop("deny_reason", None)
         extra = {"deny_reason": deny_reason} if "reason" in fmt else {}
-        return _denied(template.format(description=description, breaker=breaker, **fmt),
-                       pattern_key=pattern_key, description=description,
+        message = template.format(description=description, breaker=breaker, **fmt)
+        if smart_denied and not has_breaker:
+            message += breaker
+        return _denied(message, pattern_key=pattern_key, description=description,
                        outcome=outcome, noun=spec.noun, **extra)
 
     def grant(choice: str) -> dict:
@@ -850,6 +863,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             _persist_choice(session_key, choice, pattern_keys)
         if spec.user_approved:
             return _user_approved(session_key, description)
+        if smart_denied:
+            _reset_denials(session_key)
         return _approved()
 
     if spec.transport:
@@ -984,10 +999,11 @@ def _presence(approval_callback=None) -> tuple:
 
 
 # Reviewer verdict appended to a plugin approval's reason when the plugin asked for review first.
+REVIEWER_DENY_NOTE = "**Reviewer:** flagged as dangerous"
 _REVIEW_NOTES = {
     "approve": "**Reviewer:** passed",
     "escalate": "**Reviewer:** unsure, check it carefully",
-    "deny": "**Reviewer:** flagged as dangerous",
+    "deny": REVIEWER_DENY_NOTE,
 }
 
 
@@ -1019,14 +1035,14 @@ def _run_approval_gate(
     Unattended deny text is ``ctx.block_message(subject, noun, advice)`` unless the caller passes
     an explicit ``*_deny_message`` (the file-tool write gates word their own).
     ``review_first``: run the smart reviewer before the human, whatever ``approvals.mode`` is.
-    Every verdict asks the human; a reviewer DENY is a one-operation owner override, so the
-    reviewer can never approve or block the request on its own.
+    A reviewer DENY is a one-operation owner override and always asks the human; other verdicts
+    honour cached human grants.
     """
     plugin_origin = approval_context.is_plugin_origin_turn()
     session_key = get_current_session_key()
     if not plugin_origin and (_yolo_active() or approval_context._get_approval_mode() == "off"):
         return _approved()
-    if not plugin_origin and is_approved(session_key, pattern_key):
+    if not plugin_origin and not review_first and is_approved(session_key, pattern_key):
         return _approved()
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
     if not is_cli and not is_gateway and not is_ask:
@@ -1075,6 +1091,8 @@ def _run_approval_gate(
             reviewer_denied = True
         else:
             reviewer_denied = False
+        if not reviewer_denied and not plugin_origin and is_approved(session_key, pattern_key):
+            return _approved()
         description = f"{description}\n{_review_line(verdict, note)}"
     else:
         reviewer_denied = False

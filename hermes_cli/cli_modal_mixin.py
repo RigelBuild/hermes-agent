@@ -1102,6 +1102,7 @@ class CLIModalMixin:
                     allow_session=allow_session,
                     smart_denied=smart_denied),
                 "selected": 0,
+                "smart_denied": smart_denied,
                 "response_queue": response_queue}
             self._approval_deadline = _time.monotonic() + timeout
             self._ring_bell(prompt=True, context=t("cli.approval.bell_context"), detail=command)

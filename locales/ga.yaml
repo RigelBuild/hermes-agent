@@ -92,6 +92,7 @@ gateway:
     child_row: "  - fo-ghníomhaire {index}: {calls} glao API · {doing}"
     active_ago: " · gníomhach {seconds}s ó shin"
   approve:
+    own_card: "Ní mór iarratais a dhiúltaigh an t-athbhreithneoir a fhreagairt ar a gcárta féin."
     no_pending: "Níl aon ordú ag fanacht le ceadú."
     once_singular: "✅ Ordú ceadaithe. Tá an gníomhaire ag atosú..."
     once_plural: "✅ Orduithe ceadaithe ({count} ordú). Tá an gníomhaire ag atosú..."

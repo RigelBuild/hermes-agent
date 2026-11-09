@@ -92,6 +92,7 @@ gateway:
     child_row: "  - 子代理 {index}：{calls} 次 API 呼叫 · {doing}"
     active_ago: " · {seconds} 秒前活動"
   approve:
+    own_card: "審查者拒絕的請求必須在各自的卡片上回覆。"
     no_pending: "沒有待批准的指令。"
     once_singular: "✅ 指令已批准。代理正在恢復…"
     once_plural: "✅ 指令已批准（{count} 條指令）。代理正在恢復…"

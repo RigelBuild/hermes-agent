@@ -92,6 +92,7 @@ gateway:
     child_row: "  - filho {index}: {calls} chamadas de API · {doing}"
     active_ago: " · ativo há {seconds}s"
   approve:
+    own_card: "Os pedidos rejeitados pelo revisor devem ser respondidos no respetivo cartão."
     no_pending: "Não há nenhum comando pendente para aprovar."
     once_singular: "✅ Comando aprovado. O agente está a retomar..."
     once_plural: "✅ Comandos aprovados ({count} comandos). O agente está a retomar..."

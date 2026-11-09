@@ -28,7 +28,7 @@ class PendingControls:
                       'execution_generation': generation,
                       'command': _redact_approval_command(data.get('command', '')),
                       'description': _redact_approval_command(data.get('description', '')),
-                      'choices': choices}
+                      'choices': choices, 'smart_denied': bool(data.get('smart_denied'))}
             if 'edit' in data:
                 prompt['edit'] = deepcopy(data['edit'])
                 prompt['choices'] = ['once', 'deny']

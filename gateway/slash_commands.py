@@ -1194,7 +1194,7 @@ class GatewaySlashCommandsMixin(
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve — unblock waiting agent thread(s). They block inside tools/approval.py;
         signalling the event resumes them so the command executes inline (same flow as the CLI)."""
-        from tools.approval import resolve_gateway_approval
+        from tools.approval import list_gateway_approvals, resolve_gateway_approval
         session_key, stale = self._blocking_approval_or_stale(event, "gateway.approval_expired",
                                                               "gateway.approve.no_pending")
         if stale:
@@ -1205,8 +1205,12 @@ class GatewaySlashCommandsMixin(
         choice = "always" if "always" in choices else "session" if "session" in choices else "once"
         count = resolve_gateway_approval(session_key, choice, resolve_all="all" in args)
         if not count:
+            if any(entry.get("smart_denied") for entry in list_gateway_approvals(session_key)):
+                return t("gateway.approve.own_card")
             return t("gateway.approve.no_pending")
         confirmation_text = t(f"gateway.approve.{choice}_{'plural' if count > 1 else 'singular'}", count=count)
+        if "all" in args and any(entry.get("smart_denied") for entry in list_gateway_approvals(session_key)):
+            confirmation_text += "\n" + t("gateway.approve.own_card")
         logger.info("User approved %d dangerous command(s) via /approve (%s)", count, choice)
         return await self._deliver_approval_confirmation(event, confirmation_text, "approve")
 
