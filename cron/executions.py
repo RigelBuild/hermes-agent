@@ -712,6 +712,16 @@ def give_up_execution(execution_id: str, *, reason: str) -> bool:
     return True
 
 
+def mark_unknown_skipped(execution_id: str, detail: str) -> bool:
+    """Record that an unknown shutdown execution's scheduled slot was skipped."""
+    with _transaction() as conn:
+        cur = conn.execute(
+            "UPDATE executions SET error=? WHERE id=? AND status='unknown'",
+            (str(detail), str(execution_id)),
+        )
+        return cur.rowcount == 1
+
+
 def list_executions(
     *, job_id: Optional[str] = None, limit: int = 50, before_claimed_at: Optional[str] = None,
 ) -> list[dict[str, Any]]:

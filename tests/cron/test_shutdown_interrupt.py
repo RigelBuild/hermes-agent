@@ -75,8 +75,8 @@ class TestMarkRunningJobsInterrupted:
         profile_home = sched._get_hermes_home().resolve()
         sched._running_fire_owners.update(
             {
-                sched._inflight_key("job-1"): {object(): ("owner-1", profile_home)},
-                sched._inflight_key("job-2"): {object(): ("owner-2", profile_home)},
+                sched._inflight_key("job-1"): {object(): ("owner-1", profile_home, None)},
+                sched._inflight_key("job-2"): {object(): ("owner-2", profile_home, None)},
             }
         )
 
@@ -92,6 +92,7 @@ class TestMarkRunningJobsInterrupted:
             assert c.args[1] is False
             assert "gateway shutdown" in c.args[2]
             assert c.kwargs["expected_fire_owner"] in {"owner-1", "owner-2"}
+            assert c.kwargs.get("execution_id") is None
 
     def test_sets_interrupted_flag_for_consumption_by_run_one_job(self):
         import cron.scheduler as sched
@@ -114,8 +115,8 @@ class TestMarkRunningJobsInterrupted:
         profile_home = sched._get_hermes_home().resolve()
         sched._running_fire_owners.update(
             {
-                sched._inflight_key("job-1"): {object(): ("owner-1", profile_home)},
-                sched._inflight_key("job-2"): {object(): ("owner-2", profile_home)},
+                sched._inflight_key("job-1"): {object(): ("owner-1", profile_home, None)},
+                sched._inflight_key("job-2"): {object(): ("owner-2", profile_home, None)},
             }
         )
 
@@ -150,7 +151,7 @@ class TestMarkRunningJobsInterrupted:
 
             sched._running_job_ids.add(sched._inflight_key(created["id"]))
             sched._running_fire_owners[sched._inflight_key(created["id"])] = {
-                object(): (stale_owner, profile_home)
+                object(): (stale_owner, profile_home, None)
             }
             marked = sched.mark_running_jobs_interrupted("shutdown")
             refreshed = jobs.get_job(created["id"])
@@ -167,12 +168,13 @@ class TestRunningFireOwnerRegistry:
 
         job = {
             "id": "owned-job",
+            "execution_id": "execution-1",
             "fire_claim": {"at": "2026-07-12T12:00:00+00:00", "by": "owner-1"},
         }
 
         def _observe_registry(current_job, run):
             assert list(sched._running_fire_owners[sched._inflight_key(current_job["id"])].values()) == [
-                ("owner-1", sched._get_hermes_home().resolve())
+                ("owner-1", sched._get_hermes_home().resolve(), "execution-1")
             ]
             return True
 
@@ -194,7 +196,8 @@ class TestRunningFireOwnerRegistry:
             release.wait(timeout=2)
             return True
 
-        def mark(_job_id, _success, _reason, *, expected_fire_owner, shutdown_interrupted):
+        def mark(_job_id, _success, _reason, *, expected_fire_owner, shutdown_interrupted,
+                 execution_id=None):
             marked_owners.append((expected_fire_owner, shutdown_interrupted))
             return True
 
@@ -228,11 +231,12 @@ class TestRunningFireOwnerRegistry:
         profile_b = tmp_path / "b"
         observed = []
         sched._running_fire_owners[sched._inflight_key("same-job")] = {
-            object(): ("owner-a", profile_a),
-            object(): ("owner-b", profile_b),
+            object(): ("owner-a", profile_a, None),
+            object(): ("owner-b", profile_b, None),
         }
 
-        def mark(job_id, success, reason, *, expected_fire_owner, shutdown_interrupted):
+        def mark(job_id, success, reason, *, expected_fire_owner, shutdown_interrupted,
+                 execution_id=None):
             observed.append(
                 (
                     job_id,
@@ -300,7 +304,7 @@ class TestExecutionScopedInterruption:
         profile_home = sched._get_hermes_home().resolve()
         old_token = object()
         sched._running_fire_owners[sched._inflight_key("job-1")] = {
-            old_token: ("owner-1", profile_home),
+            old_token: ("owner-1", profile_home, None),
         }
 
         with patch("cron.scheduler.mark_job_run", return_value=True):
@@ -319,8 +323,10 @@ class TestExecutionScopedInterruption:
 
         profile_home = sched._get_hermes_home().resolve()
         token_a, token_b = object(), object()
-        sched._running_fire_owners[sched._inflight_key("job-a")] = {token_a: ("owner-a", profile_home)}
-        sched._running_fire_owners[sched._inflight_key("job-b")] = {token_b: ("owner-b", profile_home)}
+        sched._running_fire_owners[sched._inflight_key("job-a")] = {
+            token_a: ("owner-a", profile_home, None)}
+        sched._running_fire_owners[sched._inflight_key("job-b")] = {
+            token_b: ("owner-b", profile_home, None)}
 
         with patch("cron.scheduler.mark_job_run", return_value=True) as mock_mark:
             marked = sched.mark_running_jobs_interrupted(
@@ -342,7 +348,7 @@ class TestExecutionScopedInterruption:
         profile_home = sched._get_hermes_home().resolve()
         stale_token = object()
         sched._running_fire_owners[sched._inflight_key("job-1")] = {
-            stale_token: ("stale-owner", profile_home),
+            stale_token: ("stale-owner", profile_home, None),
         }
         with patch("cron.scheduler.mark_job_run", return_value=True):
             sched.mark_running_jobs_interrupted("shutdown")

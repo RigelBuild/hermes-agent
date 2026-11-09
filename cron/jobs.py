@@ -2462,11 +2462,9 @@ def mark_job_run(
 
     ``shutdown_interrupted``: the gateway stopped this run. An occurrence not yet counted stays
     pending as a replay (``pending_slot.replay``) and is counted when the replay finishes. A
-    replay cut off again is counted now and not replayed again.
+    recurring unknown execution is stamped by ID so receipt recovery can skip that occurrence.
     """
     def apply(jobs, _i, job):
-        if execution_id is not None and execution_id in job.get("canonical_completions", []):
-            return True
         if expected_fire_owner is not None:
             claim = job.get("fire_claim")
             if not isinstance(claim, dict) or claim.get("by") != expected_fire_owner:
@@ -2474,6 +2472,9 @@ def mark_job_run(
                     "mark_job_run: job_id %s fire claim owner changed; discarding stale completion",
                     job_id)
                 return False
+        if (execution_id is not None
+                and execution_id in (job.get("canonical_completions") or [])):
+            return True
         now = _hermes_now().isoformat()
         claim = job.get("fire_claim")
         owned = claim.get("scheduled_at") if isinstance(claim, dict) else None
@@ -2496,7 +2497,7 @@ def mark_job_run(
         _record_run_outcome(job, success, error, delivery_error, status, now)
         if pending is not None:
             job["pending_slot"] = pending
-        if execution_id is not None:  # retire ids recovery can no longer replay; latest stays last
+        if execution_id is not None and not keep_pending:
             from cron.scheduler_authority import replayable_completions as live
             job["canonical_completions"] = [*live(job_id, job.get("canonical_completions")), execution_id]
         _advance_after_run(job, now, ladder_rung=rung or keep_pending)
@@ -2507,6 +2508,10 @@ def mark_job_run(
             slot = datetime.fromisoformat(owned).astimezone(_hermes_now().tzinfo).isoformat()
             job["pending_slot"] = pending_slot_stamp(
                 slot, _hermes_now(), replay={"started_at": started, "interrupted_at": now})
+            if execution_id is not None:
+                job["shutdown_interrupted_execution"] = execution_id
+        elif execution_id is not None and execution_id == job.get("shutdown_interrupted_execution"):
+            job.pop("shutdown_interrupted_execution", None)
 
         if not success and model_unreachable and not is_terminal_job(job):
             plan_retry(job, replay=replay)
@@ -2529,6 +2534,52 @@ def mark_job_run(
         return found
 
     return _under_fire_fence(job_id, locked)
+
+def skip_unknown_occurrence(
+    job_id: str, execution_id: str, error: str, *, pause_recorded=None,
+) -> bool:
+    """Book a shutdown-killed unknown occurrence as skipped, without replaying its side effects."""
+    def apply(jobs, _i, job):
+        completed = job.get("canonical_completions")
+        if isinstance(completed, list) and execution_id in completed:
+            return True
+        now = _hermes_now().isoformat()
+        detail = f"Skipped unknown shutdown occurrence: {error}"
+        job["last_run_at"] = now
+        job["last_status"] = "skipped"
+        job["last_error"] = detail
+        job["last_failure"] = {"at": now, "detail": detail}
+        from cron.scheduler_authority import replayable_completions
+        job["canonical_completions"] = [
+            *replayable_completions(job_id, completed), execution_id,
+        ]
+        job.pop("pending_slot", None)
+        job.pop("restored_replay", None)
+        job["fire_claim"] = None
+        if job.get("run_claim") is not None:
+            job["run_claim"] = None
+        if (isinstance(pause_recorded, dict) and job.get("state") == "paused"
+                and (job.get("paused_at"), job.get("paused_reason"))
+                == (pause_recorded.get("paused_at"), pause_recorded.get("reason"))):
+            job.update(enabled=True, state="scheduled", paused_at=None, paused_reason=None)
+        job["next_run_at"] = compute_next_run(job["schedule"], now)
+        job.pop("shutdown_interrupted_execution", None)
+        if job["next_run_at"] is not None:
+            if job.get("state") != "paused":
+                job["state"] = "scheduled"
+        else:
+            job["state"] = "error"
+            logger.error(
+                "Job '%s' (%s) could not compute next_run_at; "
+                "leaving enabled and marking state=error so the job is not silently disabled.",
+                job.get("name", job.get("id", "?")), job.get("schedule", {}).get("kind"))
+        save_jobs(jobs)
+        record_cron_missed(job)
+        logger.warning("CRON_UNKNOWN_OUTCOME_SKIPPED: job %s execution %s: %s",
+                       job_id, execution_id, error)
+        return True
+
+    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
 
 
 def _write_oneshot_diagnostic(job: dict[str, Any], text: str, what: str) -> bool:
