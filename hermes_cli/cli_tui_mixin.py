@@ -193,6 +193,7 @@ class CLITuiMixin:
         and is truncated to the remaining row budget, so HSplit never clips approve/deny off-screen.
         """
         from cli import _panel_box_width, _wrap_panel_text_keep_ws
+        from tools.approval import REVIEWER_DENY_NOTE
         state = self._approval_state
         if not state:
             return []
@@ -204,7 +205,7 @@ class CLITuiMixin:
             description_lines = description.splitlines()
             warning_index = next((
                 i for i, line in enumerate(description_lines)
-                if line.startswith("**Reviewer:** flagged as dangerous")
+                if line.startswith(REVIEWER_DENY_NOTE)
             ), None)
             if warning_index is not None:
                 reviewer_warning = description_lines.pop(warning_index)
@@ -223,7 +224,7 @@ class CLITuiMixin:
         box_width = _panel_box_width(title, preview_lines)
         inner_text_width = max(8, box_width - 2)
 
-        # Pre-wrap mandatory content so the reviewer warning, command and choices stay visible.
+        # Wrap content before allocating the available rows.
         cmd_wrapped = wrap(command, inner_text_width)
         if not show_full and "view" in choices and len(cmd_wrapped) > 4:
             cmd_wrapped = cmd_wrapped[:3] + wrap(
@@ -234,21 +235,24 @@ class CLITuiMixin:
         choice_wrapped = _wrap_rows(wrap, choice_labels, inner_text_width, "    ")
         warning_wrapped = wrap(reviewer_warning, inner_text_width) if reviewer_warning else []
 
-        # Inline the title on compact reviewer-DENY panels to reserve a visible warning row.
         available = max(0, _term_rows() - _PANEL_RESERVED_BELOW)
-        use_compact_chrome = 5 + len(cmd_wrapped) + len(choice_wrapped) + bool(warning_wrapped) > available
-        chrome_rows = (2 if warning_wrapped else 3) if use_compact_chrome else (4 if warning_wrapped else 5)
-
-        # Keep the warning first, then truncate the command before dropping its row.
-        warning_budget = max(1, available - chrome_rows - len(choice_wrapped) - 1)
-        warning_wrapped = warning_wrapped[:warning_budget]
-        max_cmd_rows = available - chrome_rows - len(choice_wrapped) - len(warning_wrapped)
-        if max_cmd_rows < 1:
-            cmd_wrapped = []
-        elif len(cmd_wrapped) > max_cmd_rows:
-            keep = max(1, max_cmd_rows - 1) if max_cmd_rows > 1 else 1
-            cmd_wrapped = cmd_wrapped[:keep] + wrap(
-                t("cli.tui.approval_command_truncated"), inner_text_width)
+        # Borders take two rows; full chrome adds a title and two separators.
+        # Compact warning panels place the title in the border.
+        use_compact_chrome = 5 + len(cmd_wrapped) + len(choice_wrapped) + len(warning_wrapped) > available
+        inline_title = use_compact_chrome and bool(warning_wrapped)
+        chrome_rows = 2 + (0 if inline_title else 1) + (0 if use_compact_chrome else 2)
+        warning_budget = max(0, available - chrome_rows - len(choice_wrapped) - 1)
+        if len(warning_wrapped) > warning_budget:
+            warning_wrapped = warning_wrapped[:warning_budget]
+            if warning_wrapped:
+                warning_wrapped[-1] = warning_wrapped[-1][:max(0, inner_text_width - 2)] + " …"
+        max_cmd_rows = max(1, available - chrome_rows - len(choice_wrapped) - len(warning_wrapped))
+        if len(cmd_wrapped) > max_cmd_rows:
+            if max_cmd_rows == 1:
+                cmd_wrapped = [cmd_wrapped[0]]
+            else:
+                cmd_wrapped = cmd_wrapped[:max_cmd_rows - 1] + [
+                    t("cli.tui.approval_command_truncated")]
 
         # Remaining rows go to the description (minus its blank separator), capped at 10.
         mandatory_no_desc = chrome_rows + len(warning_wrapped) + len(cmd_wrapped) + len(choice_wrapped)
@@ -258,13 +262,13 @@ class CLITuiMixin:
         if available_for_desc < 1 or not desc_wrapped:
             desc_wrapped = []
         elif len(desc_wrapped) > available_for_desc:
-            desc_wrapped = desc_wrapped[:max(1, available_for_desc - 1)] + [
+            desc_wrapped = desc_wrapped[:available_for_desc - 1] + [
                 t("cli.tui.approval_description_truncated")]
         # Render the warning before the command; compact chrome integrates the title into its border.
         panel = _Panel('class:approval-border', box_width,
-                       title if use_compact_chrome and warning_wrapped else "",
+                       title if inline_title else "",
                        'class:approval-title')
-        if not (use_compact_chrome and warning_wrapped):
+        if not inline_title:
             panel.row('class:approval-title', title)
         for wrapped in warning_wrapped:
             panel.row('class:approval-desc', wrapped)

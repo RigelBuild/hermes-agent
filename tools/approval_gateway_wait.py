@@ -169,11 +169,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         register_prepared_approval(session_key, entry)
         _approval._gateway_queues.setdefault(session_key, []).append(entry)
 
-    # The leader lookup and our enqueue are ONE critical section: split, two identical requests both
-    # miss each other, both enqueue and the user gets duplicate prompts. A ``once`` releases the
-    # followers to prompt for themselves; they re-coalesce behind whichever re-prompts first, so the
-    # user still sees one prompt at a time (the answered leader is already off the queue). Reviewer
-    # DENY requests never share consent: every one must show its own warning to the human.
+    # Lookup and enqueue must be atomic to coalesce concurrent identical requests.
+    # Once releases followers to reprompt; reviewer DENY never shares consent.
     while True:
         with _approval._lock:
             leader = None

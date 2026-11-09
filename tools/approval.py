@@ -169,7 +169,11 @@ def resolve_gateway_approval(session_key: str, choice: str,
                 targets = [entry for entry in queue if not entry.data.get("smart_denied")]
                 queue[:] = [entry for entry in queue if entry.data.get("smart_denied")]
         else:
-            targets = [queue.pop(0)]
+            target = next((entry for entry in queue
+                           if choice == "deny" or not entry.data.get("smart_denied")), None)
+            targets = [target] if target else []
+            if target:
+                queue.remove(target)
         if not queue:
             _gateway_queues.pop(session_key, None)
         # Popping the entry and committing its outcome are ONE critical section: the waiter's
@@ -862,6 +866,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if smart_denied:
             _reset_denials(session_key)
         return _approved()
+
     if spec.transport:
         attempt = _present_with_selected_transport(
             command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
@@ -994,10 +999,11 @@ def _presence(approval_callback=None) -> tuple:
 
 
 # Reviewer verdict appended to a plugin approval's reason when the plugin asked for review first.
+REVIEWER_DENY_NOTE = "**Reviewer:** flagged as dangerous"
 _REVIEW_NOTES = {
     "approve": "**Reviewer:** passed",
     "escalate": "**Reviewer:** unsure, check it carefully",
-    "deny": "**Reviewer:** flagged as dangerous",
+    "deny": REVIEWER_DENY_NOTE,
 }
 
 
@@ -1036,7 +1042,7 @@ def _run_approval_gate(
     session_key = get_current_session_key()
     if not plugin_origin and (_yolo_active() or approval_context._get_approval_mode() == "off"):
         return _approved()
-    if not plugin_origin and is_approved(session_key, pattern_key):
+    if not plugin_origin and not review_first and is_approved(session_key, pattern_key):
         return _approved()
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
     if not is_cli and not is_gateway and not is_ask:

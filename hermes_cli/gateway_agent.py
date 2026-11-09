@@ -996,7 +996,7 @@ class GatewayAgent:
             try:
                 choice = callback(payload.get("command") or "", payload.get("description") or "",
                                   allow_permanent="always" in choices, allow_session="session" in choices,
-                                  smart_denied=False)
+                                  smart_denied=bool(payload.get("smart_denied")))
             except TypeError:
                 choice = callback(payload.get("command") or "", payload.get("description") or "")
         if choice not in choices:
