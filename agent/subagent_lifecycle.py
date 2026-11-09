@@ -295,15 +295,16 @@ class SubagentLifecycleService:
         )
         config = _load_config()
         routing_cfg = config
+        if config.get("tiers") is not None and tier is not None and (
+            request.provider is not None or request.model is not None
+        ):
+            raise SubagentLifecycleError("tier cannot be combined with a per-launch model or provider override.")
         try:
             routing_cfg = _resolve_delegation_tier_routing_config(
                 routing_cfg, tier, tier_configs=config.get("tiers"), enforce_tier=tier is not None,
             )
             if request.provider is not None:
-                requested_model = request.model or (routing_cfg.get("model") if tier is not None else "") or ""
-                routing_cfg = {"provider": request.provider, "model": requested_model}
-            elif tier is not None and request.model is not None:
-                routing_cfg = {**routing_cfg, "model": request.model}
+                routing_cfg = {"provider": request.provider, "model": request.model or ""}
             creds = _resolve_delegation_credentials(routing_cfg, parent)
         except ValueError as exc:
             raise SubagentLifecycleError(str(exc)) from exc

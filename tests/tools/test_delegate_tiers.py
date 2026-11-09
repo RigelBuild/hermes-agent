@@ -93,6 +93,47 @@ def test_tier_provider_does_not_inherit_base_endpoint(monkeypatch, tmp_path):
     assert "fixture/default" not in resolved.values()
 
 
+def test_selected_tier_drops_base_route_options_and_inherits_parent_provider(monkeypatch, tmp_path):
+    config = _config()
+    config.update({
+        "provider": "nous",
+        "request_overrides": {"temperature": 0.7},
+        "fallback_providers": [{"provider": "nous", "model": "fallback-model"}],
+        "max_iterations": 123,
+    })
+    config["tiers"]["hard"] = {"model": TIER_MODELS["hard"]}
+    resolved = {}
+
+    def resolve_credentials(routing_cfg, _parent):
+        resolved.update(routing_cfg)
+        return {
+            "model": TIER_MODELS["hard"], "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "request_overrides": None,
+            "command": None, "args": None,
+        }
+
+    result, agent_class = _dispatch(
+        {"goal": "Inspect fixture", "tier": "hard"}, config, monkeypatch, tmp_path,
+        resolve_credentials=resolve_credentials,
+    )
+
+    assert result == {"ok": True}
+    assert resolved == {"max_iterations": 123, "model": TIER_MODELS["hard"]}
+    assert not {"provider", "base_url", "api_key", "api_mode", "request_overrides", "fallback_providers"} & resolved.keys()
+    child_kwargs = agent_class.call_args.kwargs
+    assert child_kwargs["provider"] == "openrouter"
+    assert child_kwargs["base_url"] == "https://openrouter.ai/api/v1"
+
+
+def test_tier_is_ignored_when_tiers_are_unconfigured(monkeypatch, tmp_path):
+    result, agent_class = _dispatch(
+        {"goal": "Inspect fixture", "tier": "hard"},
+        _config(tiers=False), monkeypatch, tmp_path,
+    )
+
+    assert result == {"ok": True}
+    assert agent_class.call_args.kwargs["model"] == "fixture/default"
+    assert agent_class.call_args.kwargs["provider"] == "custom"
 
 
 @pytest.mark.parametrize("tier", [None, "unknown"])

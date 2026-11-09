@@ -1853,7 +1853,9 @@ delegation:
   #                                           # vast majority of tokens, so this is where spend is cut while
   #                                           # planning quality stays with the frontier parent.
   # Optional per-call model routes. If present, delegate_task requires tier: easy, medium, or hard.
-  # Each tier model spec uses the same keys as delegation (model, provider, base_url, api_key, api_mode).
+  # Each tier is a full route spec. Base model/provider/endpoint/credentials/request overrides/fallback providers are cleared first.
+  # A tier with only model inherits the parent runtime provider and endpoint, not delegation.provider.
+  # A supplied tier is ignored when no tiers map is configured.
   # tiers:
   #   easy: {model: "google/gemini-3-flash-preview", provider: "openrouter"}
   #   medium: {model: "anthropic/claude-sonnet-4", provider: "openrouter"}

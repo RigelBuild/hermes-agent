@@ -417,16 +417,18 @@ def _credential_overrides(creds: dict[str, Any], routing_cfg: dict[str, Any]) ->
     }
 
 
-_TIER_ROUTE_KEYS = frozenset({"model", "provider", "base_url", "api_key", "api_mode"})
+_TIER_ROUTE_KEYS = frozenset({
+    "model", "provider", "base_url", "api_key", "api_mode", "request_overrides", "fallback_providers",
+})
 _DELEGATION_TIERS = ("easy", "medium", "hard")
 
 
 def _resolve_delegation_tier_routing_config(
     routing_cfg: dict[str, Any], tier: Optional[str], *, tier_configs: Any, enforce_tier: bool = False,
 ) -> dict[str, Any]:
-    """Resolve one configured tier while keeping its route independent of the base delegation route."""
+    """Resolve a tier as a complete route, independent of base delegation routing settings."""
     if tier_configs is None:
-        return routing_cfg
+        return {key: value for key, value in routing_cfg.items() if key != "tiers"}
     if tier is None and not enforce_tier:
         return {key: value for key, value in routing_cfg.items() if key != "tiers"}
     if not isinstance(tier_configs, dict):
