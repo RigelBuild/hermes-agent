@@ -1,0 +1,172 @@
+# Upstream docker.yml requires Blacksmith runners and publishes to Docker Hub.
+# This workflow publishes the fork on GitHub-hosted runners.
+name: Rigel image
+
+on:
+  push:
+    tags: ['v*-rigel.*']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Tag or commit to publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rigel-image-${{ inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/rigelbuild/hermes-agent
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+      - name: Resolve commit
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+      - name: Write install stamp
+        run: |
+          display="$(python3 -m scripts.releases.distance)"
+          identity=(--commit "$(git rev-parse HEAD)")
+          if [ -n "$display" ]; then
+            base="${display%%+*}"
+            development="${display#*+}"
+            if [ "$development" = "$display" ]; then distance=0; else distance="${development%%.*}"; fi
+            identity+=(--base-version "$base" --display-version "$display" --distance "$distance")
+          fi
+          python3 scripts/write_install_stamp.py --output install-stamp.json \
+            --distribution docker --update-mechanism external --source ci "${identity[@]}"
+      - name: Reject profile exports in build context
+        run: python3 scripts/ci/check_profile_archive_boundary.py
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build image for testing
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: hermes-image:test
+          labels: |
+            org.opencontainers.image.source=https://github.com/RigelBuild/hermes-agent
+            org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}
+          cache-from: type=gha,scope=rigel-image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=rigel-image-${{ matrix.arch }}
+      - name: Park install stamp
+        if: matrix.arch == 'amd64'
+        run: mv install-stamp.json "$RUNNER_TEMP/install-stamp.json"
+      - name: Set up test dependencies
+        if: matrix.arch == 'amd64'
+        uses: ./.github/actions/setup-pm
+        with:
+          extras: '[]'
+          test-environment: 'true'
+          prune-python-cache: true
+      - name: Restore install stamp
+        if: matrix.arch == 'amd64'
+        run: mv "$RUNNER_TEMP/install-stamp.json" install-stamp.json
+      - name: Run docker integration tests
+        if: matrix.arch == 'amd64'
+        env:
+          HERMES_TEST_IMAGE: hermes-image:test
+          OPENROUTER_API_KEY: ''
+          OPENAI_API_KEY: ''
+          NOUS_API_KEY: ''
+        run: HERMES_TEST_WORKERS=$(nproc) scripts/run_tests.sh tests/docker/
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push image by digest
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=ghcr.io/rigelbuild/hermes-agent,push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.source=https://github.com/RigelBuild/hermes-agent
+            org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}
+          cache-from: type=gha,scope=rigel-image-${{ matrix.arch }}
+      - name: Save digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+
+  manifest:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish manifest
+        id: manifest
+        env:
+          REF: ${{ inputs.ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          ref="${REF#refs/tags/}"
+          images=()
+          for digest in "$RUNNER_TEMP"/digests/*; do
+            images+=("$IMAGE@sha256:${digest##*/}")
+          done
+          docker buildx imagetools create -t "$IMAGE:$ref" -t "$IMAGE:sha-$sha" "${images[@]}"
+          digest="$(docker buildx imagetools inspect "$IMAGE:sha-$sha" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          printf '%s@%s\n' "$IMAGE" "$digest" | tee image-digest.txt >> "$GITHUB_STEP_SUMMARY"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      - name: Attach digest to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF: ${{ steps.manifest.outputs.ref }}
+        run: |
+          if gh release view "$REF" --json tagName >/dev/null 2>&1; then
+            gh release upload "$REF" image-digest.txt --clobber
+          fi
