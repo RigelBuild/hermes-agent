@@ -318,28 +318,67 @@ def test_catch_up_disabled_drops_replay_slot(tmp_path, monkeypatch):
         assert "restored_replay" not in after
 
 
-def test_multiplex_profiles_keep_replay_in_their_own_store(tmp_path, clock):
-    """Case 4: each profile's replay lives in its own store; a gated-out profile's replay stays
-    pending and does not leak into another profile's claim."""
-    stores = {}
-    for name in ("alpha", "beta"):
-        with jobs.use_cron_store(tmp_path / name):
+def test_multiplex_gate_runs_only_admitted_profile_replay(tmp_path, clock):
+    """Case 4: a gated-out profile's replay never runs, while the admitted profile's replay runs
+    from its own store. Drives the real multiplex gate through the ticker loop."""
+    import threading
+    from unittest.mock import patch
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_constants import get_hermes_home
+
+    homes = {}
+    for name in ("own-gateway", "orphan"):
+        home = tmp_path / name
+        (home / "cron").mkdir(parents=True)
+        with jobs.use_cron_store(home / "cron"):
             job = jobs.create_job(name, "every 24h")
-            stores[name] = job["id"]
             clock[0] = datetime.fromisoformat(job["next_run_at"])
             first = claim_due(job["id"], clock)
             assert jobs.mark_job_run(
                 job["id"], False, "shutdown",
                 expected_fire_owner=first["fire_claim"]["by"], shutdown_interrupted=True,
             )
-    # Only beta is admitted this tick; alpha's gate refuses it, so alpha is never claimed.
-    with jobs.use_cron_store(tmp_path / "beta"):
-        beta = claim_due(stores["beta"], clock)
-        assert beta["fire_claim"]["replay"] is not None
-    with jobs.use_cron_store(tmp_path / "alpha"):
-        stored = jobs.get_job(stores["alpha"])
-        assert stored["pending_slot"]["replay"] is not None
-        assert stored.get("fire_claim") is None
+        homes[name] = home
+
+    stop = threading.Event()
+    ticked: list[str] = []
+
+    def _tick(*args, **kwargs):
+        ticked.append(str(get_hermes_home()))
+        if len(ticked) >= 3:
+            stop.set()
+        return 0
+
+    provider = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=_tick):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": list(homes.items()),
+                "profile_gate": lambda name, home: name != "own-gateway",
+            },
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=5)
+        stop.set()
+        thread.join(timeout=5)
+
+    # The gate admits only the orphan profile to the tick loop.
+    assert set(ticked) == {str(homes["orphan"])}
+    # Gated-out profile keeps its replay pending; it is not claimed.
+    with jobs.use_cron_store(homes["own-gateway"] / "cron"):
+        gated = jobs.load_jobs()[0]
+        assert gated["pending_slot"]["replay"] is not None
+        assert gated.get("fire_claim") is None
+    # Admitted profile's replay is claimed and dispatched from its own store.
+    with jobs.use_cron_store(homes["orphan"] / "cron"):
+        admitted = jobs.load_jobs()[0]
+        clock[0] = datetime.fromisoformat(admitted["pending_slot"]["scheduled_at"])
+        claimed = claim_due(admitted["id"], clock)
+        assert claimed["fire_claim"]["replay"] is not None
 
 
 def test_heartbeat_does_not_move_replay_started_at(clock):
