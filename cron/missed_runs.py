@@ -99,6 +99,8 @@ def fast_forward_missed_recurring(d: Any, grace: int) -> bool:
             "Job '%s' missed its scheduled time (%s, grace=%ds). "
             "Skipping %d missed occurrence(s) because catch-up is off for this job; next run: %s",
             d.label, d.next_run, grace, missed, new_next)
+        from cron.jobs import _drop_restored_replay
+        _drop_restored_replay(d.job, d.scan)
         d.scan.on_saved.append(lambda job=d.job: record_cron_missed(job))
         d.scan.on_saved.append(lambda job=d.job, first=d.next_run: _book_missed(
             job, missed, first, f"skipped, catch-up off; next run {new_next}", capped=capped))

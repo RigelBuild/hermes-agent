@@ -57,7 +57,10 @@ def _note_fire_refused(job_ids, detail: str) -> None:
             if job["id"] not in ids:
                 continue
             job["last_fire_error"] = {"at": _hermes_now().isoformat(), "detail": detail[:500]}
-            job.pop("pending_slot", None)
+            # A replay's slot was never handed over: keep it so the next tick still replays it.
+            pending = job.get("pending_slot")
+            if not (isinstance(pending, dict) and isinstance(pending.get("replay"), dict)):
+                job.pop("pending_slot", None)
             if job.get("run_claim") is not None:
                 job["run_claim"] = None
         save_jobs(jobs)

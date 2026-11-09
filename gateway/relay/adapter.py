@@ -2055,7 +2055,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
     async def _resolve_exec_approval(self, state, option_id, chat_id, ack_meta) -> None:
         from tools.approval import resolve_gateway_approval_card
         choice = option_id if option_id in _EXEC_APPROVAL_LABELS else "deny"
-        count = resolve_gateway_approval_card(str(state.get("session_key") or ""), choice, state.get("request_id"))
+        request_id = state.get("request_id")
+        count = resolve_gateway_approval_card(str(state.get("session_key") or ""), choice, request_id) if request_id else 0
         label = _EXEC_APPROVAL_LABELS[choice] if count else "⌛ Approval expired — no command was waiting."
         # In-channel ack preserves the audit trail the native edit gives (the
         # connector's prompt message can't be edited cross-platform yet).

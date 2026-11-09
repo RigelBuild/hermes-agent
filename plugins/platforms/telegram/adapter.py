@@ -710,8 +710,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         self._max_doc_bytes: int = 2 * 1024 * 1024 * 1024 if extra.get("base_url") else 20 * 1024 * 1024
         self._model_picker_state: dict[str, dict] = {}  # per-chat interactive picker state
         self._choice_picker_state: dict[str, dict] = {}
-        self._approval_state: dict[int, str] = {}  # message_id → session_key
-        self._approval_request_ids: dict[int, str] = {}  # message_id → tools.approval request id
+        self._approval_state: dict[int, tuple[str, str]] = {}  # message_id → (session_key, request_id)
         self._slash_confirm_state: dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: dict[str, str] = {}  # clarify_id → session_key
         # "important" (default): only final responses, approvals and slash confirmations notify;
@@ -4260,11 +4259,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             approval_id = next(self._approval_counter)
             buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
                        for label, choice, _ in prompt.actions]
-            def on_sent(_msg):
-                self._approval_state[approval_id] = prompt.session_key
-                if prompt.request_id:
-                    self._approval_request_ids[approval_id] = prompt.request_id
-            return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), on_sent
+            return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), (
+                lambda msg: self._approval_state.__setitem__(approval_id, (prompt.session_key, prompt.request_id)))
         return await self._send_prompt(
             "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
             thread_id=self._metadata_thread_id(prompt.metadata), reply_to_mode=self._reply_to_mode)
@@ -4758,19 +4754,19 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         except (ValueError, IndexError):
             await query.answer(text=_toast("platform.telegram.approval.toast_invalid_data"))
             return
-        session_key = await self._claim_callback_state(
+        state = await self._claim_callback_state(
             query, cb, self._approval_state, approval_id, _unauthorized(),
             _toast("platform.telegram.approval.toast_already_resolved"))
-        if not session_key:
+        if not state:
             return
-        request_id = self._approval_request_ids.pop(approval_id, None)
+        session_key, request_id = state
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
         try:
             # Rendering happens after so the message reflects what actually occurred: a tap that lands after
             # the approval wait timed out (count == 0) must NOT claim "Approved" — the command was already
             # denied and will not run (#63501 regression follow-up: 60s waits made stale taps common).
             from tools.approval import resolve_gateway_approval_card
-            count = resolve_gateway_approval_card(session_key, choice, request_id)
+            count = resolve_gateway_approval_card(session_key, choice, request_id) if request_id else 0
             logger.info(
                 "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
         except Exception as exc:

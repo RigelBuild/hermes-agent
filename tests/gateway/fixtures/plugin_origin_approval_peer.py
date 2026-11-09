@@ -13,8 +13,9 @@ PLUGIN_ID = "approval-fixture"
 PLUGIN_KEYS = ("allow_gateway_injection", "allow_origin_sessions")
 CASES = {
     "review-approve": {"hook": True, "review": True, "answer": "once"},
+    "review-mixed-queue": {"hook": True, "review": True, "answer": "once"},
     "review-escalate": {"hook": True, "review": True, "verdict": "escalate", "answer": "once"},
-    "review-deny": {"hook": True, "review": True, "verdict": "deny", "answer": None},
+    "review-deny": {"hook": True, "review": True, "verdict": "deny", "answer": "once"},
     "human-deny": {"hook": True, "review": True, "answer": "deny"},
     "timeout": {"hook": True, "review": True, "answer": "timeout"},
     "stale-always": {"hook": True, "review": True, "answer": "always"},
@@ -203,9 +204,19 @@ async def run_probe(peer, case_name):
                 assert set(prompt.choices) == {"once", "deny"}, prompt.choices
                 assert "wants to run" in prompt.text.lower(), prompt.text
                 assert adapter._approval_mention_content() == "<@12345>"
+                if case_name == "review-mixed-queue":
+                    from tools.approval_gateway_wait import _ApprovalEntry
+                    denied = _ApprovalEntry({"request_id": "earlier-denial", "smart_denied": True})
+                    with approval._lock:
+                        approval._gateway_queues[session_key].insert(0, denied)
+                if case_name == "review-deny" and seen == before + 1:
+                    assert "flagged as dangerous" in prompt.text.lower(), prompt.text
                 if answer not in {None, "timeout"}:
                     assert answer in {"once", "deny", "always"}
-                    assert resolve_gateway_approval(session_key, answer) == 1
+                    assert resolve_gateway_approval(
+                        session_key, answer, request_id=prompt.request_id) == 1
+                    if case_name == "review-mixed-queue":
+                        assert denied.result is None and not denied.event.is_set()
                 continue
             try:
                 await asyncio.wait_for(adapter.card_ready.wait(), timeout=0.2)

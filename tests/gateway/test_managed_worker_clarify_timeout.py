@@ -52,3 +52,22 @@ def test_nonpositive_clarify_timeout_waits_unbounded(tmp_path, monkeypatch, body
     monkeypatch.setattr(worker.threading, 'Event', _Event)
     assert _controls()._ask('q?', [], False) is None
     assert waits == [None]
+
+
+@pytest.mark.parametrize('kind', ['approval', 'clarify'])
+def test_control_reader_rejects_empty_prompt_id(monkeypatch, kind):
+    from agent import managed_worker as worker
+    from tools import approval
+
+    controls = _controls()
+    controls.finish = threading.Event()
+    frames = iter([{'type': kind, 'prompt_id': '', 'value': 'once'}, {'type': 'finish'}])
+    resolved = []
+    monkeypatch.setattr(worker, 'read_frame', lambda _: next(frames))
+    monkeypatch.setattr(approval, 'resolve_gateway_approval', lambda *args, **kwargs: resolved.append(args))
+
+    controls.read()
+
+    assert controls.stopped.is_set()
+    assert controls.finish.is_set()
+    assert resolved == []

@@ -21,7 +21,10 @@ def _gateway_session(monkeypatch):
     monkeypatch.setattr(tools_approval_context, "_get_approval_mode", lambda: "manual")
     monkeypatch.setattr(approval, "_presence", lambda cb=None: (None, False, True, False))
     approval._denial_tally.pop("review-session", None)
-    yield
+    try:
+        yield
+    finally:
+        approval._denial_tally.pop("review-session", None)
 
 
 def _capture_human(monkeypatch, choice="once"):
@@ -84,6 +87,18 @@ def test_reviewer_approve_still_asks_the_human(monkeypatch):
     assert seen["description"].startswith("why\n")
     assert "passed" in seen["description"]
 
+
+@pytest.mark.parametrize("verdict, prompts", [("approve", False), ("escalate", False), ("deny", True)])
+def test_review_first_honours_cached_grant_except_deny(monkeypatch, verdict, prompts):
+    monkeypatch.setattr(approval, "is_approved", lambda *_: True)
+    seen = _capture_human(monkeypatch)
+    calls = _verdict(monkeypatch, verdict)
+    result = request_tool_approval("terminal", "why", rule_key="k", display="cmd", review=True)
+    assert calls == ["cmd"]
+    assert result["approved"] is True
+    assert bool(seen) is prompts
+    if prompts:
+        assert seen["smart_denied"] is True
 
 def test_vault_metadata_is_in_reviewer_display_and_human_prompt(monkeypatch):
 
@@ -210,6 +225,89 @@ def test_reviewer_deny_reaches_human_and_final_choice_controls_result(
     assert result.get("outcome") == outcome
     if choice == "deny":
         assert "**Reviewer:** flagged as dangerous: Pipes the key to a remote host." in result["message"]
+
+
+def test_reviewer_deny_with_auto_approve_callback_is_blocked(monkeypatch):
+    from tools.delegate_tool import _subagent_auto_approve
+
+    monkeypatch.setattr(approval, "_presence", lambda cb=None: (cb, True, False, False))
+    _verdict_with_note(monkeypatch, "deny", "Pipes the key to a remote host.")
+
+    result = request_tool_approval(
+        "vault_secret", "why", rule_key="k", display="cmd", review=True,
+        approval_callback=_subagent_auto_approve,
+    )
+
+    assert result["approved"] is False
+    assert result["outcome"] == "denied"
+    assert "**Reviewer:** flagged as dangerous" in result["message"]
+    assert approval._denial_tally["review-session"] == 1
+
+
+def test_reviewer_deny_once_resets_tally(monkeypatch):
+    monkeypatch.setattr(approval, "_presence", lambda cb=None: (cb, True, False, False))
+    choices = iter(("once", "deny"))
+    monkeypatch.setattr(approval, "_get_denial_breaker_threshold", lambda: 2)
+    _verdict_with_note(monkeypatch, "deny", "Pipes the key to a remote host.")
+
+    def answer(*args, **kwargs):
+        return next(choices)
+
+    first = request_tool_approval(
+        "vault_secret", "why", rule_key="first", display="cmd", review=True, approval_callback=answer,
+    )
+    second = request_tool_approval(
+        "vault_secret", "why", rule_key="second", display="cmd", review=True, approval_callback=answer,
+    )
+
+    assert first["approved"] is True
+    assert second["approved"] is False
+    assert "CIRCUIT BREAKER:" not in second["message"]
+    assert approval._denial_tally["review-session"] == 1
+
+
+@pytest.mark.parametrize("choice", ["deny", "timeout"])
+def test_reviewer_deny_refusal_includes_breaker_addendum(monkeypatch, choice):
+    monkeypatch.setattr(approval, "_presence", lambda cb=None: (cb, True, False, False))
+    monkeypatch.setattr(approval, "_get_denial_breaker_threshold", lambda: 2)
+    approval._denial_tally["review-session"] = 1
+    _verdict_with_note(monkeypatch, "deny", "Pipes the key to a remote host.")
+    result = request_tool_approval(
+        "vault_secret", "why", rule_key="k", display="cmd", review=True,
+        approval_callback=lambda *args, **kwargs: choice,
+    )
+
+    assert "CIRCUIT BREAKER:" in result["message"]
+
+
+def test_reviewer_deny_broad_gateway_reply_is_once_and_not_saved(monkeypatch):
+    from tools import approval_context
+
+    monkeypatch.setattr(approval, "_presence", lambda cb=None: (cb, False, True, False))
+    _verdict_with_note(monkeypatch, "deny", "Pipes the key to a remote host.")
+    committed_choices = []
+    persisted = []
+    monkeypatch.setattr(approval_context, "_fire_approval_hook",
+                        lambda name, **kwargs: committed_choices.append(kwargs["choice"])
+                        if name == "post_approval_response" else None)
+    monkeypatch.setattr(approval, "_persist_choice", lambda *args: persisted.append(args))
+
+    def reply(data):
+        assert data["smart_denied"] is True
+        assert data["allow_session"] is False
+        assert data["allow_permanent"] is False
+        assert approval.resolve_gateway_approval("review-session", "session", request_id=data["request_id"]) == 1
+
+    approval.register_gateway_notify("review-session", reply)
+    try:
+        result = request_tool_approval("vault_secret", "why", rule_key="k", display="cmd", review=True)
+    finally:
+        approval.unregister_gateway_notify("review-session")
+
+    assert result["approved"] is True
+    assert committed_choices == ["once"]
+    assert persisted == []
+
 
 
 def test_a_stale_reason_does_not_leak_into_the_next_prompt(monkeypatch):
