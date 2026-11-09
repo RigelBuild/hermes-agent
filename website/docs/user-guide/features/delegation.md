@@ -657,6 +657,19 @@ error.
 
 ## Configuration
 
+To select a child model per delegation call, configure `delegation.tiers`. Each tier accepts the
+same model-routing keys as `delegation` (`model`, `provider`, `base_url`, `api_key`, and optional
+`api_mode`). When this map is present, every `delegate_task` call must name one tier. One tier applies
+to every task in a batch.
+
+```yaml
+delegation:
+  tiers:
+    easy: {model: "google/gemini-3-flash-preview", provider: "openrouter"}
+    medium: {model: "anthropic/claude-sonnet-4", provider: "openrouter"}
+    hard: {model: "anthropic/claude-opus-4", provider: "openrouter"}
+```
+
 ```yaml
 # In ~/.hermes/config.yaml
 delegation:

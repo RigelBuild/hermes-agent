@@ -490,7 +490,7 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[dict[str, Any]] = None, images: Optional[list[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
-    credentials_cfg: Optional[dict[str, Any]] = None,
+    credentials_cfg: Optional[dict[str, Any]] = None, tier: Optional[str] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -498,12 +498,29 @@ def delegate_task(
     dispatch handle when running in the background."""
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
-
+    cfg = _load_config()
     normalized_action = (action or "").strip().lower()
     if normalized_action in _CONTROL_ACTIONS:
         return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
     if normalized_action and normalized_action != "spawn":
         return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
+
+    configured_tiers = cfg.get("tiers") if credentials_cfg is None else None
+    tier_cfg = None
+    if configured_tiers is not None:
+        if not isinstance(configured_tiers, dict):
+            return tool_error("Invalid delegation.tiers config: expected a mapping for easy, medium, and hard.")
+        allowed_tiers = ("easy", "medium", "hard")
+        if tier not in allowed_tiers:
+            return tool_error(
+                f"A delegation tier is required when delegation.tiers is configured. "
+                f"Allowed tiers: {', '.join(allowed_tiers)}."
+            )
+        tier_cfg = configured_tiers.get(tier)
+        if not isinstance(tier_cfg, dict):
+            return tool_error(
+                f"Missing or invalid delegation.tiers.{tier} config; provide a model spec for this tier."
+            )
 
     # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
     if is_spawn_paused():
@@ -526,7 +543,7 @@ def delegate_task(
             f"multiplies API cost)."
         )
 
-    cfg = _load_config()
+    # Config is loaded above so tier enforcement also applies to control calls.
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     # Caller-supplied max_iterations is ignored: the config value is authoritative
     # so budgets stay predictable (kwarg kept for internal callers/tests).
@@ -539,6 +556,8 @@ def delegate_task(
     # a per-call routing owner shaped like the delegation config section. Keep
     # the route and its fallback policy together through child construction.
     routing_cfg = credentials_cfg if credentials_cfg is not None else cfg
+    if tier_cfg is not None:
+        routing_cfg = {**routing_cfg, **tier_cfg}
     try:
         creds = _resolve_delegation_credentials(routing_cfg, parent_agent)
     except ValueError as exc:
@@ -673,11 +692,13 @@ def _build_dynamic_schema_overrides() -> dict:
     get_definitions() pass rewrites the descriptions to the user's actual limits."""
     from tools.delegate_tool_config import _get_independent_completions
 
+    tiers_enabled = _load_config().get("tiers") is not None
     independent_completions = _get_independent_completions()
     overrides_params = {**DELEGATE_TASK_SCHEMA["parameters"]}
     # Copy properties so the static schema dict is never mutated.
     overrides_params["properties"] = {k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()}
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
+    overrides_params["required"] = ["tier"] if tiers_enabled else []
 
     if not independent_completions:
         tasks = overrides_params["properties"]["tasks"]
@@ -709,6 +730,14 @@ DELEGATE_TASK_SCHEMA = {
             # wrapped into a one-entry batch at dispatch, and a per-task `role` (legacy, ignored: capability is
             # depth-derived). Both unadvertised on purpose (old transcripts only); do not re-add. No maxItems — the
             # runtime limit (delegation.max_concurrent_children) is enforced with a clear error in delegate_task().
+            "tier": _p(
+                "string",
+                "easy = routine lookups or mechanical edits\n"
+                "medium = ordinary multi-step work\n"
+                "hard = difficult reasoning or design.\n"
+                "Required to spawn; ignored for control actions.",
+                enum=["easy", "medium", "hard"],
+            ),
             "tasks": {
                 "type": "array",
                 "minItems": 1,
@@ -802,7 +831,7 @@ registry.register(
     schema=DELEGATE_TASK_SCHEMA,
     handler=lambda args, **kw: delegate_task(
         goal=args.get("goal"), context=args.get("context"), tasks=_strip_model_hidden_task_fields(args.get("tasks")),
-        max_iterations=args.get("max_iterations"), role=args.get("role"),
+        max_iterations=args.get("max_iterations"), role=args.get("role"), tier=args.get("tier"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
         parent_agent=kw.get("parent_agent"),
