@@ -187,15 +187,15 @@ class TestRunningFireOwnerRegistry:
 
         entered = threading.Barrier(3)
         release = threading.Event()
-        marked_owners: list[str] = []
+        marked_owners: list[tuple[str, bool]] = []
 
         def hold_run(_job, _run):
             entered.wait(timeout=2)
             release.wait(timeout=2)
             return True
 
-        def mark(_job_id, _success, _reason, *, expected_fire_owner):
-            marked_owners.append(expected_fire_owner)
+        def mark(_job_id, _success, _reason, *, expected_fire_owner, shutdown_interrupted):
+            marked_owners.append((expected_fire_owner, shutdown_interrupted))
             return True
 
         monkeypatch.setattr(sched, "_run_with_fire_claim_heartbeat", hold_run)
@@ -212,7 +212,7 @@ class TestRunningFireOwnerRegistry:
 
         assert sched.get_running_job_ids() == frozenset({"same-job"})
         assert sched.mark_running_jobs_interrupted("shutdown") == ["same-job", "same-job"]
-        assert set(marked_owners) == {"old-owner", "replacement-owner"}
+        assert set(marked_owners) == {("old-owner", True), ("replacement-owner", True)}
 
         release.set()
         for thread in threads:
@@ -232,12 +232,13 @@ class TestRunningFireOwnerRegistry:
             object(): ("owner-b", profile_b),
         }
 
-        def mark(job_id, success, reason, *, expected_fire_owner):
+        def mark(job_id, success, reason, *, expected_fire_owner, shutdown_interrupted):
             observed.append(
                 (
                     job_id,
                     success,
                     expected_fire_owner,
+                    shutdown_interrupted,
                     cron_jobs._current_cron_store().jobs_file,
                 )
             )
@@ -247,8 +248,8 @@ class TestRunningFireOwnerRegistry:
 
         assert sched.mark_running_jobs_interrupted("shutdown") == ["same-job", "same-job"]
         assert set(observed) == {
-            ("same-job", False, "owner-a", profile_a / "cron" / "jobs.json"),
-            ("same-job", False, "owner-b", profile_b / "cron" / "jobs.json"),
+            ("same-job", False, "owner-a", True, profile_a / "cron" / "jobs.json"),
+            ("same-job", False, "owner-b", True, profile_b / "cron" / "jobs.json"),
         }
 
 

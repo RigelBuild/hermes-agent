@@ -132,7 +132,16 @@ def is_retry_run(job: dict[str, Any]) -> bool:
     return instant is not None and scheduled_instant((job.get(STATE_KEY) or {}).get("at")) == instant
 
 
-def plan_retry(job: dict[str, Any]) -> bool:
+def ladder_replay(job: dict[str, Any]) -> dict[str, Any] | None:
+    """The replay marker a parked rung carries, or None."""
+    state = job.get(STATE_KEY)
+    if not isinstance(state, dict) or "replay" not in state:
+        return None
+    replay = state["replay"]
+    return replay if isinstance(replay, dict) else {}
+
+
+def plan_retry(job: dict[str, Any], replay: dict[str, Any] | None = None) -> bool:
     """Called under the jobs lock AFTER ``_advance_after_run`` computed the schedule's
     natural ``next_run_at`` for a failed, flagged run. Pulls ``next_run_at`` earlier to
     the ladder instant when that is sooner than the natural occurrence; exhausted or
@@ -155,6 +164,8 @@ def plan_retry(job: dict[str, Any]) -> bool:
     delay = RETRY_DELAYS_SECONDS[attempt]
     retry_at = retry_dt.isoformat()
     job[STATE_KEY] = {"attempt": attempt + 1, "at": retry_at, "expr": job["schedule"].get("expr")}
+    if replay is not None:
+        job[STATE_KEY]["replay"] = replay
     job["next_run_at"] = retry_at
     if job.get("state") != "paused":
         job["state"] = "scheduled"
