@@ -134,8 +134,11 @@ def is_retry_run(job: dict[str, Any]) -> bool:
 
 def ladder_replay(job: dict[str, Any]) -> dict[str, Any] | None:
     """The replay marker a parked rung carries, or None."""
-    replay = (job.get(STATE_KEY) or {}).get("replay")
-    return replay if isinstance(replay, dict) else None
+    state = job.get(STATE_KEY)
+    if not isinstance(state, dict) or "replay" not in state:
+        return None
+    replay = state["replay"]
+    return replay if isinstance(replay, dict) else {}
 
 
 def plan_retry(job: dict[str, Any], replay: dict[str, Any] | None = None) -> bool:

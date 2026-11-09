@@ -186,6 +186,23 @@ def test_interrupted_retry_rung_does_not_count_again(clock):
     assert jobs.get_job(job["id"])["repeat"]["completed"] == 1
 
 
+def test_malformed_rung_replay_does_not_replay_again(clock):
+    job = jobs.create_job("report", "every 24h", repeat=3)
+    assert jobs.mark_job_run(job["id"], False, "offline", model_unreachable=True)
+    records = jobs.load_jobs()
+    records[0][unreachable_retry.STATE_KEY]["replay"] = "invalid"
+    jobs.save_jobs(records)
+    clock[0] = datetime.fromisoformat(records[0][unreachable_retry.STATE_KEY]["at"])
+    rung = claim_due(job["id"], clock)
+    assert jobs.mark_job_run(
+        job["id"], False, "shutdown",
+        expected_fire_owner=rung["fire_claim"]["by"], shutdown_interrupted=True,
+    )
+    stored = jobs.get_job(job["id"])
+    assert stored["repeat"]["completed"] == 1
+    assert "pending_slot" not in stored
+
+
 def test_unreachable_replay_carries_marker_to_retry(clock):
     job = jobs.create_job("report", "every 24h")
     clock[0] = datetime.fromisoformat(job["next_run_at"])
