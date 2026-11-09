@@ -208,15 +208,15 @@ before its terminal row is not counted when it is interrupted. The executions
 ledger keeps the interrupted attempt as a `failed` row, and the record stores a
 `pending_slot.replay` marker (`started_at`, `interrupted_at`). `started_at` is the
 claim's first `claimed_at`, so heartbeats do not move it. The next claim of that
-same occurrence is the replay: it appears as one further execution row for the
-same `scheduled_instant`, and its rungs (retries) follow it.
+same occurrence is the replay. It appears as one further execution row for the
+same `scheduled_instant`. An unreachable-model retry retains the replay marker.
 
 The occurrence is counted when the replay completes, not at the shutdown. If the
 replay is interrupted again, that interruption counts at that shutdown and the
 occurrence is not replayed a second time. A retry rung that already counted its
-occurrence does not count it again. A replay that is past grace under
-`cron.catch_up_missed: false` is dropped with its marker, so it cannot replay
-later.
+occurrence does not count it again. If a replay is past grace and
+`cron.catch_up_missed` is false, the scheduler drops the occurrence and its
+marker. It cannot replay later.
 
 **Fire-claim lease during a run.** A firing run holds `fire_claim = {at, by}` and
 a heartbeat thread refreshes `at` every 60 s (the lease is 300 s). A heartbeat

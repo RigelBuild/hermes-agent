@@ -2116,6 +2116,7 @@ def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]
             # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
             # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.
             updated.pop("pending_slot", None)
+            updated.pop("restored_replay", None)
             drop_claimed_occurrence(updated)
         _fill_missing_next_run(updated)
         _reject_terminal_activation(job, updated, job_id)
@@ -2376,8 +2377,8 @@ def _advance_after_run(job: dict[str, Any], now: str, *, ladder_rung: bool = Fal
     """Bump ``repeat.completed`` and recompute ``next_run_at``; retire the record as a terminal
     completion when the repeat limit is reached or a one-shot has no further run.
 
-    ``ladder_rung``: this run re-ran an occurrence that already counted (an unreachable-model
-    re-run, ``cron.unreachable_retry.is_retry_run``), so ``repeat.completed`` is left as is."""
+    ``ladder_rung`` skips counting an already-counted retry or an interrupted occurrence
+    whose count is deferred until replay."""
     # If no next run, decide whether this is terminal completion (one-shot) or a transient failure
     # (recurring schedule couldn't compute — e.g. 'croniter' missing from the runtime env). Recurring jobs
     # must NEVER be silently disabled: that turns a missing runtime dep into "job completed" and the user's
@@ -2461,7 +2462,7 @@ def mark_job_run(
 
     ``shutdown_interrupted``: the gateway stopped this run. An occurrence not yet counted stays
     pending as a replay (``pending_slot.replay``) and is counted when the replay finishes. A
-    replay cut off again is counted now and not replayed again (Q2 ruling, RIG-8084).
+    replay cut off again is counted now and not replayed again.
     """
     def apply(jobs, _i, job):
         if execution_id is not None and execution_id in job.get("canonical_completions", []):
@@ -2476,29 +2477,34 @@ def mark_job_run(
         now = _hermes_now().isoformat()
         claim = job.get("fire_claim")
         owned = claim.get("scheduled_at") if isinstance(claim, dict) else None
-        replay = _claim_replay(job)
         from cron import quota_hold
-        from cron.occurrences import pending_slot_stamp
+        from cron.occurrences import claim_replay, pending_slot_stamp
         from cron.unreachable_retry import STATE_KEY, clear_state, is_retry_run, plan_retry
 
-        rung = is_retry_run({"_scheduled_instant": owned, STATE_KEY: job.get(STATE_KEY)})
+        replay = claim_replay(job)
+
+        rung = ladder_rung or is_retry_run({"_scheduled_instant": owned, STATE_KEY: job.get(STATE_KEY)})
 
         # A cut-off first run stays pending, uncounted: the replay counts it. A rung already
         # counted its occurrence; a replay itself counts once when it finishes or is cut off.
         keep_pending = shutdown_interrupted and owned is not None and replay is None
         if owned is not None and not rung:
-            clear_state(job)  # a parked rung for another occurrence is stale (design case 14)
+            clear_state(job)  # A parked rung for another occurrence is stale.
+        pending = job.get("pending_slot") if owned is None else None
         _record_run_outcome(job, success, error, delivery_error, status, now)
+        if pending is not None:
+            job["pending_slot"] = pending
         if execution_id is not None:  # retire ids recovery can no longer replay; latest stays last
             from cron.scheduler_authority import replayable_completions as live
             job["canonical_completions"] = [*live(job_id, job.get("canonical_completions")), execution_id]
         _advance_after_run(job, now, ladder_rung=rung or keep_pending)
         if keep_pending and job.get("schedule", {}).get("kind") in {"cron", "interval"} \
                 and not is_terminal_job(job):
-            # Started-at is the claim's first-claim time; heartbeats never move it.
+            # Legacy claims lack claimed_at and fall back to the last heartbeat time.
             started = claim.get("claimed_at") or claim.get("at")
+            slot = datetime.fromisoformat(owned).astimezone(_hermes_now().tzinfo).isoformat()
             job["pending_slot"] = pending_slot_stamp(
-                owned, _hermes_now(), replay={"started_at": started, "interrupted_at": now})
+                slot, _hermes_now(), replay={"started_at": started, "interrupted_at": now})
 
         if not success and model_unreachable and not is_terminal_job(job):
             plan_retry(job, replay=replay)
@@ -2743,13 +2749,17 @@ def _machine_id() -> str:
     return f"{host}:{os.getpid()}"
 
 
-def _claim_replay(job: dict[str, Any]) -> Optional[dict[str, Any]]:
-    from cron.occurrences import claim_replay
-    return claim_replay(job)
+
+def _replay_matches(record: Any, instant: Optional[str]) -> bool:
+    from cron.occurrences import scheduled_instant
+
+    target = scheduled_instant(instant)
+    return (target is not None and isinstance(record, dict) and "replay" in record
+            and scheduled_instant(record.get("scheduled_at")) == target)
 
 
 def _carry_replay(job: dict[str, Any], owned: Optional[str]) -> None:
-    """Copy the replay marker of the occurrence being claimed onto its fire claim (RIG-8084).
+    """Copy the replay marker of the occurrence being claimed onto its fire claim.
 
     The marker comes from the pending slot when it holds this occurrence, else from a parked
     retry rung when that rung is this occurrence. Other occurrences carry none."""
@@ -2762,11 +2772,12 @@ def _carry_replay(job: dict[str, Any], owned: Optional[str]) -> None:
     pending = job.get("pending_slot")
     restored = job.get("restored_replay")
     replay = None
-    if isinstance(pending, dict) and scheduled_instant(pending.get("scheduled_at")) == owned:
+    if _replay_matches(pending, owned):
         replay = slot_replay(job)
-    if replay is None and isinstance(restored, dict) \
-            and scheduled_instant(restored.get("scheduled_at")) == owned:
-        replay = restored.get("replay") if isinstance(restored.get("replay"), dict) else None
+    if replay is None and _replay_matches(restored, owned):
+        replay = restored.get("replay")
+        if not isinstance(replay, dict):
+            replay = {}
     if replay is None and scheduled_instant((job.get(STATE_KEY) or {}).get("at")) == owned:
         replay = ladder_replay(job)
     job.pop("restored_replay", None)
@@ -2857,7 +2868,8 @@ def claim_job_for_fire(
         if execution_id:
             bind_row(owned)
         # Claimed: the occurrence is now owned by a run (its ledger row + fire claim carry it).
-        job.pop("pending_slot", None)
+        if owned is not None:
+            job.pop("pending_slot", None)
         if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
             nxt = compute_next_run(job["schedule"], now.isoformat())
             if nxt:
@@ -3078,6 +3090,14 @@ class _DueJob:
         return compute_next_run(self.schedule, self.scan.now.isoformat())
 
 
+def _drop_restored_replay(job: dict[str, Any], scan: _DueScan) -> None:
+    job.pop("restored_replay", None)
+    stored = scan.find(job["id"])
+    if stored is not None and "restored_replay" in stored:
+        stored.pop("restored_replay")
+        scan.needs_save = True
+
+
 def _repair_timezone_shifted_cron(d: _DueJob) -> bool:
     """Repair a cron job whose stored offset no longer matches now's (TZ migration).
 
@@ -3100,6 +3120,7 @@ def _repair_timezone_shifted_cron(d: _DueJob) -> bool:
         "Recomputing cron run to preserve local wall-clock intent: %s",
         d.label, d.raw_next_run_dt.utcoffset(), now.utcoffset(), new_next)
     d.scan.persist(d.job["id"], next_run_at=new_next)
+    _drop_restored_replay(d.job, d.scan)
     return True
 
 
@@ -3167,6 +3188,7 @@ def _reanchor_stale_cron(d: _DueJob) -> bool:
             d.label, d.next_run, d.schedule.get("expr"), new_next)
         if new_next:
             d.scan.persist(d.job["id"], next_run_at=new_next)
+            _drop_restored_replay(d.job, d.scan)
         return True
     if stale_class == STALE_CRON_TIMEZONE_MIGRATION:
         logger.warning(
@@ -3200,7 +3222,7 @@ def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
             "Job '%s' missed its scheduled time (%s, grace=%ds). "
             "Skipping missed occurrence because cron.catch_up_missed is false; next run: %s",
             d.label, d.next_run, grace, new_next)
-        # A dropped slot takes its replay marker with it (design case 12).
+        # A dropped slot takes its replay marker with it.
         d.job.pop("restored_replay", None)
         rj = d.scan.find(d.job["id"])
         if rj is not None:
@@ -3286,13 +3308,14 @@ def _restore_unclaimed_slot(job: dict[str, Any], scan: _DueScan) -> Optional[str
     """Put an occurrence the dispatcher advanced past but never claimed back on the schedule
     (#107485); returns the restored ``next_run_at`` or None. Restored ONCE: the stamp is dropped
     here, so the slot then meets the ordinary late / fast-forward / ``cron.catch_up_missed``
-    policy like any other overdue instant — never a replay of every missed slot."""
+    policy like any other overdue instant. ``restored_replay`` holds the slot's
+    ``scheduled_at`` and ``replay`` marker until it is claimed or discarded."""
     from cron.occurrences import slot_replay, unclaimed_pending_slot
 
     slot = unclaimed_pending_slot(job, scan.now)
     if slot is None:
         return None
-    replay = slot_replay(job)
+    replay = slot_replay(job) if _replay_matches(job.get("pending_slot"), slot) else None
     logger.warning(
         "Job '%s' (%s): occurrence %s was taken off the schedule but never claimed "
         "(scheduler stopped before dispatch); restoring it as the due instant (was %s).",
@@ -3352,7 +3375,8 @@ def restore_unstarted_occurrence(
             now = _hermes_now()
             # Store in the scheduler's zone: a UTC string would trip the timezone-shift repair.
             slot = datetime.fromisoformat(instant).astimezone(now.tzinfo).isoformat()
-            job["pending_slot"] = pending_slot_stamp(slot, now, replay=_claim_replay(job))
+            from cron.occurrences import claim_replay
+            job["pending_slot"] = pending_slot_stamp(slot, now, replay=claim_replay(job))
             drop_claimed_occurrence(job)
         else:
             return False
@@ -3393,6 +3417,7 @@ def _evaluate_due_job(job: dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     from cron.occurrences import completed_occurrence, scheduled_instant
 
     if not manual_run and completed_occurrence(job, next_run):
+        _drop_restored_replay(job, scan)
         new_next = d.recompute_next() if recurring else None
         if new_next:
             scan.persist(job["id"], next_run_at=new_next)
@@ -3441,10 +3466,12 @@ def _evaluate_due_job(job: dict[str, Any], scan: _DueScan, run_claim_ttl: float)
         # stamp survives a process death in that window so the slot is restored, not lost.
         from cron.occurrences import pending_slot_stamp, slot_replay
 
-        replay = slot_replay(job)
+        replay = slot_replay(job) if _replay_matches(job.get("pending_slot"), next_run) else None
         restored = job.get("restored_replay")
-        if replay is None and isinstance(restored, dict) and restored.get("scheduled_at") == next_run:
-            replay = restored.get("replay")  # a restored replay keeps its marker through this stamp
+        if replay is None and _replay_matches(restored, next_run):
+            replay = restored.get("replay")
+            if not isinstance(replay, dict):
+                replay = {}
         scan.persist(
             job["id"], last_dispatch=dispatch_stamp,
             pending_slot=pending_slot_stamp(next_run, now, replay=replay))

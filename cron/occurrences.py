@@ -71,7 +71,7 @@ def completed_occurrence(job, instant):
 def pending_slot_stamp(next_run, now, replay=None):
     """Store value for a recurring occurrence about to be handed to the dispatcher.
 
-    ``replay`` marks an interrupted run kept as pending work (RIG-8084); it is stored only when set."""
+    ``replay`` marks an interrupted run kept as pending work; it is stored only when set."""
     from cron.jobs import _machine_id
 
     stamp = {"scheduled_at": next_run, "at": now.isoformat(), "by": _machine_id()}
@@ -83,15 +83,19 @@ def pending_slot_stamp(next_run, now, replay=None):
 def slot_replay(job):
     """The replay marker of a pending slot, or None."""
     pending = job.get("pending_slot")
-    replay = pending.get("replay") if isinstance(pending, dict) else None
-    return replay if isinstance(replay, dict) else None
+    if not isinstance(pending, dict) or "replay" not in pending:
+        return None
+    replay = pending["replay"]
+    return replay if isinstance(replay, dict) else {}
 
 
 def claim_replay(job):
     """The replay marker of a live fire claim, or None."""
     claim = job.get("fire_claim")
-    replay = claim.get("replay") if isinstance(claim, dict) else None
-    return replay if isinstance(replay, dict) else None
+    if not isinstance(claim, dict) or "replay" not in claim:
+        return None
+    replay = claim["replay"]
+    return replay if isinstance(replay, dict) else {}
 
 
 def unclaimed_pending_slot(job, now):

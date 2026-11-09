@@ -1161,7 +1161,8 @@ def mark_running_jobs_interrupted(
         try:
             with use_cron_store(profile_home):
                 if mark_job_run(
-                    job_id, False, reason, expected_fire_owner=fire_owner):
+                    job_id, False, reason, expected_fire_owner=fire_owner,
+                    shutdown_interrupted=True):
                     marked.append(job_id)
         except Exception as e:
             logger.warning("Failed to mark job %s interrupted: %s", job_id, e)
