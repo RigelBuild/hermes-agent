@@ -216,12 +216,22 @@ def reconcile_pending(*, allow_connect=True):
                     if current is None:
                         journal.unlink(missing_ok=True)
                         continue
+                    if current.get('schedule', {}).get('kind') in {'cron', 'interval'}:
+                        from cron.occurrences import completed_occurrence
+                        scheduled_instant = (row or {}).get('scheduled_instant')
+                        if scheduled_instant and completed_occurrence(current, scheduled_instant):
+                            # A shutdown replay already booked this occurrence. Its success owns
+                            # the schedule advancement; this older unknown receipt is now stale.
+                            journal.unlink(missing_ok=True)
+                            continue
                     skipped_execution = current.get('canonical_completions') or []
+                    is_shutdown_skip = (
+                        current.get('shutdown_interrupted_execution') == params['request_id']
+                        or (current.get('last_status') == 'skipped'
+                            and isinstance(skipped_execution, list)
+                            and params['request_id'] in skipped_execution))
                     if (current.get('schedule', {}).get('kind') in {'cron', 'interval'}
-                            and (current.get('shutdown_interrupted_execution') == params['request_id']
-                                 or (current.get('last_status') == 'skipped'
-                                     and isinstance(skipped_execution, list)
-                                     and params['request_id'] in skipped_execution))):
+                            and is_shutdown_skip):
                         shutdown_detail = str(current.get('last_error') or error)
                         if current.get('last_status') != 'skipped':
                             if not skip_unknown_occurrence(

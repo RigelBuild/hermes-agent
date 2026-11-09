@@ -2465,6 +2465,9 @@ def mark_job_run(
     recurring unknown execution is stamped by ID so receipt recovery can skip that occurrence.
     """
     def apply(jobs, _i, job):
+        if (execution_id is not None
+                and execution_id in (job.get("canonical_completions") or [])):
+            return True
         if expected_fire_owner is not None:
             claim = job.get("fire_claim")
             if not isinstance(claim, dict) or claim.get("by") != expected_fire_owner:
@@ -2472,9 +2475,6 @@ def mark_job_run(
                     "mark_job_run: job_id %s fire claim owner changed; discarding stale completion",
                     job_id)
                 return False
-        if (execution_id is not None
-                and execution_id in (job.get("canonical_completions") or [])):
-            return True
         now = _hermes_now().isoformat()
         claim = job.get("fire_claim")
         owned = claim.get("scheduled_at") if isinstance(claim, dict) else None
@@ -2497,6 +2497,8 @@ def mark_job_run(
         _record_run_outcome(job, success, error, delivery_error, status, now)
         if pending is not None:
             job["pending_slot"] = pending
+        # Defer the first interrupted occurrence's tombstone until replay finishes; otherwise
+        # completed_occurrence would reject the required replay as already completed.
         if execution_id is not None and not keep_pending:
             from cron.scheduler_authority import replayable_completions as live
             job["canonical_completions"] = [*live(job_id, job.get("canonical_completions")), execution_id]
@@ -2510,7 +2512,8 @@ def mark_job_run(
                 slot, _hermes_now(), replay={"started_at": started, "interrupted_at": now})
             if execution_id is not None:
                 job["shutdown_interrupted_execution"] = execution_id
-        elif execution_id is not None and execution_id == job.get("shutdown_interrupted_execution"):
+        elif (execution_id is not None
+              and (execution_id == job.get("shutdown_interrupted_execution") or replay is not None)):
             job.pop("shutdown_interrupted_execution", None)
 
         if not success and model_unreachable and not is_terminal_job(job):
@@ -2538,7 +2541,6 @@ def mark_job_run(
 def skip_unknown_occurrence(
     job_id: str, execution_id: str, error: str, *, pause_recorded=None,
 ) -> bool:
-    """Book a shutdown-killed unknown occurrence as skipped, without replaying its side effects."""
     def apply(jobs, _i, job):
         completed = job.get("canonical_completions")
         if isinstance(completed, list) and execution_id in completed:

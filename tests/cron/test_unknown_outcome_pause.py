@@ -59,14 +59,20 @@ def test_shutdown_unknown_recurring_slot_is_skipped_without_replay(
             job["id"], return_job=True, scheduled_at=killed_slot, execution_id=execution["id"])
         assert executions.mark_execution_running(execution["id"])
         shutdown_error = _SHUTDOWN_ERROR.format(phase=shutdown_phase)
-        assert jobs.mark_job_run(
-            job["id"], False, shutdown_error,
-            expected_fire_owner=claim["fire_claim"]["by"], execution_id=execution["id"],
-            shutdown_interrupted=True,
-        )
+        key = scheduler._inflight_key(job["id"], tmp_path / "cron")
+        token = object()
+        scheduler._running_fire_owners[key] = {
+            token: (claim["fire_claim"]["by"], tmp_path / "cron", execution["id"]),
+        }
+        try:
+            assert job["id"] in scheduler.mark_running_jobs_interrupted(
+                shutdown_error, only_owners={(job["id"], claim["fire_claim"]["by"])})
+        finally:
+            scheduler._running_fire_owners.pop(key, None)
+            scheduler._interrupted_job_ids.discard(token)
         assert jobs.get_job(job["id"])["pending_slot"]["replay"]
         assert jobs.get_job(job["id"])["shutdown_interrupted_execution"] == execution["id"]
-        _make_unknown(execution["id"], shutdown_error)
+        assert executions.give_up_execution(execution["id"], reason=shutdown_error)
         journal = _journal(job, execution["id"])
         scheduler_authority.pause_for_unknown(
             job["id"], execution["id"], "unknown_execution: cron admission was not replayed")
@@ -91,6 +97,126 @@ def test_shutdown_unknown_recurring_slot_is_skipped_without_replay(
         assert "skipped" in executions.get_execution(execution["id"])["error"].lower()
         assert not journal.exists()
 
+
+def test_replay_completion_before_unknown_receipt_recovery_is_not_skipped(
+        tmp_path, monkeypatch):
+    now = [datetime(2026, 11, 9, 8, 0, tzinfo=UTC)]
+    monkeypatch.setattr(jobs, "_hermes_now", lambda: now[0])
+    monkeypatch.setattr(executions, "_hermes_now", lambda: now[0])
+    _peer(monkeypatch)
+
+    with jobs.use_cron_store(tmp_path / "cron"):
+        job = jobs.create_job("report", "every 1h", deliver="local")
+        killed_slot = job["next_run_at"]
+        now[0] = datetime.fromisoformat(killed_slot)
+        execution = executions.create_execution(
+            job["id"], source="builtin", scheduled_instant=killed_slot)
+        first = jobs.claim_job_for_fire(
+            job["id"], return_job=True, scheduled_at=killed_slot, execution_id=execution["id"])
+        assert executions.mark_execution_running(execution["id"])
+        shutdown_error = _SHUTDOWN_ERROR.format(phase="post-interrupt")
+        key = scheduler._inflight_key(job["id"], tmp_path / "cron")
+        token = object()
+        scheduler._running_fire_owners[key] = {
+            token: (first["fire_claim"]["by"], tmp_path / "cron", execution["id"]),
+        }
+        try:
+            assert job["id"] in scheduler.mark_running_jobs_interrupted(
+                shutdown_error, only_owners={(job["id"], first["fire_claim"]["by"])})
+        finally:
+            scheduler._running_fire_owners.pop(key, None)
+            scheduler._interrupted_job_ids.discard(token)
+        assert jobs.get_job(job["id"])["shutdown_interrupted_execution"] == execution["id"]
+        _journal(job, execution["id"])
+        assert executions.give_up_execution(execution["id"], reason=shutdown_error)
+
+        # This ordering is legal when the job replay finishes before the unknown receipt is
+        # reconciled. The replay carries the same scheduled instant in its own execution row.
+        now[0] += timedelta(minutes=1)
+        due = jobs.get_due_jobs()
+        assert any(candidate["id"] == job["id"] for candidate in due)
+        replay_execution = executions.create_execution(
+            job["id"], source="builtin", scheduled_instant=killed_slot)
+        replay = jobs.claim_job_for_fire(
+            job["id"], return_job=True, execution_id=replay_execution["id"])
+        assert replay["fire_claim"]["replay"]
+        assert executions.mark_execution_running(replay_execution["id"])
+        assert jobs.mark_job_run(
+            job["id"], True, expected_fire_owner=replay["fire_claim"]["by"],
+            execution_id=replay_execution["id"])
+        assert executions.finish_execution(replay_execution["id"], success=True)
+
+        scheduler_authority.reconcile_pending()
+
+        saved = jobs.get_job(job["id"])
+        assert saved["repeat"]["completed"] == 1
+        assert saved["last_status"] == "ok"
+        assert saved["state"] == "scheduled"
+        assert saved.get("pending_slot") is None
+        assert saved.get("shutdown_interrupted_execution") is None
+        assert executions.get_execution(replay_execution["id"])["status"] == "completed"
+        assert not scheduler_authority.journal_path(job["id"], execution["id"]).exists()
+
+def test_skip_reconciliation_finishes_after_crash_following_job_store_write(
+        tmp_path, monkeypatch):
+    now = [datetime(2026, 11, 9, 8, 0, tzinfo=UTC)]
+    monkeypatch.setattr(jobs, "_hermes_now", lambda: now[0])
+    monkeypatch.setattr(executions, "_hermes_now", lambda: now[0])
+    _peer(monkeypatch)
+
+    with jobs.use_cron_store(tmp_path / "cron"):
+        job = jobs.create_job("report", "every 1h", deliver="local")
+        killed_slot = job["next_run_at"]
+        now[0] = datetime.fromisoformat(killed_slot)
+        execution = executions.create_execution(
+            job["id"], source="builtin", scheduled_instant=killed_slot)
+        claim = jobs.claim_job_for_fire(
+            job["id"], return_job=True, scheduled_at=killed_slot, execution_id=execution["id"])
+        assert executions.mark_execution_running(execution["id"])
+        shutdown_error = _SHUTDOWN_ERROR.format(phase="post-interrupt")
+        assert jobs.mark_job_run(
+            job["id"], False, shutdown_error,
+            expected_fire_owner=claim["fire_claim"]["by"], execution_id=execution["id"],
+            shutdown_interrupted=True,
+        )
+        _make_unknown(execution["id"], shutdown_error)
+        journal = _journal(job, execution["id"])
+        scheduler_authority.pause_for_unknown(
+            job["id"], execution["id"], "unknown_execution: cron admission was not replayed")
+        now[0] += timedelta(hours=2, minutes=15)
+        expected_next = jobs.compute_next_run(job["schedule"], now[0].isoformat())
+        real_mark_unknown_skipped = executions.mark_unknown_skipped
+
+        def crash_after_jobs_write(execution_id, detail):
+            assert jobs.get_job(job["id"])["last_status"] == "skipped"
+            raise RuntimeError("simulated crash after jobs.json skip write")
+
+        monkeypatch.setattr(executions, "mark_unknown_skipped", crash_after_jobs_write)
+        scheduler_authority.reconcile_pending()
+        partial = jobs.get_job(job["id"])
+        assert partial["last_status"] == "skipped"
+        assert partial["state"] == "scheduled"
+        assert "shutdown_interrupted_execution" not in partial
+        assert execution["id"] in partial["canonical_completions"]
+        assert journal.exists()
+        assert not json.loads(journal.read_text(encoding="utf-8")).get("unknown_skipped")
+
+        monkeypatch.setattr(executions, "mark_unknown_skipped", real_mark_unknown_skipped)
+        scheduler_authority.reconcile_pending()
+        assert journal.exists()
+        assert json.loads(journal.read_text(encoding="utf-8")).get("unknown_skipped")
+        assert "skipped" in executions.get_execution(execution["id"])["error"].lower()
+
+        scheduler_authority.reconcile_pending()
+
+        saved = jobs.get_job(job["id"])
+        assert saved["state"] == "scheduled"
+        assert saved["repeat"]["completed"] == 0
+        assert saved["last_status"] == "skipped"
+        assert saved["next_run_at"] == expected_next
+        assert executions.get_execution(execution["id"])["status"] == "unknown"
+        assert "skipped" in executions.get_execution(execution["id"])["error"].lower()
+        assert not journal.exists()
 
 def test_shutdown_unknown_final_repeat_stays_active_without_spending_repeat(
         tmp_path, monkeypatch):
