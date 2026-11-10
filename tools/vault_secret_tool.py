@@ -462,8 +462,8 @@ def _handle(args: dict[str, Any], **_kwargs: Any) -> str:
 VAULT_SECRET_SCHEMA = {
     "name": "vault_secret",
     "description": (
-        "Use a field from any 1Password item (Secure Note, API Credential, SSH key, ...) in a shell command "
-        "without the value entering the conversation. search (query: title text) → items; fields (item) → "
+        "Use any 1Password item field in a shell command without revealing its value. "
+        "Search (query: title text) → items; fields (item) → "
         "field ids and labels, never values; run (command, env: {VAR: {item, field}}, reason, optional "
         "workdir, timeout) → runs `bash -c command` with each field injected as $VAR and returns the exit code and "
         "output with the values redacted. create (account, vault, title, category, fields, reason) / edit "
