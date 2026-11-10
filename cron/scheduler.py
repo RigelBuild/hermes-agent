@@ -597,7 +597,7 @@ def _inflight_home_path(home_key: str) -> Path:
 # In-flight state below is keyed by ``_inflight_key``; the public accessors still report bare job
 # ids so host-wide consumers (shutdown drain, idle-exit, metrics) see the union across profiles.
 _running_job_ids: set = set()
-_running_fire_owners: dict[tuple, dict[object, tuple[Optional[str], Path]]] = {}
+_running_fire_owners: dict[tuple, dict[object, tuple[Optional[str], Path, Optional[str]]]] = {}
 # Parent gateway threads synchronously waiting on restart-safe scope workers.
 # Shutdown must not misclassify these as ownerless in-process runs: the tool
 # process sweep cannot reach the worker's transient scope.
@@ -1123,30 +1123,30 @@ def mark_running_jobs_interrupted(
     with _running_lock:
         restart_safe_waiters = set(_restart_safe_waiter_job_ids)
         active_fires = [
-            (token, key, owner, profile_home)
+            (token, key, owner, profile_home, execution_id)
             for key, executions in _running_fire_owners.items()
             if key not in restart_safe_waiters
-            for token, (owner, profile_home) in executions.items()
+            for token, (owner, profile_home, execution_id) in executions.items()
         ]
         if only_owners is not None:
             active_fires = [fire for fire in active_fires if (fire[1][1], fire[2]) in only_owners]
-        registered_keys = {key for _t, key, _o, _p in active_fires}
+        registered_keys = {key for _t, key, _o, _p, _e in active_fires}
         if only_owners is None:
             # The key's home half IS the profile home this claim belongs to — the only record of
             # it for a claim that never reached ``_running_fire_owners``. Read the real Path back
             # from the key, never ``Path(key[0])``: the key is normcased.
             active_fires.extend(
-                (None, key, None, _inflight_home_path(key[0]))
+                (None, key, None, _inflight_home_path(key[0]), None)
                 for key in (
                     _running_job_ids - registered_keys - restart_safe_waiters
                 )
             )
         _interrupted_job_ids.update(
             token if token is not None else key
-            for token, key, _owner, _profile_home in active_fires
+            for token, key, _owner, _profile_home, _execution_id in active_fires
         )
     marked = []
-    for _token, key, fire_owner, profile_home in active_fires:
+    for _token, key, fire_owner, profile_home, execution_id in active_fires:
         job_id = key[1]
         if not fire_owner:
             logger.warning(
@@ -1162,6 +1162,7 @@ def mark_running_jobs_interrupted(
             with use_cron_store(profile_home):
                 if mark_job_run(
                     job_id, False, reason, expected_fire_owner=fire_owner,
+                    **({"execution_id": execution_id} if execution_id is not None else {}),
                     shutdown_interrupted=True):
                     marked.append(job_id)
         except Exception as e:
@@ -2901,7 +2902,7 @@ def run_one_job(
     _fire_key = _inflight_key(job["id"])
     with _running_lock:
         _running_fire_owners.setdefault(_fire_key, {})[execution_token] = (
-            fire_owner or None, profile_home)
+            fire_owner or None, profile_home, execution_id)
     try:
         with self_removal_delivery_scope(job["id"]):
             return _run_with_fire_claim_heartbeat(

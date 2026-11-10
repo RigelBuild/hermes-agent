@@ -156,9 +156,9 @@ def reconcile_pending(*, allow_connect=True):
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_client import connect_gateway
     from cron.executions import execution_owner_live, get_execution
-    from cron.jobs import get_job, pause_job
+    from cron.jobs import get_job, pause_job, skip_unknown_occurrence
     from cron.scheduler import (_RunDelivery, _FireOwnership, _apply_agent_failure_marker,
-                                _save_compose_deliver)
+                                _deliver_crash_failure, _fire_secret_scope, _save_compose_deliver)
     from cron.scheduler_bookkeeping import fail_empty_response, finish_completed_run
     from utils import atomic_json_write
     import logging
@@ -206,11 +206,53 @@ def reconcile_pending(*, allow_connect=True):
                 state = {'status': 'terminal', 'job': current,
                          'result': [False, f'# Cron Job: {params["job_id"]} (FAILED)\n\n{error}\n', '', error]}
             if state['status'] != 'terminal':
-                if state['status'] == 'unknown' and not record.get('pause_recorded'):
-                    reason = 'Canonical cron unknown; no automatic re-execution'
-                    record['pause_recorded'] = _pause_identity(pause_job(params['job_id'], reason=reason))
-                    atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
-                continue
+                if state['status'] == 'unknown':
+                    row = get_execution(params['request_id'])
+                    error = str((row or {}).get('error') or 'Canonical cron outcome is unknown')
+                    current = get_job(params['job_id'])
+                    if current is None:
+                        journal.unlink(missing_ok=True)
+                        continue
+                    recurring = current.get('schedule', {}).get('kind') in {'cron', 'interval'}
+                    if params['request_id'] in (current.get('canonical_completions') or []):
+                        _lift_pause(params['job_id'], record.get('pause_recorded'))
+                        journal.unlink(missing_ok=True)
+                        continue
+                    if recurring:
+                        from cron.occurrences import completed_occurrence
+                        scheduled_instant = (row or {}).get('scheduled_instant')
+                        if scheduled_instant and completed_occurrence(current, scheduled_instant):
+                            _lift_pause(params['job_id'], record.get('pause_recorded'))
+                            journal.unlink(missing_ok=True)
+                            continue
+                        shutdown_error = current.get('last_error') or error
+                        if current.get('shutdown_interrupted_execution') == params['request_id']:
+                            detail = f'Skipped unknown shutdown occurrence: {shutdown_error}'
+                            from cron.executions import mark_unknown_skipped
+                            # False means the unknown row was already settled or pruned.
+                            mark_unknown_skipped(params['request_id'], detail)
+                            if not skip_unknown_occurrence(
+                                    params['job_id'], params['request_id'], shutdown_error,
+                                    pause_recorded=record.get('pause_recorded')):
+                                raise RuntimeError('Could not book skipped unknown cron occurrence')
+                            journal.unlink(missing_ok=True)
+                            continue
+                    if not record.get('pause_recorded'):
+                        reason = 'Canonical cron unknown; no automatic re-execution'
+                        paused = pause_job(params['job_id'], reason=reason)
+                        record['pause_recorded'] = _pause_identity(paused)
+                        atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
+                    if record.get('pause_recorded') and not record.get('pause_notified'):
+                        record['pause_notified'] = True
+                        atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
+                        with _fire_secret_scope():
+                            _deliver_crash_failure(
+                                dict(current, execution_id=params['request_id']), error,
+                                adapters=None, loop=None)
+                        logging.getLogger(__name__).warning(
+                            'CRON_UNKNOWN_OUTCOME_PAUSED: job %s execution %s: %s',
+                            params['job_id'], params['request_id'], error)
+                    continue
             success, output, answer, error = state['result']
             job = dict(state['job'], **(state.get('job_flags') or {}))
             job['execution_id'] = params['request_id']

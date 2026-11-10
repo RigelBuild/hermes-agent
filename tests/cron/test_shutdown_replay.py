@@ -31,7 +31,7 @@ def test_shutdown_sweep_preserves_interrupted_occurrence(clock, monkeypatch, tmp
         first = claim_due(job["id"], clock)
         owner = first["fire_claim"]["by"]
         key = scheduler._inflight_key(job["id"])
-        monkeypatch.setattr(scheduler, "_running_fire_owners", {key: {object(): (owner, tmp_path / "cron")}})
+        monkeypatch.setattr(scheduler, "_running_fire_owners", {key: {object(): (owner, tmp_path / "cron", None)}})
         monkeypatch.setattr(scheduler, "_interrupted_job_ids", set())
         assert job["id"] in scheduler.mark_running_jobs_interrupted("shutdown", only_owners={(job["id"], owner)})
         stored = jobs.get_job(job["id"])
