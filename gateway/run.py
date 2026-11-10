@@ -4106,7 +4106,16 @@ class GatewayRunner(
         See #15654, #9051.
         """
         if interrupt_depth == 0:
-            agent._last_activity_ts = time.time()
+            now = time.time()
+            previous_activity_ts = getattr(agent, "_last_activity_ts", None)
+            if previous_activity_ts is not None:
+                # Preserve idle time for compaction while resetting the watchdog clock.
+                prior_gap = getattr(agent, "_idle_resume_gap_s", 0)
+                agent._idle_resume_gap_s = max(
+                    prior_gap if isinstance(prior_gap, (int, float)) else 0,
+                    now - previous_activity_ts,
+                )
+            agent._last_activity_ts = now
             agent._last_activity_desc = "starting new turn (cached)"
             agent._last_activity_provenance = ActivityProvenance.UNKNOWN
             # Reset the SessionDB flush cursor so the new turn's messages are fully persisted — a stale

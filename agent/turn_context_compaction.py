@@ -150,10 +150,14 @@ def _idle_compaction(
     from agent import turn_context as _tc
 
     messages = out.messages
+    _idle_resume_gap = getattr(agent, "_idle_resume_gap_s", None)
+    agent._idle_resume_gap_s = None
     _idle_after = getattr(agent, "compression_idle_compact_after_seconds", 0)
     if not (agent.compression_enabled and _idle_after > 0 and messages):
         return
-    _idle_gap = time.time() - getattr(agent, "_last_activity_ts", time.time())
+    _idle_gap = _idle_resume_gap
+    if _idle_gap is None:
+        _idle_gap = time.time() - getattr(agent, "_last_activity_ts", time.time())
     if _idle_gap < _idle_after:
         return
     _compressor = agent.context_compressor
