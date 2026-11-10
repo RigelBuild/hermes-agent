@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from hermes_state_pidns import holder_namespace_token
+from agent.activity_tracking import save_idle_gap
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -83,14 +84,7 @@ class DurableTurnLease:
     def start(self) -> None:
         with self._lock:
             self.turn_active = True
-        # Save the pre-turn idle gap for idle compaction before the activity clock resets.
-        previous_activity_ts = getattr(self.agent, "_last_activity_ts", None)
-        if previous_activity_ts is not None:
-            prior_gap = getattr(self.agent, "_idle_resume_gap_s", 0)
-            self.agent._idle_resume_gap_s = max(
-                prior_gap if isinstance(prior_gap, (int, float)) else 0,
-                time.time() - previous_activity_ts,
-            )
+        save_idle_gap(self.agent)
         # `_last_activity_ts` persists across turns; without this reset the watchdog would abort a fresh turn.
         self.agent._touch_activity("starting new turn")
         from hermes_cli.observability.shared_metrics_process import arm_turn

@@ -31,6 +31,7 @@ from datetime import datetime
 from typing import Callable, Dict, Optional, Any, List, Tuple, cast
 
 from agent.async_utils import safe_schedule_threadsafe
+from agent.activity_tracking import save_idle_gap
 from agent.i18n import t
 from agent.conversation_compression import (
     COMPACTION_DONE_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_STATUS, COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
@@ -4107,14 +4108,7 @@ class GatewayRunner(
         """
         if interrupt_depth == 0:
             now = time.time()
-            previous_activity_ts = getattr(agent, "_last_activity_ts", None)
-            if previous_activity_ts is not None:
-                # Preserve idle time for compaction while resetting the watchdog clock.
-                prior_gap = getattr(agent, "_idle_resume_gap_s", 0)
-                agent._idle_resume_gap_s = max(
-                    prior_gap if isinstance(prior_gap, (int, float)) else 0,
-                    now - previous_activity_ts,
-                )
+            save_idle_gap(agent, now)
             agent._last_activity_ts = now
             agent._last_activity_desc = "starting new turn (cached)"
             agent._last_activity_provenance = ActivityProvenance.UNKNOWN

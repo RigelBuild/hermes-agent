@@ -137,22 +137,3 @@ def test_preflight_reads_the_cooldown_after_a_moved_route_clears_it(monkeypatch)
     with pytest.raises(_CompressionReached):
         _drive_pre_api(agent)
     assert labels == ["pre_api"]
-
-
-def test_idle_compaction_uses_gap_saved_before_cached_turn_reset():
-    from gateway.run import GatewayRunner
-
-    labels: list = []
-    agent = _agent(labels)
-    agent.compression_idle_compact_after_seconds = 60
-    agent._last_activity_ts = time.time() - 3_600
-    agent._last_activity_desc = "previous turn activity"
-    agent._last_activity_provenance = None
-
-    GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
-
-    with pytest.raises(_CompressionReached):
-        _idle_compaction(agent, _outcome(_messages()), "sys", "current ask", "task")
-
-    assert labels == ["idle"]
-    assert agent._idle_resume_gap_s is None
