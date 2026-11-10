@@ -250,9 +250,13 @@ def test_schema_requires_tier_only_when_tiers_are_configured(monkeypatch):
             assert "tier" not in parameters["required"]
 
 
+_UNSET = object()
+
+
 @pytest.mark.parametrize(
     ("tier_effort", "base_effort", "expected"),
-    [("high", "low", "high"), (None, "low", "low"), (False, "high", False)],
+    [("high", "low", "high"), (_UNSET, "low", "low"), (None, "low", "low"), ("", "low", "low"),
+     (False, "high", False)],
 )
 def test_tier_reasoning_effort_overrides_delegation_effort(
     tier_effort, base_effort, expected, monkeypatch, tmp_path,
@@ -260,7 +264,7 @@ def test_tier_reasoning_effort_overrides_delegation_effort(
     from hermes_constants import parse_reasoning_effort
 
     config = {**_config(), "reasoning_effort": base_effort}
-    if tier_effort is not None:
+    if tier_effort is not _UNSET:
         config["tiers"]["easy"]["reasoning_effort"] = tier_effort
     _, agent_class = _dispatch({"goal": "Inspect fixture", "tier": "easy"}, config, monkeypatch, tmp_path)
 

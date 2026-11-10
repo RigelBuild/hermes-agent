@@ -572,13 +572,14 @@ def _resolve_child_runtime(
     child_reasoning = getattr(parent_agent, "reasoning_config", None)
     try:
         delegation_effort = delegation_cfg.get("reasoning_effort")
-        if isinstance(routing_cfg, dict) and "reasoning_effort" in routing_cfg:
-            delegation_effort = routing_cfg["reasoning_effort"]
+        tier_effort = routing_cfg.get("reasoning_effort") if isinstance(routing_cfg, dict) else None
+        if tier_effort or tier_effort is False:  # a blank tier value falls through to delegation's
+            delegation_effort = tier_effort
         if delegation_effort or delegation_effort is False:
             from hermes_constants import parse_reasoning_effort
             parsed = parse_reasoning_effort(delegation_effort)
             if parsed is None:
-                logger.warning("Unknown delegation.reasoning_effort '%s', inheriting parent level", delegation_effort)
+                logger.warning("Unknown delegation reasoning_effort '%s', inheriting parent level", delegation_effort)
             else:
                 child_reasoning = parsed
     except Exception as exc:

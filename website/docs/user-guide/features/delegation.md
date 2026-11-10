@@ -659,7 +659,7 @@ error.
 
 To select a child model per model-facing delegation call, configure `delegation.tiers`. Each tier accepts the
 same model-routing keys as `delegation` (`model`, `provider`, `base_url`, `api_key`, and optional
-`api_mode`). When this map is present, every model-facing `delegate_task` call must name one tier.
+`api_mode`), plus `reasoning_effort`. When this map is present, every model-facing `delegate_task` call must name one tier.
 Control actions such as `action: list` ignore the tier, and one tier applies to every task in a batch.
 
 Tier specs replace base routing fields, including request overrides and fallback providers. A tier with only `model` keeps the parent's runtime provider and endpoint; it does not inherit `delegation.provider`. A tier's `reasoning_effort` overrides `delegation.reasoning_effort`. If `delegation.tiers` is unset, a supplied tier is ignored.
