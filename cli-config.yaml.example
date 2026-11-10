@@ -1852,6 +1852,14 @@ delegation:
   #                                           # delegation.model to an inexpensive one — children carry the
   #                                           # vast majority of tokens, so this is where spend is cut while
   #                                           # planning quality stays with the frontier parent.
+  # Optional per-call model routes. If present, delegate_task requires tier: easy, medium, or hard.
+  # Each tier is a full route spec. Base model/provider/endpoint/credentials/request overrides/fallback providers are cleared first.
+  # A tier with only model inherits the parent runtime provider and endpoint, not delegation.provider.
+  # A supplied tier is ignored when no tiers map is configured.
+  # tiers:
+  #   easy: {model: "google/gemini-3-flash-preview", provider: "openrouter"}
+  #   medium: {model: "anthropic/claude-sonnet-4", provider: "openrouter"}
+  #   hard: {model: "anthropic/claude-opus-4", provider: "openrouter"}
   # fallback_providers:                       # Fallback chain for delegated children (same entry format as the
   #   - provider: "openrouter"                # top-level list). Pinned children use only a declared child chain;
   #     model: "deepseek/deepseek-chat"       # unpinned children inherit when unset. [] disables fallback (#65038).
