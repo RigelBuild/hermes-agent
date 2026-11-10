@@ -51,8 +51,11 @@ class _Channel:
         self.name = None
 
     async def send(self, content=None, **kwargs):
-        message = self.client.message(self, content or "", **kwargs)
-        self.sent.append((content, kwargs, message))
+        sent_kwargs = dict(kwargs)
+        keyword_content = kwargs.pop("content", "")
+        message_content = content or keyword_content
+        message = self.client.message(self, message_content, **kwargs)
+        self.sent.append((content, sent_kwargs, message))
         self.messages[message.id] = message
         return message
 
@@ -322,7 +325,7 @@ async def test_interrupt_after_committed_choice_settles_index_as_cancelled(tmp_p
     await _wait_for_index(adapter)
     runner = _TurnRunner(_StatusAdapter(adapter), "discord:555")
 
-    def commit_then_interrupt(_event, session_key, *, interrupt_log):
+    def commit_then_interrupt(_event, session_key, *, interrupt_log, timeout_s=None):
         assert approval_module.resolve_gateway_approval(
             session_key, "once", request_id=request_id,
         ) == 1
@@ -592,13 +595,13 @@ async def test_button_approval_edits_its_index_line(tmp_path):
     adapter, _client, prompt_channel, index_channel = _adapter(tmp_path / "home")
     request_id = "button-approval"
     session_key = "discord:555"
+    runner = _TurnRunner(_StatusAdapter(adapter), session_key)
+    approval_data = {"request_id": request_id, "command": "make release"}
+    wait_task = await _approval_wait(session_key, approval_data, runner)
     await _send_prompt(adapter, request_id)
     await _wait_for_index(adapter)
     view = prompt_channel.sent[0][1]["view"]
     view._check_auth = lambda _interaction: True
-    runner = _TurnRunner(_StatusAdapter(adapter), session_key)
-    approval_data = {"request_id": request_id, "command": "make release"}
-    wait_task = await _approval_wait(session_key, approval_data, runner)
     interaction = SimpleNamespace(
         user=SimpleNamespace(id=1, display_name="alice"),
         response=SimpleNamespace(edit_message=AsyncMock(), send_message=AsyncMock()),
@@ -716,7 +719,8 @@ async def test_index_summary_uses_prompt_preview_before_normalizing(tmp_path):
     await _send_prompt(adapter, command=" " * 2500 + private_suffix)
     await _wait_for_index(adapter)
 
-    assert private_suffix not in prompt_channel.sent[0][2].content
+    sent_content = prompt_channel.sent[0][0] or prompt_channel.sent[0][1].get("content", "")
+    assert private_suffix not in sent_content
     assert private_suffix not in _line_messages(index_channel)[0].content
 
 
@@ -885,9 +889,9 @@ async def test_runner_to_discord_redacts_credential_from_prompt_and_index(tmp_pa
     await asyncio.to_thread(runner._approval_notify_sync, approval)
     await asyncio.gather(*adapter._approval_index._tasks)
 
-    prompt = prompt_channel.sent[0][2]
+    prompt_content = prompt_channel.sent[0][0] or prompt_channel.sent[0][1].get("content", "")
     line = _line_messages(index_channel)[0]
-    assert fake_token not in prompt.content
+    assert fake_token not in prompt_content
     assert fake_token not in line.content
-    assert "curl" in prompt.content and "curl" in line.content
+    assert "curl" in prompt_content and "curl" in line.content
     approval_module._gateway_queues.pop("discord:555", None)

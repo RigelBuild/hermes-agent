@@ -106,19 +106,45 @@ class TestTrustGateAtCallTime:
         assert json.loads(raw) == {"result": "ok"}
         fake_session.call_tool.assert_awaited_once()
 
+    def test_approval_card_shows_redacted_bounded_arguments(self, fake_session, monkeypatch):
+        """The approver sees arguments without secrets, within the messaging cap."""
+        import agent.redact
+        monkeypatch.setattr(agent.redact, "_REDACT_ENABLED", False)
+        _set_trust("srv", "untrusted")
+        handler = _mcp_handlers._make_tool_handler("srv", "trigger_build", 30.0)
+        args = {
+            "job": "release",
+            "api_key": "sk-supersecretcredential123456",
+            "db_password": "hunter2-correct-horse-battery",
+            "headers": {"Authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.cGF5bG9hZA.c2lnbmF0dXJl",
+                        "x-api-key": "opaqueheadervalue77"},
+            "password": 987654321,
+            "credentials": ["opaque-credential-value"],
+            "target": "prod\u202e",
+            "notes": "x" * 5_000,
+        }
+        with patch("tools.approval_prompt.request_elicitation_consent", return_value="decline") as consent:
+            handler(args)
+        message = consent.call_args.args[0]
+        assert '"job": "release"' in message
+        for secret in ("sk-supersecretcredential123456", "hunter2-correct-horse-battery",
+                       "eyJhbGciOiJIUzI1NiJ9.cGF5bG9hZA.c2lnbmF0dXJl", "opaqueheadervalue77", "987654321",
+                       "opaque-credential-value", "\u202e"):
+            assert secret not in message
+        assert "truncated" in message
+        assert len(message) < 2_000
+        fake_session.call_tool.assert_not_awaited()
+
     def test_untrusted_approval_shows_capped_safe_arguments(self, fake_session):
         _set_trust("srv", "untrusted")
         handler = _mcp_handlers._make_tool_handler("srv", "sync_source", 30.0)
-        long_value = "x" * 500
         with patch("tools.approval_prompt.request_elicitation_consent", return_value="decline") as consent:
-            handler({"source": "production", "api_token": "never show me", "notes": long_value})
+            handler({"source": "production", "api_token": "never show me", "notes": "x" * 5000})
         message, description = consent.call_args.args
-        assert 'sync_source(source="production"' in message
-        assert "sync_source(source=\"production\"" in description
+        assert '"source": "production"' in message
+        assert "sync_source" in message and "sync_source" in description
         assert "never show me" not in message + description
-        assert "notes=" in message
-        assert "x" * 300 in message and "x" * 301 not in message
-        assert "source=\"production\"" in description
+        assert '"notes":' in message and "truncated" in message
         assert len(message) < 1800
 
     def test_untrusted_approval_redacts_authorization_bearers_recursively(self, fake_session):

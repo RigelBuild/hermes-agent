@@ -79,6 +79,16 @@ _RESPONSE_FRAME_RE = re.compile(
     rf"(?m)^{re.escape(_RESPONSE_FRAME)}(\d+)\n{re.escape(_RESPONSE_HEADING)}")
 
 
+def _job_doc_header(job_name: str, job_id: str, now_iso: str, mode: str) -> str:
+    """Common markdown header for the short-circuit run docs (no_agent / monitor)."""
+    return (
+        f"# Cron Job: {job_name}\n\n"
+        f"**Job ID:** {job_id}\n"
+        f"**Run Time:** {now_iso}\n"
+        f"**Mode:** {mode}\n"
+    )
+
+
 def _archive_answer(archive: str) -> str | None:
     """The reusable answer of a stored run, using its length frame when available.
 
@@ -280,6 +290,17 @@ _CRON_HINT = (
 )
 
 
+def _run_time_line() -> str:
+    """This fire's wall-clock time in the configured zone. The system prompt is date-only (byte-stable
+    for caching), so without it a 07:00 brief can't tell itself from a 19:00 retry. Kept outside
+    ``_CRON_HINT`` and after it: the hint stays byte-stable, and cron sessions are fresh per fire."""
+    from hermes_time import safe_strftime
+    now = _hermes_now()
+    offset = now.strftime("%z")
+    zone = f" (UTC{offset[:3]}:{offset[3:]})" if offset else ""
+    return f"[CURRENT RUN TIME: {safe_strftime(now, '%A, %Y-%m-%d %H:%M %Z').strip()}{zone}]\n\n"
+
+
 def _build_job_prompt(
     job: dict, prerun_script: Optional[tuple] = None, extra_prompt: Optional[str] = None,
     runtime_data_prompt: Optional[str] = None,
@@ -339,7 +360,7 @@ def _build_job_prompt(
         "use terminal and file tools instead. "
         if approval_context._get_cron_approval_mode() == "deny" else ""
     )
-    prompt = _CRON_HINT + execute_code_hint + prompt
+    prompt = _CRON_HINT + _run_time_line() + execute_code_hint + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

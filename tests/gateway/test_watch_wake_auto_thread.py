@@ -77,8 +77,9 @@ async def test_drain_drops_a_finally_refused_watch_event(tmp_path, monkeypatch, 
 
 
 @pytest.mark.parametrize('reason, requeued', [
-    ('invalid_params', False), ('permission_denied', False), ('profile_mismatch', False),
-    ('runtime_draining', True), ('queue_full', True), ('not_found', True),
+    ('invalid_params', True), ('permission_denied', False), ('profile_mismatch', False),
+    ('not_found', True),  # Upstream permanent refusals retry to the bounded watch cap.
+    ('runtime_draining', True), ('queue_full', True),
 ])
 @pytest.mark.asyncio
 async def test_drain_requeues_only_owner_state_refusals(tmp_path, monkeypatch, reason, requeued):

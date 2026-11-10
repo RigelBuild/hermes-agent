@@ -540,7 +540,7 @@ async def test_revoked_plugin_origin_is_dropped_after_claim(origin_env, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_each_claimed_row_uses_a_fresh_context(origin_env, monkeypatch):
+async def test_each_row_runs_in_a_copy_of_the_drain_start_context(origin_env, monkeypatch):
     from contextvars import ContextVar
     from gateway.platforms.event import MessageType
     from gateway.session_authority import SessionAuthority
@@ -597,7 +597,7 @@ def test_local_plugin_origin_display_keeps_cotal_toolsets(origin_env, monkeypatc
     from gateway.config import Platform
     from gateway.run import GatewayRunner
     from gateway.session_authority import SessionAuthority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_ingress import plugin_origin_turn
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import local_adapter_map
@@ -609,8 +609,8 @@ def test_local_plugin_origin_display_keeps_cotal_toolsets(origin_env, monkeypatc
                         lambda *_args, **_kwargs: {"platform_toolsets": {
                             "cli": ["terminal"], "cotal": ["discord"],
                         }})
-    actor = Principal("test-owner", env.authority.profile_id,
-                      frozenset({"session:create", "session:submit", "session:read"}), "fixture")
+    actor = SessionActor("test-owner", env.authority.profile_id,
+                         frozenset({"session:create", "session:submit", "session:read"}), "fixture")
     ref = create_local_session(env.authority, actor, {
         "request_id": "local-plugin-toolsets", "source": "cli", "cwd": str(env.home),
         "model": "fixture", "toolsets": ["terminal"],

@@ -87,3 +87,7 @@ name a tier. Plugin lifecycle launches remain exempt unless they pass
 `tier="easy"`, `tier="medium"`, or `tier="hard"` to `launch()`. A supplied
 tier selects its own model-routing bundle instead of inheriting the base
 delegation model, provider, endpoint, key, or API mode.
+
+The lifecycle API does not consult `delegation.backend`: the plugin that launches a child already chooses
+its route. To change how `delegate_task` routes the model's subagents, write a
+[delegation provider plugin](delegation-provider-plugin.md).

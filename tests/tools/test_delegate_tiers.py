@@ -248,3 +248,67 @@ def test_schema_requires_tier_only_when_tiers_are_configured(monkeypatch):
             )
         else:
             assert "tier" not in parameters["required"]
+
+
+_UNSET = object()
+
+
+@pytest.mark.parametrize(
+    ("tier_effort", "base_effort", "expected"),
+    [("high", "low", "high"), (_UNSET, "low", "low"), (None, "low", "low"), ("", "low", "low"),
+     (False, "high", False)],
+)
+def test_tier_reasoning_effort_overrides_delegation_effort(
+    tier_effort, base_effort, expected, monkeypatch, tmp_path,
+):
+    from hermes_constants import parse_reasoning_effort
+
+    config = {**_config(), "reasoning_effort": base_effort}
+    if tier_effort is not _UNSET:
+        config["tiers"]["easy"]["reasoning_effort"] = tier_effort
+    _, agent_class = _dispatch({"goal": "Inspect fixture", "tier": "easy"}, config, monkeypatch, tmp_path)
+
+    assert agent_class.call_args.kwargs["reasoning_config"] == parse_reasoning_effort(expected)
+
+
+def test_delegation_effort_applies_without_tiers(monkeypatch, tmp_path):
+    from hermes_constants import parse_reasoning_effort
+
+    config = {**_config(tiers=False), "reasoning_effort": "low"}
+    _, agent_class = _dispatch({"goal": "Inspect fixture"}, config, monkeypatch, tmp_path)
+
+    assert agent_class.call_args.kwargs["reasoning_config"] == parse_reasoning_effort("low")
+
+
+def test_tier_effort_typo_is_refused(monkeypatch, tmp_path):
+    config = _config()
+    config["tiers"]["easy"]["reasoning_effort"] = "hgih"
+    result, agent_class = _dispatch({"goal": "Inspect fixture", "tier": "easy"}, config, monkeypatch, tmp_path)
+
+    assert "unknown reasoning_effort 'hgih'" in result["error"]
+    agent_class.assert_not_called()
+
+
+_BACKEND_PARAMS = ({"option": {"type": "string", "enum": ["fast"]}}, "Backend guidance.")
+
+
+def test_tiers_hide_backend_params_from_schema(monkeypatch):
+    for enabled in (True, False):
+        config = _config(tiers=enabled)
+        monkeypatch.setattr(delegate_tool, "_load_config", lambda config=config: config)
+        with patch("tools.delegate_tool_routes.schema_extension", return_value=_BACKEND_PARAMS):
+            definition = registry.get_definitions({"delegate_task"})[0]["function"]
+        props = definition["parameters"]["properties"]["tasks"]["items"]["properties"]
+        assert ("option" in props) is not enabled
+
+
+def test_tiered_spawn_refuses_backend_params(monkeypatch, tmp_path):
+    with patch("tools.delegate_tool_routes.schema_extension", return_value=_BACKEND_PARAMS):
+        result, agent_class = _dispatch(
+            {"tasks": [{"goal": "Inspect fixture", "option": "fast"}], "tier": "easy"},
+            _config(), monkeypatch, tmp_path,
+        )
+
+    assert "take precedence over delegation.backend" in result["error"]
+    assert "option" in result["error"]
+    agent_class.assert_not_called()
