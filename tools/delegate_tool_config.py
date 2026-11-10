@@ -567,11 +567,13 @@ def _resolve_child_runtime(
             getattr(parent_agent, "requested_provider", None) or effective_provider
         )
 
-    # Reasoning: delegation.reasoning_effort > parent. Keep the raw value — a
+    # Reasoning: tier > delegation.reasoning_effort > parent. Keep the raw value — a
     # YAML ``false`` must disable thinking, not coerce to "" and inherit.
     child_reasoning = getattr(parent_agent, "reasoning_config", None)
     try:
         delegation_effort = delegation_cfg.get("reasoning_effort")
+        if isinstance(routing_cfg, dict) and "reasoning_effort" in routing_cfg:
+            delegation_effort = routing_cfg["reasoning_effort"]
         if delegation_effort or delegation_effort is False:
             from hermes_constants import parse_reasoning_effort
             parsed = parse_reasoning_effort(delegation_effort)

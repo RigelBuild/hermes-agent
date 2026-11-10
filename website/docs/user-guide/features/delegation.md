@@ -662,12 +662,12 @@ same model-routing keys as `delegation` (`model`, `provider`, `base_url`, `api_k
 `api_mode`). When this map is present, every model-facing `delegate_task` call must name one tier.
 Control actions such as `action: list` ignore the tier, and one tier applies to every task in a batch.
 
-Tier specs replace base routing fields, including request overrides and fallback providers. A tier with only `model` keeps the parent's runtime provider and endpoint; it does not inherit `delegation.provider`. If `delegation.tiers` is unset, a supplied tier is ignored.
+Tier specs replace base routing fields, including request overrides and fallback providers. A tier with only `model` keeps the parent's runtime provider and endpoint; it does not inherit `delegation.provider`. A tier's `reasoning_effort` overrides `delegation.reasoning_effort`. If `delegation.tiers` is unset, a supplied tier is ignored.
 
 ```yaml
 delegation:
   tiers:
-    easy: {model: "google/gemini-3-flash-preview", provider: "openrouter"}
+    easy: {model: "google/gemini-3-flash-preview", provider: "openrouter", reasoning_effort: "high"}
     medium: {model: "anthropic/claude-sonnet-4", provider: "openrouter"}
     hard: {model: "anthropic/claude-opus-4", provider: "openrouter"}
 ```
