@@ -83,6 +83,22 @@
           }).node-gyp;
         default = full;
 
+        release =
+          let
+            system = pkgs.stdenv.hostPlatform.system;
+            pinFile = "${toString ./.}/release-closure/${system}.json";
+          in
+          if !builtins.pathExists pinFile then
+            throw "No release closure pin for ${system}; expected nix/release-closure/${system}.json"
+          else
+            let
+              pin = builtins.fromJSON (builtins.readFile pinFile);
+            in
+            builtins.fetchClosure {
+              fromStore = "https://github.com/RigelBuild/hermes-agent/releases/download/${pin.tag}";
+              fromPath = pin.storePath;
+              inputAddressed = true;
+            };
         inherit sandbox;
 
         inherit minimal;

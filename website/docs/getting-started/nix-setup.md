@@ -50,6 +50,22 @@ stops instead of selecting a different Python.
 Native Nix evaluation and builds remain CI gates. Update through Nix. Do not
 repair a Nix store path with pip.
 
+## Release cache
+
+The `.#release` output fetches the pinned input-addressed package closure from
+the matching GitHub Release. Enable Nix's `fetch-closure` experimental feature
+with `extra-experimental-features = fetch-closure` in `nix.conf`.
+`.#default` continues to build Hermes from source.
+
+Add the full `name:key` line from the release's `nix-release-cache.pub` asset to
+`trusted-public-keys` in `nix.conf` or `nix.settings.trusted-public-keys` on
+NixOS. The workflow signs paths with the repository secret
+`NIX_RELEASE_SIGNING_KEY`.
+
+The pin is `nix/release-closure/<system>.json`, with `tag` (release tag) and
+`storePath` (the absolute Nix store path from `path-info.json`). No pin exists
+for a system until its release closure is published.
+
 ## Prerequisites
 
 - **Nix with flakes enabled** — [Determinate Nix](https://install.determinate.systems) recommended (enables flakes by default)

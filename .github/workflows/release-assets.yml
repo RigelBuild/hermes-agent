@@ -1,12 +1,7 @@
 name: release-assets
 
-# Builds the hermes-agent closure for each platform on free GitHub-hosted
-# runners and attaches it to the GitHub Release for a v*-rigel.* tag. No
-# Blacksmith and no org-funded runner: this fork is public (RIG-9275, option A).
-#
-# Each asset is a Nix binary-cache directory of the closure (narinfo + nar),
-# packed as one .tar.xz per platform, with a .sha256 sidecar. The fork flake
-# pins the sidecar hash and imports the closure (RIG-9265, pending RIG-9429).
+# Builds signed Nix cache assets on free GitHub-hosted runners.
+# Each narinfo points to a root-level NAR asset in the release.
 
 on:
   push:
@@ -63,22 +58,36 @@ jobs:
           out="$(nix build .#default --no-link --print-out-paths --print-build-logs)"
           echo "out=$out" >> "$GITHUB_OUTPUT"
 
-      - name: Export closure as a binary cache
+      - name: Export closure as a signed binary cache
         env:
           OUT: ${{ steps.build.outputs.out }}
           PLATFORM: ${{ matrix.platform }}
           TAG: ${{ inputs.tag || github.ref_name }}
+          NIX_RELEASE_SIGNING_KEY: ${{ secrets.NIX_RELEASE_SIGNING_KEY }}
         run: |
           set -euo pipefail
+          if [[ -z "$NIX_RELEASE_SIGNING_KEY" ]]; then
+            echo "::error::Repository secret NIX_RELEASE_SIGNING_KEY is empty" >&2
+            exit 1
+          fi
           cache="$RUNNER_TEMP/cache"
-          mkdir -p "$cache"
+          dist="$RUNNER_TEMP/dist"
+          signing_key="$RUNNER_TEMP/nix-release-signing-key"
+          mkdir -p "$cache" "$dist"
+          printf '%s' "$NIX_RELEASE_SIGNING_KEY" > "$signing_key"
+          chmod 600 "$signing_key"
+          trap 'rm -f "$signing_key"' EXIT
+          nix store sign --recursive --key-file "$signing_key" "$OUT"
           nix copy --to "file://$cache" "$OUT"
           name="hermes-agent-${TAG}-${PLATFORM}"
-          mkdir -p "$RUNNER_TEMP/dist"
-          tar -C "$cache" -cJf "$RUNNER_TEMP/dist/$name.tar.xz" .
-          (cd "$RUNNER_TEMP/dist" && sha256sum "$name.tar.xz" > "$name.tar.xz.sha256")
-          # Record the store path and its NAR hash so the flake pin can be checked.
-          nix path-info --json "$OUT" > "$RUNNER_TEMP/dist/$name.path-info.json"
+          cp "$cache/nix-cache-info" "$dist/nix-cache-info"
+          for narinfo in "$cache"/*.narinfo; do
+            sed 's|^URL: nar/|URL: |' "$narinfo" > "$dist/$(basename "$narinfo")"
+          done
+          cp "$cache"/nar/* "$dist/"
+          nix path-info --json "$OUT" > "$dist/$name.path-info.json"
+          printf '%s' "$NIX_RELEASE_SIGNING_KEY" | nix key convert-secret-to-public > "$dist/nix-release-cache.pub"
+          printf '%s\n' "$name" > "$dist/platform"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -103,14 +112,36 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           path: dist
-          merge-multiple: true
-
-      - name: Create release if missing
+      - name: Assemble binary cache root
         run: |
           set -euo pipefail
+          mkdir -p release-assets
+          for platform in dist/*; do
+            name=$(cat "$platform/platform")
+            for metadata in nix-cache-info nix-release-cache.pub; do
+              asset="release-assets/$metadata"
+              if [[ -e "$asset" ]]; then
+                if ! cmp -s "$platform/$metadata" "$asset"; then
+                  echo "::error::Conflicting release asset $metadata" >&2
+                  exit 1
+                fi
+              else
+                cp "$platform/$metadata" "$asset"
+              fi
+            done
+            cp "$platform/$name.path-info.json" "release-assets/$name.path-info.json"
+            for file in "$platform"/*.narinfo "$platform"/*.nar; do
+              asset="release-assets/$(basename "$file")"
+              if [[ -e "$asset" ]]; then
+                if ! cmp -s "$file" "$asset"; then
+                  echo "::error::Conflicting release asset $(basename "$file")" >&2
+                  exit 1
+                fi
+              else
+                cp "$file" "$asset"
+              fi
+            done
+          done
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "$TAG" --notes "hermes-agent $TAG"
+          gh release upload "$TAG" release-assets/* --clobber
 
-      - name: Upload assets
-        run: |
-          set -euo pipefail
-          gh release upload "$TAG" dist/* --clobber
