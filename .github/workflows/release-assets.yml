@@ -20,8 +20,50 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Validate tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check tag name and existence
+        id: tag
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          pattern='^v[A-Za-z0-9._+-]*-rigel\.[A-Za-z0-9._+-]+$'
+          if [[ ! "$TAG" =~ $pattern ]]; then
+            echo "::error::$TAG is not a v*-rigel.* tag name" >&2
+            exit 1
+          fi
+          if ! git rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null; then
+            echo "::error::$TAG does not resolve to a tag in this repository" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check committed release public key exists
+        run: |
+          set -euo pipefail
+          if [[ ! -f nix/release-cache.pub ]]; then
+            echo "::error::nix/release-cache.pub is missing. Commit the public key that verifies NIX_RELEASE_SIGNING_KEY; see the Nix setup docs." >&2
+            exit 1
+          fi
+
   build:
     name: Build ${{ matrix.platform }}
+    needs: [validate]
+    # The signing secret lives in this environment, so its protection rules apply.
+    environment: nix-release-signing
     strategy:
       fail-fast: false
       matrix:
@@ -39,11 +81,14 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
+    env:
+      TAG: ${{ needs.validate.outputs.tag }}
+      PLATFORM: ${{ matrix.platform }}
     steps:
       - name: Checkout tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
 
       - name: Install Nix
         uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
@@ -58,11 +103,9 @@ jobs:
           out="$(nix build .#default --no-link --print-out-paths --print-build-logs)"
           echo "out=$out" >> "$GITHUB_OUTPUT"
 
-      - name: Export closure as a signed binary cache
+      - name: Sign closure and export one platform directory
         env:
           OUT: ${{ steps.build.outputs.out }}
-          PLATFORM: ${{ matrix.platform }}
-          TAG: ${{ inputs.tag || github.ref_name }}
           NIX_RELEASE_SIGNING_KEY: ${{ secrets.NIX_RELEASE_SIGNING_KEY }}
         run: |
           set -euo pipefail
@@ -70,78 +113,69 @@ jobs:
             echo "::error::Repository secret NIX_RELEASE_SIGNING_KEY is empty" >&2
             exit 1
           fi
-          cache="$RUNNER_TEMP/cache"
-          dist="$RUNNER_TEMP/dist"
+          platform_dir="$RUNNER_TEMP/platform"
           signing_key="$RUNNER_TEMP/nix-release-signing-key"
-          mkdir -p "$cache" "$dist"
-          printf '%s' "$NIX_RELEASE_SIGNING_KEY" > "$signing_key"
-          chmod 600 "$signing_key"
           trap 'rm -f "$signing_key"' EXIT
+          # The key file is readable by this user only.
+          ( umask 077; printf '%s' "$NIX_RELEASE_SIGNING_KEY" > "$signing_key" )
+          mkdir -p "$platform_dir/cache"
           nix store sign --recursive --key-file "$signing_key" "$OUT"
-          nix copy --to "file://$cache" "$OUT"
+          nix copy --to "file://$platform_dir/cache" "$OUT"
           name="hermes-agent-${TAG}-${PLATFORM}"
-          cp "$cache/nix-cache-info" "$dist/nix-cache-info"
-          for narinfo in "$cache"/*.narinfo; do
-            sed 's|^URL: nar/|URL: |' "$narinfo" > "$dist/$(basename "$narinfo")"
-          done
-          cp "$cache"/nar/* "$dist/"
-          nix path-info --json "$OUT" > "$dist/$name.path-info.json"
-          printf '%s' "$NIX_RELEASE_SIGNING_KEY" | nix key convert-secret-to-public > "$dist/nix-release-cache.pub"
-          printf '%s\n' "$name" > "$dist/platform"
+          printf '%s\n' "$name" > "$platform_dir/platform"
+          nix path-info --json "$OUT" > "$platform_dir/$name.path-info.json"
+          printf '%s' "$NIX_RELEASE_SIGNING_KEY" | nix key convert-secret-to-public > "$platform_dir/nix-release-cache.pub"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: hermes-agent-${{ matrix.platform }}
-          path: ${{ runner.temp }}/dist/*
+          path: ${{ runner.temp }}/platform
           if-no-files-found: error
           retention-days: 7
 
   publish:
     name: Attach assets to release
-    needs: [build]
+    needs: [validate, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.validate.outputs.tag }}
     steps:
+      - name: Checkout tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          persist-credentials: false
+
       - name: Download build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          path: dist
-      - name: Assemble binary cache root
+          path: platforms
+
+      - name: Build release-cache tool
         run: |
           set -euo pipefail
-          mkdir -p release-assets
-          for platform in dist/*; do
-            name=$(cat "$platform/platform")
-            for metadata in nix-cache-info nix-release-cache.pub; do
-              asset="release-assets/$metadata"
-              if [[ -e "$asset" ]]; then
-                if ! cmp -s "$platform/$metadata" "$asset"; then
-                  echo "::error::Conflicting release asset $metadata" >&2
-                  exit 1
-                fi
-              else
-                cp "$platform/$metadata" "$asset"
-              fi
-            done
-            cp "$platform/$name.path-info.json" "release-assets/$name.path-info.json"
-            for file in "$platform"/*.narinfo "$platform"/*.nar; do
-              asset="release-assets/$(basename "$file")"
-              if [[ -e "$asset" ]]; then
-                if ! cmp -s "$file" "$asset"; then
-                  echo "::error::Conflicting release asset $(basename "$file")" >&2
-                  exit 1
-                fi
-              else
-                cp "$file" "$asset"
-              fi
-            done
-          done
+          go -C tools/release-cache test ./...
+          go -C tools/release-cache build -o "$RUNNER_TEMP/release-cache" .
+
+      - name: Assemble flat binary cache
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/release-cache" assemble -out release-assets -upstream https://cache.nixos.org platforms/*
+          committed=$(tr -d '[:space:]' < nix/release-cache.pub)
+          derived=$(tr -d '[:space:]' < release-assets/nix-release-cache.pub)
+          if [[ "$committed" != "$derived" ]]; then
+            echo "::error::Public key derived from NIX_RELEASE_SIGNING_KEY differs from nix/release-cache.pub" >&2
+            exit 1
+          fi
+
+      - name: Attach assets to release
+        run: |
+          set -euo pipefail
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "$TAG" --notes "hermes-agent $TAG"
           gh release upload "$TAG" release-assets/* --clobber
-

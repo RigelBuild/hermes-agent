@@ -83,22 +83,8 @@
           }).node-gyp;
         default = full;
 
-        release =
-          let
-            system = pkgs.stdenv.hostPlatform.system;
-            pinFile = "${toString ./.}/release-closure/${system}.json";
-          in
-          if !builtins.pathExists pinFile then
-            throw "No release closure pin for ${system}; expected nix/release-closure/${system}.json"
-          else
-            let
-              pin = builtins.fromJSON (builtins.readFile pinFile);
-            in
-            builtins.fetchClosure {
-              fromStore = "https://github.com/RigelBuild/hermes-agent/releases/download/${pin.tag}";
-              fromPath = pin.storePath;
-              inputAddressed = true;
-            };
+        # The release output is kept out of `packages` (see legacyPackages
+        # below): a package must build on every system it is listed for.
         inherit sandbox;
 
         inherit minimal;
@@ -123,5 +109,35 @@
       # Every pm lockfile tool as its own installable derivation:
       # `nix build .#pm-ripgrep`, `nix build .#pm-gh`, ...
       // lib.mapAttrs' (name: drv: lib.nameValuePair "pm-${name}" drv) pmPackages;
+
+      # Release closure from the matching GitHub Release. Not a package, and
+      # `nix flake check` never forces it. The pin is checked before
+      # builtins.fetchClosure is referenced, because that builtin exists only
+      # with the fetch-closure experimental feature.
+      legacyPackages.release =
+        let
+          system = pkgs.stdenv.hostPlatform.system;
+          pinFile = ./release-closure + "/${system}.json";
+        in
+        if !builtins.pathExists pinFile then
+          throw "No release closure pin for ${system}; expected nix/release-closure/${system}.json"
+        else
+          let
+            pin = builtins.fromJSON (builtins.readFile pinFile);
+          in
+          if !(builtins.isAttrs pin && builtins.attrNames pin == [ "storePath" "tag" ]) then
+            throw "nix/release-closure/${system}.json must contain exactly the keys tag and storePath"
+          else
+            pkgs.runCommand "hermes-agent-release"
+              {
+                closure = builtins.fetchClosure {
+                  fromStore = "https://github.com/RigelBuild/hermes-agent/releases/download/${pin.tag}";
+                  fromPath = pin.storePath;
+                  inputAddressed = true;
+                };
+              }
+              ''
+                ln -s "$closure" "$out"
+              '';
     };
 }
