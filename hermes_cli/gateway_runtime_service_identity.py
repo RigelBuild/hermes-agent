@@ -212,8 +212,12 @@ def verify_systemd(props: dict[str, str], manager_env: str, home: Path, *, syste
     verify_gateway_argv(argv, home)
 
 
-def _verify_launchd_argv(argv: list[str], home: Path) -> None:
+def _verify_launchd_argv(argv: list[str], home: Path, *, home_manager: bool = False) -> None:
     command, wrapped = _launchd_command(argv)
+    if home_manager and command[1:] == ["gateway"]:
+        # Home Manager's ProgramArguments are bare `hermes gateway`, which the CLI runs as `gateway run`
+        # (gateway.py `_GATEWAY_SUBCOMMANDS[None]`). Verify the spelled-out form.
+        command = [*command, "run"]
     verify_gateway_argv(command, home, wrapped=wrapped)
 
 
@@ -240,7 +244,7 @@ def _launchd_command(argv: list[str]) -> tuple[list[str], bool]:
     return command, True
 
 
-def verify_launchd_loaded(output: str, home: Path, *, uid: int, username: str) -> None:
+def verify_launchd_loaded(output: str, home: Path, *, uid: int, username: str, home_manager: bool = False) -> None:
     # Only the job's own blocks, never inherited/default environments or a
     # different job embedded in launchctl diagnostic text.
     def block(name):
@@ -262,13 +266,15 @@ def verify_launchd_loaded(output: str, home: Path, *, uid: int, username: str) -
             _unverified()
         env[key] = value
     verify_home(home, env.get("HERMES_HOME", ""))
-    if home.parent.name != "profiles" and not env.get("HERMES_SUPERVISED_CHILD"):
+    # Home Manager's job is supervised by its own KeepAlive and names itself HERMES_MANAGED, not HERMES_SUPERVISED_CHILD.
+    managed = home_manager and env.get("HERMES_MANAGED") == "home-manager"
+    if home.parent.name != "profiles" and not env.get("HERMES_SUPERVISED_CHILD") and not managed:
         _unverified()
     argv = [line.strip() for line in block("arguments")]
     programs = re.findall(r"^\tprogram = (.+)$", output, re.MULTILINE)
     if len(programs) != 1 or not argv or programs[0] != argv[0]:
         _unverified()
-    _verify_launchd_argv(argv, home)
+    _verify_launchd_argv(argv, home, home_manager=home_manager)
 
 
 def verify_launchd_plist(definition: dict, label: str, home: Path) -> None:
