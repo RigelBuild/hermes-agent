@@ -60,33 +60,39 @@ with `nix build .#legacyPackages.x86_64-linux.release`. Enable Nix's
 fetch-closure` in `nix.conf`. `.#default` continues to build Hermes from
 source.
 
-Trust the release's signing key by adding its public key to
-`trusted-public-keys` in `nix.conf`, or `nix.settings.trusted-public-keys` on
-NixOS. The committed public key is `nix/release-cache.pub`; it holds one
-`name:key` line. The release workflow fails if the key derived from the
-signing secret differs from that file.
+In `/etc/nix/nix.conf`, add `extra-trusted-public-keys` with the contents of
+`nix/release-cache.pub`. This preserves the default `trusted-public-keys`.
+Restart `nix-daemon` after changing the file. On NixOS, add the key to the
+existing `nix.settings.trusted-public-keys` list and keep the default keys.
+Before release publishing, `nix/release-cache.pub` must contain the signing
+key's `name:key` line. The workflow compares it with the key derived from
+`NIX_RELEASE_SIGNING_KEY` and fails until the matching public key is committed.
 
-Each system has a pin at `nix/release-closure/<system>.json` with two keys:
-`tag` (the release tag) and `storePath` (the absolute store path). The
-`release-cache write-pin` command in `tools/release-cache` writes it from the
-`path-info.json` a release build produces. The pin lags the tag: it moves only
-when a release build is published and its pin is committed. A system with no
-pin fails evaluation with a clear message until its closure is published.
+Each system has a pin at `nix/release-closure/<system>.json` with `tag` (the
+release tag) and `storePath` (the absolute store path). The
+`scripts/releases/nix_release_cache.py write-pin` command writes the pin from
+the release's `path-info.json` asset. The pin lags the tag until its update is
+committed. A system with no pin fails evaluation with a clear message.
 
-To update a pin after a release build finishes, download the
-`hermes-agent-<tag>-<platform>` artifact, then run:
+To update a pin after a release build finishes, download the published path
+info asset from the release, then write the pin:
 
 ```bash
-# Run from the repository root. go -C changes directory, so give absolute paths.
-repo="$PWD"
-go -C tools/release-cache run . write-pin -system x86_64-linux \
-  -tag v2026.11.1-rigel.1 \
-  -path-info "$repo/path/to/hermes-agent-v2026.11.1-rigel.1-linux-x64.path-info.json" \
-  -out "$repo/nix/release-closure/x86_64-linux.json"
+tag=v2026.11.1-rigel.1
+gh release download "$tag" -p '*.path-info.json'
+python scripts/releases/nix_release_cache.py write-pin \
+  -system x86_64-linux -tag "$tag" \
+  -path-info "hermes-agent-${tag}-linux-x64.path-info.json" \
+  -out nix/release-closure/x86_64-linux.json
 ```
 
-The workflow reads `NIX_RELEASE_SIGNING_KEY` from the `nix-release-signing`
-environment, so its protection rules apply to the signing secret.
+For `workflow_dispatch`, start the run from the release tag ref, then enter
+that tag in the `tag` input. GitHub evaluates the environment's tag protection
+rule against the dispatch ref, not the input value.
+
+The signing key is an environment secret in `nix-release-signing`. The
+environment must be restricted to `v*-rigel.*` tag refs, and the signing key
+must not also exist as a repository-level secret.
 
 ## Prerequisites
 

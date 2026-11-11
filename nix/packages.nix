@@ -126,18 +126,24 @@
             pin = builtins.fromJSON (builtins.readFile pinFile);
           in
           if !(builtins.isAttrs pin && builtins.attrNames pin == [ "storePath" "tag" ]) then
-            throw "nix/release-closure/${system}.json must contain exactly the keys tag and storePath"
+            throw "nix/release-closure/${system}.json must contain exactly two keys, tag and storePath"
+          else if !(builtins.isString pin.tag && builtins.isString pin.storePath) then
+            throw "nix/release-closure/${system}.json fields tag and storePath must be strings"
+          else if !(builtins.match "v[A-Za-z0-9._+-]*-rigel\\.[A-Za-z0-9._+-]+" pin.tag != null) then
+            throw "nix/release-closure/${system}.json tag must match v*-rigel.*"
           else
-            pkgs.runCommand "hermes-agent-release"
+            pkgs.runCommandLocal "hermes-agent-release"
               {
                 closure = builtins.fetchClosure {
                   fromStore = "https://github.com/RigelBuild/hermes-agent/releases/download/${pin.tag}";
                   fromPath = pin.storePath;
                   inputAddressed = true;
                 };
+                meta.mainProgram = "hermes";
               }
               ''
-                ln -s "$closure" "$out"
+                mkdir -p "$out/bin"
+                ln -s "$closure/bin/hermes" "$out/bin/hermes"
               '';
     };
 }

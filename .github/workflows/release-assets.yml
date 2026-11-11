@@ -11,6 +11,7 @@ on:
       tag:
         description: Existing v*-rigel.* tag to build assets for.
         required: true
+        type: string
 
 permissions:
   contents: read
@@ -110,7 +111,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "$NIX_RELEASE_SIGNING_KEY" ]]; then
-            echo "::error::Repository secret NIX_RELEASE_SIGNING_KEY is empty" >&2
+            echo "::error::Environment secret NIX_RELEASE_SIGNING_KEY is empty; set it in the nix-release-signing environment" >&2
             exit 1
           fi
           platform_dir="$RUNNER_TEMP/platform"
@@ -157,16 +158,11 @@ jobs:
         with:
           path: platforms
 
-      - name: Build release-cache tool
-        run: |
-          set -euo pipefail
-          go -C tools/release-cache test ./...
-          go -C tools/release-cache build -o "$RUNNER_TEMP/release-cache" .
-
       - name: Assemble flat binary cache
         run: |
           set -euo pipefail
-          "$RUNNER_TEMP/release-cache" assemble -out release-assets -upstream https://cache.nixos.org platforms/*
+          python scripts/releases/nix_release_cache.py assemble \
+            -out release-assets -upstream https://cache.nixos.org platforms/*
           committed=$(tr -d '[:space:]' < nix/release-cache.pub)
           derived=$(tr -d '[:space:]' < release-assets/nix-release-cache.pub)
           if [[ "$committed" != "$derived" ]]; then
@@ -174,8 +170,25 @@ jobs:
             exit 1
           fi
 
-      - name: Attach assets to release
+      - name: List and reconcile existing release assets
         run: |
           set -euo pipefail
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "$TAG" --notes "hermes-agent $TAG"
+          gh release view "$TAG" --json assets --jq '[.assets[].name]' > "$RUNNER_TEMP/existing-assets.json"
+          python scripts/releases/nix_release_cache.py count \
+            -out release-assets \
+            -existing-assets "$RUNNER_TEMP/existing-assets.json"
+          python scripts/releases/nix_release_cache.py reconcile \
+            -out release-assets \
+            -existing-assets "$RUNNER_TEMP/existing-assets.json" \
+            -stale-out "$RUNNER_TEMP/stale-assets.json"
+          while IFS= read -r asset; do
+            [[ -n "$asset" ]] || continue
+            gh release delete-asset "$TAG" "$asset" --yes
+          done < <(python -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1], encoding="utf-8"))))' "$RUNNER_TEMP/stale-assets.json")
+
+
+      - name: Attach assets to release
+        run: |
+          set -euo pipefail
           gh release upload "$TAG" release-assets/* --clobber
