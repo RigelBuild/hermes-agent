@@ -263,7 +263,7 @@ def test_smart_denied_broad_gateway_reply_is_normalized_to_once(monkeypatch):
 
     def notify(data):
         assert data["smart_denied"] is True
-        assert mod.resolve_gateway_approval(SESSION_KEY, "always") == 1
+        assert mod.resolve_gateway_approval(SESSION_KEY, "always", request_id=data["request_id"]) == 1
 
     thread = threading.Thread(
         target=lambda: result.update(wait_mod._await_gateway_decision(
@@ -294,12 +294,12 @@ def test_smart_denied_bulk_approval_waits_for_bulk_deny():
 def test_bulk_ordinary_approval_does_not_resolve_smart_denied():
     _clear()
     ordinary = wait_mod._ApprovalEntry(dict(APPROVAL))
-    denied = wait_mod._ApprovalEntry({**APPROVAL, "smart_denied": True})
+    denied = wait_mod._ApprovalEntry({**APPROVAL, "smart_denied": True, "request_id": "deny"})
     with mod._lock:
         mod._gateway_queues[SESSION_KEY] = [ordinary, denied]
 
     assert mod.resolve_gateway_approval(SESSION_KEY, "session", resolve_all=True) == 1
     assert ordinary.result == "session"
     assert not denied.event.is_set()
-    assert mod.resolve_gateway_approval(SESSION_KEY, "once") == 1
+    assert mod.resolve_gateway_approval(SESSION_KEY, "once", request_id="deny") == 1
     assert denied.result == "once"
