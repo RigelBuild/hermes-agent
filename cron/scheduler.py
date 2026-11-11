@@ -2389,6 +2389,7 @@ class _CronRunScope:
         self._cron_session_token = None
         self._non_dispatcher_token = None
         self._spend_token = None
+        self._replay_read_token = None
 
     def enter(self) -> None:
         # Scope cron approval policy; exit() RESETS via token (pinning "" would suppress the legacy
@@ -2416,8 +2417,24 @@ class _CronRunScope:
         if self._spend_token is not None:
             from tools.mcp_tool_costs import unbind_run
             unbind_run(self._spend_token)
+        if self._replay_read_token is not None:
+            from tools.discord_tool import reset_cron_replay_read
+            reset_cron_replay_read(self._replay_read_token)
         for name in _CRON_DELIVERY_VARS:
             self._var_map[name].set("")
+
+    def bind_replay_read(self, job: dict) -> None:
+        """A replay may read its job's Discord deliver channels inside its window (DL-1691)."""
+        from cron.occurrences import claim_replay
+        from tools.discord_tool import bind_cron_replay_read
+        replay = claim_replay(job)
+        if replay is None:
+            return
+        channel_ids = frozenset(
+            str(target[key]) for target in _resolve_delivery_targets(job)
+            if str(target.get("platform") or "").lower() == "discord"
+            for key in ("chat_id", "thread_id") if target.get(key) not in (None, ""))
+        self._replay_read_token = bind_cron_replay_read(channel_ids, replay.get("started_at"))
 
 
 def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:
@@ -2607,6 +2624,7 @@ def run_job(
         if scope.workdir:
             logger.info("Job '%s': using task-scoped workdir %s", job_id, scope.workdir)
         _reload_dotenv_and_publish_delivery_target(job)
+        scope.bind_replay_read(job)
 
         jc = _load_cron_job_config(job, job_id, job_name)
         _cfg = jc.cfg
