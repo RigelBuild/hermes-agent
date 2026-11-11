@@ -90,14 +90,14 @@ jobs:
             experimental-features = nix-command flakes
 
       # fetchPnpmDeps is a fixed-output derivation: a pnpm-lock.yaml change needs a
-      # new nix/pnpm-deps-hash. flake-check fails too, with the hash buried in its
+      # new nix/pnpm-deps-hash/<system>. flake-check fails too, with the hash buried in its
       # log; this job fails fast and names the hash Nix computed.
-      - name: Check nix/pnpm-deps-hash
+      - name: Check nix/pnpm-deps-hash/<system>
         run: |
           set -o pipefail
           if nix build .#pnpm-deps --no-link --print-build-logs 2>&1 | tee "$RUNNER_TEMP/pnpm-deps.log"; then exit 0; fi
           got=$(sed -n 's/^ *got: *\(sha256-[A-Za-z0-9+/=]*\)$/\1/p' "$RUNNER_TEMP/pnpm-deps.log")
-          [ -n "$got" ] && echo "::error file=nix/pnpm-deps-hash::pnpm-lock.yaml changed the pnpm store. Set nix/pnpm-deps-hash to $got (or run: nix run .#update-pnpm-lockfile)"
+          [ -n "$got" ] && echo "::error file=nix/pnpm-deps-hash/x86_64-linux::pnpm-lock.yaml changed the pnpm store. Set nix/pnpm-deps-hash/x86_64-linux to $got (or run: nix run .#update-pnpm-lockfile)"
           exit 1
 
   flake-check:

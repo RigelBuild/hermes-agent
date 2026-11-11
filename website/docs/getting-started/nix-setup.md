@@ -965,9 +965,9 @@ direnv allow    # one-time
 
 ### Updating the pnpm Lockfile
 
-The flake builds every JavaScript surface from one fixed-output pnpm store whose
-hash is in `nix/pnpm-deps-hash`. A `pnpm-lock.yaml` change that adds, removes or
-re-resolves a package changes that hash, and every frontend build fails with a
+The flake builds every JavaScript surface from a fixed-output pnpm store whose hash
+is stored per system in `nix/pnpm-deps-hash/<system>`. A `pnpm-lock.yaml` change
+that adds, removes or re-resolves a package changes that hash, and every frontend build fails with a
 hash mismatch until it is updated. `hermes pm update --pnpm`, a plain
 `pnpm install` and the `nix develop` shell hook rewrite the lockfile but not the
 hash. From the checkout, run:
@@ -976,10 +976,10 @@ hash. From the checkout, run:
 nix run .#update-pnpm-lockfile
 ```
 
-It brings `pnpm-lock.yaml` up to date with the manifests, rebuilds `.#pnpm-deps`
-to take the new hash, writes `nix/pnpm-deps-hash`, and builds `.#tui`, `.#web`,
-`.#webapp` and `.#desktop`. Without Nix, copy the hash the `nix` CI workflow's
-`pnpm-deps-hash` job prints.
+It brings `pnpm-lock.yaml` up to date, rebuilds `.#pnpm-deps` to take the hash for
+the current system, writes `nix/pnpm-deps-hash/<system>`, and builds `.#tui`, `.#web`,
+`.#webapp` and `.#desktop`. Other systems need their own run. Without Nix, copy the hash
+the `nix` CI workflow's `pnpm-deps-hash` job prints.
 
 ### Flake Checks
 
