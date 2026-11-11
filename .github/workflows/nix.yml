@@ -74,10 +74,19 @@ jobs:
           github-token: ${{ github.token }}
 
   pnpm-deps-hash:
-    name: pnpm deps hash
+    name: pnpm deps hash (${{ matrix.system }})
     needs: [detect]
     if: needs.detect.outputs.nix == 'true' || inputs.release == true
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            system: x86_64-linux
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+          - runner: macos-latest
+            system: aarch64-darwin
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
@@ -89,16 +98,37 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      # fetchPnpmDeps is a fixed-output derivation: a pnpm-lock.yaml change needs a
-      # new nix/pnpm-deps-hash/<system>. flake-check fails too, with the hash buried in its
-      # log; this job fails fast and names the hash Nix computed.
-      - name: Check nix/pnpm-deps-hash/<system>
+      # fetchPnpmDeps is a fixed-output derivation, so check every runner's system hash.
+      - name: Check nix/pnpm-deps-hash/${{ matrix.system }}
+        env:
+          SYSTEM: ${{ matrix.system }}
         run: |
           set -o pipefail
-          if nix build .#pnpm-deps --no-link --print-build-logs 2>&1 | tee "$RUNNER_TEMP/pnpm-deps.log"; then exit 0; fi
+          hash_file="nix/pnpm-deps-hash/$SYSTEM"
+          missing_hash=false
+          if [ ! -e "$hash_file" ]; then
+            missing_hash=true
+            printf '%s\n' 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' > "$hash_file"
+            git add -N -- "$hash_file"
+          fi
+          if nix build .#pnpm-deps --no-link --print-build-logs 2>&1 | tee "$RUNNER_TEMP/pnpm-deps.log"; then
+            build_status=0
+          else
+            build_status=$?
+          fi
           got=$(sed -n 's/^ *got: *\(sha256-[A-Za-z0-9+/=]*\)$/\1/p' "$RUNNER_TEMP/pnpm-deps.log")
-          [ -n "$got" ] && echo "::error file=nix/pnpm-deps-hash/x86_64-linux::pnpm-lock.yaml changed the pnpm store. Set nix/pnpm-deps-hash/x86_64-linux to $got (or run: nix run .#update-pnpm-lockfile)"
-          exit 1
+          if [ -n "$got" ]; then
+            echo "::error file=$hash_file::pnpmDeps hash mismatch for $SYSTEM. Write $got to $hash_file."
+            exit 1
+          fi
+          if [ "$missing_hash" = true ]; then
+            echo "::error file=$hash_file::pnpmDeps hash file is missing. Build status: $build_status; check the log for the expected hash and write it to $hash_file."
+            exit 1
+          fi
+          if [ "$build_status" -ne 0 ]; then
+            echo "::error file=$hash_file::pnpmDeps build failed without a got hash; check the build log and set $hash_file."
+            exit 1
+          fi
 
   flake-check:
     name: nix flake check

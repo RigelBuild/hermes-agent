@@ -764,7 +764,7 @@ nix run .#update-pnpm-lockfile
 
 它会根据 manifest 更新 `pnpm-lock.yaml`，重新构建 `.#pnpm-deps` 以获取当前系统的哈希，写入
 `nix/pnpm-deps-hash/<system>`，并构建 `.#tui`、`.#web`、`.#webapp` 和 `.#desktop`。其他系统
-需要各自运行一次。没有 Nix 时，复制 `nix` CI workflow 中 `pnpm-deps-hash` 任务输出的哈希。
+需要各自运行一次。没有 Nix 时，可以使用 `nix` CI workflow 中 `pnpm-deps-hash` 矩阵为每个支持系统打印的哈希。
 
 ### Flake 检查
 

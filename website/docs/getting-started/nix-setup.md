@@ -978,8 +978,8 @@ nix run .#update-pnpm-lockfile
 
 It brings `pnpm-lock.yaml` up to date, rebuilds `.#pnpm-deps` to take the hash for
 the current system, writes `nix/pnpm-deps-hash/<system>`, and builds `.#tui`, `.#web`,
-`.#webapp` and `.#desktop`. Other systems need their own run. Without Nix, copy the hash
-the `nix` CI workflow's `pnpm-deps-hash` job prints.
+`.#webapp` and `.#desktop`. Other systems need their own run. The `nix` CI workflow
+prints a hash for each supported system.
 
 ### Flake Checks
 

@@ -651,8 +651,8 @@ not substitutes for an installed application's update mechanism.
 The Nix flake pins the pnpm store that `pnpm-lock.yaml` resolves to with a
 fixed-output hash per system in `nix/pnpm-deps-hash/<system>`. `pm update --pnpm`
 does not refresh it: after any change to `pnpm-lock.yaml`, run
-`nix run .#update-pnpm-lockfile` on each supported system or copy the hash the
-`nix` workflow's `pnpm-deps-hash` job reports.
+`nix run .#update-pnpm-lockfile` on each supported system. The `nix` workflow's
+`pnpm-deps-hash` matrix prints a hash for each supported system.
 
 The complete desktop builder also builds the JavaScript surfaces, generates
 launchers, and invokes native packaging. Maintainers can read
