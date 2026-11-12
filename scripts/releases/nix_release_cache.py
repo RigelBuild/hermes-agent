@@ -94,7 +94,7 @@ def _replace_fields(data: bytes, replacements: dict[str, str], *, source: str) -
         key_text = key.decode("utf-8")
         if separator and key_text in replacements:
             found[key_text] += 1
-            replacement = f"{key_text}: {replacements[key_text]}".encode("utf-8")
+            replacement = f"{key_text}: {replacements[key_text]}".encode()
             lines.append(replacement + ending)
         else:
             lines.append(line)
