@@ -88,6 +88,7 @@ let
       source = "nix";
       distribution = "nix";
       pmRuntime = toString pmRuntime;
+      shippedStore = toString shippedPmStore;
       updateMechanism = "external";
       payload = "bootstrap";
       tag = null;
@@ -109,6 +110,38 @@ let
   pmRuntime = callPackage ./pm-runtime.nix {
     inherit uv2nix pyproject-nix pyproject-build-systems;
   };
+
+  # Required PM tools ship here with lock identities to keep Nix drift checks accurate.
+  shippedStoreBuilderSrc = lib.fileset.toSource {
+    root = ./..;
+    fileset = lib.fileset.unions [
+      ../pm
+      ../scripts/build/shipped_store.py
+    ];
+  };
+  shippedPmStore =
+    let
+      target =
+        let
+          arch = if stdenv.hostPlatform.isAarch64 then "arm64" else "x64";
+          os =
+            if stdenv.hostPlatform.isDarwin then "darwin"
+            else if stdenv.hostPlatform.isLinux then "linux"
+            else "win32";
+        in
+        "${os}-${arch}";
+      trees = lib.concatStringsSep " " [
+        "node=${pmPackages.node}"
+        "npm=${hermesNpmLib.npm12}"
+        "pnpm=${pmPackages.pnpm}"
+        "ffmpeg=${pmPackages.ffmpeg}"
+        "ripgrep=${pmPackages.ripgrep}"
+      ];
+    in
+    runCommand "hermes-pm-shipped-store" { } ''
+      PYTHONPATH=${shippedStoreBuilderSrc} ${pmPackages.python}/bin/python3 -m scripts.build.shipped_store \
+        --lockfile ${../pm/lock.json} --target ${target} --out $out ${trees}
+    '';
 
   # Icons render on the runtime venv: Pillow and resvg-py are core dependencies.
   generatedIcons = callPackage ./icons.nix {
