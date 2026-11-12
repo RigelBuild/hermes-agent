@@ -50,6 +50,50 @@ stops instead of selecting a different Python.
 Native Nix evaluation and builds remain CI gates. Update through Nix. Do not
 repair a Nix store path with pip.
 
+## Release cache
+
+The `legacyPackages.<system>.release` output fetches the pinned
+input-addressed closure from the matching GitHub Release. It is not in
+`packages`, so `nix flake check` and `nix flake show` never force it. Build it
+with `nix build .#legacyPackages.x86_64-linux.release`. Enable Nix's
+`fetch-closure` experimental feature with `extra-experimental-features =
+fetch-closure` in `nix.conf`. `.#default` continues to build Hermes from
+source.
+
+In `/etc/nix/nix.conf`, add `extra-trusted-public-keys` with the contents of
+`nix/release-cache.pub`. This preserves the default `trusted-public-keys`.
+Restart `nix-daemon` after changing the file. On NixOS, add the key to the
+existing `nix.settings.trusted-public-keys` list and keep the default keys.
+Before release publishing, `nix/release-cache.pub` must contain the signing
+key's `name:key` line. The workflow compares it with the key derived from
+`NIX_RELEASE_SIGNING_KEY` and fails until the matching public key is committed.
+
+Each system has a pin at `nix/release-closure/<system>.json` with `tag` (the
+release tag) and `storePath` (the absolute store path). The
+`scripts/releases/nix_release_cache.py write-pin` command writes the pin from
+the release's `path-info.json` asset. The pin lags the tag until its update is
+committed. A system with no pin fails evaluation with a clear message.
+
+To update a pin after a release build finishes, download the published path
+info asset from the release, then write the pin:
+
+```bash
+tag=v2026.11.1-rigel.1
+gh release download "$tag" -p '*.path-info.json'
+python scripts/releases/nix_release_cache.py write-pin \
+  -system x86_64-linux -tag "$tag" \
+  -path-info "hermes-agent-${tag}-linux-x64.path-info.json" \
+  -out nix/release-closure/x86_64-linux.json
+```
+
+For `workflow_dispatch`, start the run from the release tag ref, then enter
+that tag in the `tag` input. GitHub evaluates the environment's tag protection
+rule against the dispatch ref, not the input value.
+
+The signing key is an environment secret in `nix-release-signing`. The
+environment must be restricted to `v*-rigel.*` tag refs, and the signing key
+must not also exist as a repository-level secret.
+
 ## Prerequisites
 
 - **Nix with flakes enabled** — [Determinate Nix](https://install.determinate.systems) recommended (enables flakes by default)

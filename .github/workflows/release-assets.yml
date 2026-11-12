@@ -1,0 +1,196 @@
+name: release-assets
+
+# Builds signed Nix cache assets on free GitHub-hosted runners.
+# Each narinfo points to a root-level NAR asset in the release.
+
+on:
+  push:
+    tags: ["v*-rigel.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v*-rigel.* tag to build assets for.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-assets-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check tag name and existence
+        id: tag
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          pattern='^v[A-Za-z0-9._+-]*-rigel\.[A-Za-z0-9._+-]+$'
+          if [[ ! "$TAG" =~ $pattern ]]; then
+            echo "::error::$TAG is not a v*-rigel.* tag name" >&2
+            exit 1
+          fi
+          if ! git rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null; then
+            echo "::error::$TAG does not resolve to a tag in this repository" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check committed release public key exists
+        run: |
+          set -euo pipefail
+          if [[ ! -f nix/release-cache.pub ]]; then
+            echo "::error::nix/release-cache.pub is missing. Commit the public key that verifies NIX_RELEASE_SIGNING_KEY; see the Nix setup docs." >&2
+            exit 1
+          fi
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: [validate]
+    # The signing secret lives in this environment, so its protection rules apply.
+    environment: nix-release-signing
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runs_on: ubuntu-24.04
+            system: x86_64-linux
+          - platform: linux-arm64
+            runs_on: ubuntu-24.04-arm
+            system: aarch64-linux
+          - platform: darwin-arm64
+            runs_on: macos-14
+            system: aarch64-darwin
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ needs.validate.outputs.tag }}
+      PLATFORM: ${{ matrix.platform }}
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build default package
+        id: build
+        run: |
+          set -euo pipefail
+          out="$(nix build .#default --no-link --print-out-paths --print-build-logs)"
+          echo "out=$out" >> "$GITHUB_OUTPUT"
+
+      - name: Sign closure and export one platform directory
+        env:
+          OUT: ${{ steps.build.outputs.out }}
+          NIX_RELEASE_SIGNING_KEY: ${{ secrets.NIX_RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$NIX_RELEASE_SIGNING_KEY" ]]; then
+            echo "::error::Environment secret NIX_RELEASE_SIGNING_KEY is empty; set it in the nix-release-signing environment" >&2
+            exit 1
+          fi
+          platform_dir="$RUNNER_TEMP/platform"
+          signing_key="$RUNNER_TEMP/nix-release-signing-key"
+          trap 'rm -f "$signing_key"' EXIT
+          # The key file is readable by this user only.
+          ( umask 077; printf '%s' "$NIX_RELEASE_SIGNING_KEY" > "$signing_key" )
+          mkdir -p "$platform_dir/cache"
+          nix store sign --recursive --key-file "$signing_key" "$OUT"
+          nix copy --to "file://$platform_dir/cache" "$OUT"
+          name="hermes-agent-${TAG}-${PLATFORM}"
+          printf '%s\n' "$name" > "$platform_dir/platform"
+          nix path-info --json "$OUT" > "$platform_dir/$name.path-info.json"
+          printf '%s' "$NIX_RELEASE_SIGNING_KEY" | nix key convert-secret-to-public > "$platform_dir/nix-release-cache.pub"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hermes-agent-${{ matrix.platform }}
+          path: ${{ runner.temp }}/platform
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Attach assets to release
+    needs: [validate, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.validate.outputs.tag }}
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          persist-credentials: false
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: platforms
+
+      - name: Assemble flat binary cache
+        run: |
+          set -euo pipefail
+          python3 scripts/releases/nix_release_cache.py assemble \
+            -out release-assets -upstream https://cache.nixos.org platforms/*
+          committed=$(tr -d '[:space:]' < nix/release-cache.pub)
+          derived=$(tr -d '[:space:]' < release-assets/nix-release-cache.pub)
+          if [[ "$committed" != "$derived" ]]; then
+            echo "::error::Public key derived from NIX_RELEASE_SIGNING_KEY differs from nix/release-cache.pub" >&2
+            exit 1
+          fi
+
+      - name: Prepare release asset reconciliation
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "$TAG" --notes "hermes-agent $TAG"
+          gh release view "$TAG" --json assets --jq '[.assets[].name]' > "$RUNNER_TEMP/existing-assets.json"
+          python3 scripts/releases/nix_release_cache.py count \
+            -out release-assets \
+            -existing-assets "$RUNNER_TEMP/existing-assets.json"
+          python3 scripts/releases/nix_release_cache.py reconcile \
+            -out release-assets \
+            -existing-assets "$RUNNER_TEMP/existing-assets.json" > "$RUNNER_TEMP/stale-assets.txt"
+
+      - name: Upload release assets
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" release-assets/* --clobber
+
+      - name: Delete stale cache assets
+        run: |
+          set -euo pipefail
+          while IFS= read -r asset; do
+            [[ -n "$asset" ]] || continue
+            gh release delete-asset "$TAG" "$asset" --yes
+          done < "$RUNNER_TEMP/stale-assets.txt"
