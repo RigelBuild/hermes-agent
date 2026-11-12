@@ -2426,18 +2426,28 @@ class _CronRunScope:
     def bind_replay_read(self, job: dict) -> None:
         """A replay may read only configured Discord delivery targets inside its window."""
         from cron.occurrences import claim_replay
-        from tools.discord_tool import _get_bot_token, bind_cron_replay_read, validate_cron_replay_deliver_channels
+        from tools.discord_tool import (
+            _get_bot_token,
+            bind_cron_replay_read,
+            validate_cron_replay_deliver_channels,
+        )
+
         replay = claim_replay(job)
         if replay is None:
             return
         channel_ids = frozenset(
-            str(target[key]) for target in _resolve_delivery_targets(job)
+            str(target[key])
+            for target in _resolve_delivery_targets(job)
             if str(target.get("platform") or "").lower() == "discord"
-            for key in ("chat_id", "thread_id") if target.get(key) not in (None, ""))
+            for key in ("chat_id", "thread_id")
+            if target.get(key) not in (None, "")
+        )
         if not channel_ids:
             return
         validate_cron_replay_deliver_channels(_get_bot_token() or "", channel_ids)
-        self._replay_read_token = bind_cron_replay_read(channel_ids, replay.get("started_at"))
+        self._replay_read_token = bind_cron_replay_read(
+            channel_ids, replay.get("started_at")
+        )
 
 
 def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:

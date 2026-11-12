@@ -124,6 +124,33 @@ def test_replay_fetch_on_deliver_channel_returns_only_bot_messages_after_started
     assert [item["id"] for item in result["messages"]] == ["after-bot"]
 
 
+def test_replay_forum_read_on_post_channels_is_unfiltered(replay):
+    threads = [
+        {
+            "id": "thread-bot",
+            "name": "old bot post",
+            "owner_id": BOT,
+            "parent_id": POST,
+            "thread_metadata": {"create_timestamp": ts(timedelta(minutes=-5))},
+            "last_message_id": snow(timedelta(minutes=-5)),
+        },
+        {
+            "id": "thread-user",
+            "name": "user post",
+            "owner_id": USER,
+            "parent_id": POST,
+            "thread_metadata": {"create_timestamp": ts(timedelta(minutes=1))},
+            "last_message_id": snow(timedelta(minutes=1)),
+        },
+    ]
+    fake = FakeDiscord(threads=threads)
+    with patch("tools.discord_tool._discord_request", side_effect=fake):
+        result = json.loads(discord_core(action="list_forum_posts", channel_id=POST))
+    assert {post["id"] for post in result["posts"]} == {"thread-bot", "thread-user"}
+    assert not any(path == "/users/@me" for _, path in fake.calls)
+
+
+
 def test_replay_fetch_on_channel_outside_deliver_and_post_channels_is_refused(replay):
     fake = FakeDiscord()
     with patch("tools.discord_tool._discord_request", side_effect=fake):
@@ -165,31 +192,48 @@ def test_replay_fetch_paginates_after_the_maximum_message_id(replay):
     fake = FakeDiscord()
     pages = [
         [message(str(index), BOT, ts(timedelta(minutes=1))) for index in range(1, 101)],
-        [message(str(index), BOT, ts(timedelta(minutes=2))) for index in range(101, 151)],
+        [
+            message(str(index), BOT, ts(timedelta(minutes=2)))
+            for index in range(101, 151)
+        ],
     ]
-    with patch("tools.discord_tool._discord_request", side_effect=fake), patch(
-        "tools.discord_tool._fetch_messages", side_effect=[
-            json.dumps({"messages": pages[0]}), json.dumps({"messages": pages[1]}),
-        ]
-    ) as fetch:
+    with (
+        patch("tools.discord_tool._discord_request", side_effect=fake),
+        patch(
+            "tools.discord_tool._fetch_messages",
+            side_effect=[
+                json.dumps({"messages": pages[0]}),
+                json.dumps({"messages": pages[1]}),
+            ],
+        ) as fetch,
+    ):
         result = json.loads(discord_core(action="fetch_messages", channel_id=DELIVER))
     assert [call.kwargs["after"] for call in fetch.call_args_list] == [
-        discord_tool._snowflake_before(int(T0.timestamp() * 1000)), "100"]
-    assert [item["id"] for item in result["messages"]] == [str(index) for index in range(1, 151)]
+        discord_tool._snowflake_before(int(T0.timestamp() * 1000)),
+        "100",
+    ]
+    assert [item["id"] for item in result["messages"]] == [
+        str(index) for index in range(1, 151)
+    ]
     assert result["has_more"] is False
 
 
 def test_replay_fetch_reports_more_after_maximum_pages(replay):
     fake = FakeDiscord()
     pages = [
-        [message(str(index), BOT, ts(timedelta(minutes=1))) for index in range(page * 100, (page + 1) * 100)]
+        [
+            message(str(index), BOT, ts(timedelta(minutes=1)))
+            for index in range(page * 100, (page + 1) * 100)
+        ]
         for page in range(discord_tool._REPLAY_MAX_PAGES)
     ]
-    with patch("tools.discord_tool._discord_request", side_effect=fake), patch(
-        "tools.discord_tool._fetch_messages", side_effect=[
-            json.dumps({"messages": page}) for page in pages
-        ]
-    ) as fetch:
+    with (
+        patch("tools.discord_tool._discord_request", side_effect=fake),
+        patch(
+            "tools.discord_tool._fetch_messages",
+            side_effect=[json.dumps({"messages": page}) for page in pages],
+        ) as fetch,
+    ):
         result = json.loads(discord_core(action="fetch_messages", channel_id=DELIVER))
     assert fetch.call_count == discord_tool._REPLAY_MAX_PAGES
     assert result["has_more"] is True

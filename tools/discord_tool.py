@@ -671,36 +671,53 @@ def _operator_guilds(token: str, post_channels: frozenset[str]) -> frozenset[str
         return None
     return frozenset(guilds)
 
-def validate_cron_replay_deliver_channels(token: str, channel_ids: frozenset[str]) -> None:
+def validate_cron_replay_deliver_channels(
+    token: str, channel_ids: frozenset[str]
+) -> None:
     """Require replay targets to be guild channels within the configured operator guilds."""
     if not channel_ids:
         return
     try:
         allowed = _load_post_channels_config()
     except _PostScopeConfigError as exc:
-        raise ValueError(f"Could not read discord.post_channels; refusing replay scope: {exc}") from exc
+        raise ValueError(
+            f"Could not read discord.post_channels; refusing replay scope: {exc}"
+        ) from exc
     if not allowed:
-        raise ValueError("discord.post_channels is not set; replay reads require operator guilds")
+        raise ValueError(
+            "discord.post_channels is not set; replay reads require operator guilds"
+        )
     operator_guilds = _operator_guilds(token, frozenset(allowed))
     if operator_guilds is None:
-        raise ValueError("Could not resolve every discord.post_channels entry to a guild; refusing replay reads")
+        raise ValueError(
+            "Could not resolve every discord.post_channels entry to a guild; refusing replay reads"
+        )
     for channel_id in channel_ids:
         channel = _discord_request("GET", f"/channels/{channel_id}", token)
         if not isinstance(channel, dict) or channel.get("id") != channel_id:
             raise ValueError(f"Could not resolve replay delivery channel {channel_id}")
         if channel.get("type") in _DM_CHANNEL_TYPES:
-            raise ValueError("Discord DM and group DM channels are not available to cron replay reads")
+            raise ValueError(
+                "Discord DM and group DM channels are not available to cron replay reads"
+            )
         guild_id = channel.get("guild_id")
         if not isinstance(guild_id, str) or guild_id not in operator_guilds:
-            raise ValueError(f"Channel {channel_id} is outside the operator guilds; refusing replay read")
+            raise ValueError(
+                f"Channel {channel_id} is outside the operator guilds; refusing replay read"
+            )
 
 
-def _replay_read_channel_ids(token: str, channel_id: str, replay: "CronReplayRead") -> frozenset[str]:
+def _replay_read_channel_ids(
+    token: str, channel_id: str, replay: "CronReplayRead"
+) -> frozenset[str]:
     """Resolve a direct replay target or a thread under one to its validated channel IDs."""
     if channel_id in replay.deliver_channel_ids:
         return frozenset({channel_id})
     channel = _discord_request("GET", f"/channels/{channel_id}", token)
-    if not isinstance(channel, dict) or channel.get("type") not in _THREAD_CHANNEL_TYPES:
+    if (
+        not isinstance(channel, dict)
+        or channel.get("type") not in _THREAD_CHANNEL_TYPES
+    ):
         return frozenset()
     parent_id = str(channel.get("parent_id") or "")
     if parent_id not in replay.deliver_channel_ids:

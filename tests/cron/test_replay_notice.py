@@ -38,33 +38,51 @@ def prompt_env(tmp_path, monkeypatch):
 def test_replay_notice_follows_cron_hint_and_preserves_normal_prompt(prompt_env):
     job = {"id": "job", "prompt": "Do the task."}
     normal = scheduler_prompt._build_job_prompt(job, extra_prompt="Run detail")
-    assert normal == scheduler_prompt._CRON_HINT + "Do the task.\n\n## Run Context\nRun detail"
-    replay = dict(job, fire_claim={"replay": {"started_at": START, "interrupted_at": STOP}})
+    assert (
+        normal
+        == scheduler_prompt._CRON_HINT + "Do the task.\n\n## Run Context\nRun detail"
+    )
+    replay = dict(
+        job, fire_claim={"replay": {"started_at": START, "interrupted_at": STOP}}
+    )
     actual = scheduler_prompt._build_job_prompt(replay, extra_prompt="Run detail")
-    assert actual == scheduler_prompt._CRON_HINT + notice(START, STOP) + normal[len(scheduler_prompt._CRON_HINT):]
+    assert (
+        actual
+        == scheduler_prompt._CRON_HINT
+        + notice(START, STOP)
+        + normal[len(scheduler_prompt._CRON_HINT) :]
+    )
 
 
 @pytest.mark.parametrize("marker", [None, "broken", 42, {}])
 def test_malformed_replay_marker_uses_unknown_times(prompt_env, marker):
     job = {"id": "job", "prompt": "Do the task.", "fire_claim": {"replay": marker}}
-    assert scheduler_prompt._build_job_prompt(job) == scheduler_prompt._CRON_HINT + notice("unknown", "unknown") + "Do the task."
+    assert (
+        scheduler_prompt._build_job_prompt(job)
+        == scheduler_prompt._CRON_HINT + notice("unknown", "unknown") + "Do the task."
+    )
 
 
 def test_replay_notice_names_discord_only_for_discord_deliver(prompt_env, monkeypatch):
     from cron import scheduler
 
     job = {"id": "job", "prompt": "Do the task.", "deliver": "local"}
-    replay = dict(job, fire_claim={"replay": {"started_at": START, "interrupted_at": STOP}})
+    replay = dict(
+        job, fire_claim={"replay": {"started_at": START, "interrupted_at": STOP}}
+    )
     monkeypatch.setattr(scheduler, "_resolve_delivery_targets", lambda job: [])
     prompt = scheduler_prompt._build_job_prompt(replay)
     assert "check what this job already delivered before repeating" in prompt
     assert "discord tool" not in prompt
 
     monkeypatch.setattr(
-        scheduler, "_resolve_delivery_targets",
-        lambda job: [{"platform": "discord", "chat_id": "channel", "thread_id": None}])
+        scheduler,
+        "_resolve_delivery_targets",
+        lambda job: [{"platform": "discord", "chat_id": "channel", "thread_id": None}],
+    )
     prompt = scheduler_prompt._build_job_prompt(replay)
     assert "use the discord tool" in prompt
+
 
 @pytest.mark.parametrize("with_skill", [False, True])
 def test_replay_notice_passes_assembled_prompt_scanner(prompt_env, monkeypatch, with_skill):
