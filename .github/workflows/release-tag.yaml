@@ -1,0 +1,65 @@
+name: release-tag
+
+on:
+  pull_request:
+    branches: [rigel-release]
+  push:
+    branches: [rigel-release]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Validate a changed release version
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/release-tag.sh check-pr "$BASE_SHA" "$HEAD_SHA"
+
+  mint:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    environment: rigel-release
+    steps:
+      - name: Require release-branch dispatch
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/rigel-release'
+        run: |
+          echo '::error::workflow_dispatch is only allowed from rigel-release' >&2
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Create scoped release App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-workflows: write
+          repositories: hermes-agent
+
+      - name: Mint release tag if needed
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: .github/scripts/release-tag.sh mint "$RELEASE_SHA" "$RELEASE_REPOSITORY"
