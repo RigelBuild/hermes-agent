@@ -88,7 +88,7 @@ let
       source = "nix";
       distribution = "nix";
       pmRuntime = toString pmRuntime;
-      sealedStore = toString sealedPmStore;
+      shippedStore = toString shippedPmStore;
       updateMechanism = "external";
       payload = "bootstrap";
       tag = null;
@@ -111,12 +111,15 @@ let
     inherit uv2nix pyproject-nix pyproject-build-systems;
   };
 
-  # The lock packages pm's drift() requires, sealed read-only with their lock
-  # identity. The install stamp's sealedStore names it, so a stale
-  # ~/.hermes/tools/facts.json cannot make a Nix install report drift.
-  # Every lock package is passed; scripts.build.sealed_store selects the
-  # required subset, so pm/sealed_store.py stays the one definition.
-  sealedPmStore =
+  # Required PM tools ship here with lock identities to keep Nix drift checks accurate.
+  shippedStoreBuilderSrc = lib.fileset.toSource {
+    root = ./..;
+    fileset = lib.fileset.unions [
+      ../pm
+      ../scripts/build/shipped_store.py
+    ];
+  };
+  shippedPmStore =
     let
       target =
         let
@@ -127,13 +130,16 @@ let
             else "win32";
         in
         "${os}-${arch}";
-      pins = builtins.fromJSON (builtins.readFile ../pm/lock.json);
-      trees = lib.concatMapStringsSep " " (name: "${name}=${pmPackages.${name}}") (
-        builtins.filter (name: pmPackages ? ${name}) (builtins.attrNames pins.packages)
-      );
+      trees = lib.concatStringsSep " " [
+        "node=${pmPackages.node}"
+        "npm=${hermesNpmLib.npm12}"
+        "pnpm=${pmPackages.pnpm}"
+        "ffmpeg=${pmPackages.ffmpeg}"
+        "ripgrep=${pmPackages.ripgrep}"
+      ];
     in
-    runCommand "hermes-pm-sealed-store" { } ''
-      PYTHONPATH=${hermesNpmLib.pythonSrc} ${pmPackages.python}/bin/python3 -m scripts.build.sealed_store \
+    runCommand "hermes-pm-shipped-store" { } ''
+      PYTHONPATH=${shippedStoreBuilderSrc} ${pmPackages.python}/bin/python3 -m scripts.build.shipped_store \
         --lockfile ${../pm/lock.json} --target ${target} --out $out ${trees}
     '';
 

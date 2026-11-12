@@ -1,15 +1,11 @@
-"""Seal a Nix build's pm packages into the store its install stamp names.
-
-Invoked from nix/hermes-agent.nix as ``python3 -m scripts.build.sealed_store``.
-Each ``name=tree`` argument maps a lock package to its unpacked derivation.
-"""
+"""Build the read-only PM store shipped by Nix."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
-from pm.sealed_store import seal
+from pm.shipped_store import seal
 
 
 def main() -> None:

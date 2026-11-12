@@ -66,7 +66,7 @@ def tool_store(tmp_path, monkeypatch):
 
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("primary_state", ["absent", "stale"])
-def test_sealed_store_extension_matches_launched_tool(tool_store, primary_state, capsys):
+def test_shipped_store_extension_matches_launched_tool(tool_store, primary_state, capsys):
     primary, publish, version_output, _hostile = tool_store
     if primary_state == "stale":
         publish(primary)

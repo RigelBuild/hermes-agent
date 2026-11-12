@@ -344,6 +344,7 @@ let
 in
 {
   inherit pythonSrc nodejs pnpm pnpmDeps;
+  inherit npm12;
   node-gyp = node_gyp_11_4_0;
 
   # Bring the shared root lockfile up to date with the manifests, refresh
