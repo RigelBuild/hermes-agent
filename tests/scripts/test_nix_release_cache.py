@@ -181,9 +181,22 @@ def test_reconcile_assets_only_removes_stale_cache_assets_and_counts_existing(tm
         "nix-release-cache.pub",
     ]
     assert reconcile_assets(output, existing) == [f"{LOCAL_HASH}.narinfo", "obsolete.nar.xz"]
-    with pytest.raises(ValueError, match="would have 3 assets"):
+    with pytest.raises(ValueError, match=r"peak is 3 assets.*final count is 3"):
         validate_asset_count(output, ["release-notes.txt"], max_assets=2)
 
+
+def test_asset_count_rejects_peak_before_stale_cleanup(tmp_path: Path) -> None:
+    from scripts.releases.nix_release_cache import validate_asset_count
+
+    output = tmp_path / "release-assets"
+    output.mkdir()
+    (output / "new.narinfo").write_text("new", encoding="utf-8")
+    existing = ["stale.nar.xz", "retained-a", "retained-b"]
+
+    with pytest.raises(ValueError, match=r"peak is 4 assets.*final count is 3"):
+        validate_asset_count(output, existing, max_assets=3)
+
+    assert validate_asset_count(output, existing, max_assets=4) == 3
 def test_reconcile_cli_prints_stale_asset_names_one_per_line(tmp_path: Path, capsys) -> None:
     from scripts.releases.nix_release_cache import main
 

@@ -368,15 +368,20 @@ def validate_asset_count(
     *,
     max_assets: int = MAX_RELEASE_ASSETS,
 ) -> int:
-    """Fail if retained existing assets plus the upload set exceed GitHub's cap."""
+    """Check peak and final release counts before uploading any assets."""
     output = Path(output_dir)
+    existing = set(existing_names)
     stale_names = set(reconcile_assets(output, existing_names))
-    retained_names = set(existing_names) - stale_names
+    retained_names = existing - stale_names
     new_names = {path.name for path in output.iterdir() if path.is_file()}
-    total = len(retained_names | new_names)
-    if total > max_assets:
-        raise ValueError(f"release would have {total} assets; GitHub allows {max_assets}")
-    return total
+    peak_count = len(existing | new_names)
+    final_count = len(retained_names | new_names)
+    if peak_count > max_assets:
+        raise ValueError(
+            f"release peak is {peak_count} assets before stale cleanup; "
+            f"final count is {final_count}; GitHub allows {max_assets}"
+        )
+    return final_count
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -398,9 +403,9 @@ def _parser() -> argparse.ArgumentParser:
     reconcile_parser.add_argument("-out", required=True, type=Path, help="assembled release asset directory")
     reconcile_parser.add_argument("-existing-assets", required=True, type=Path, help="JSON array of current release asset names")
 
-    count_parser = commands.add_parser("count", help="check the release asset cap after stale assets are removed")
+    count_parser = commands.add_parser("count", help="check peak and final release asset counts before upload")
     count_parser.add_argument("-out", required=True, type=Path, help="assembled release asset directory")
-    count_parser.add_argument("-existing-assets", required=True, type=Path, help="JSON array of remaining release asset names")
+    count_parser.add_argument("-existing-assets", required=True, type=Path, help="JSON array of current release asset names")
     return parser
 
 
