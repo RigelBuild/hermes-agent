@@ -20,7 +20,9 @@ class PromptCachePlan:
     tools: list[dict[str, Any]]
 
 
-def envelope_tool_part_cache_markers_supported(provider: str | None, base_url: str | None) -> bool:
+def envelope_tool_part_cache_markers_supported(
+    provider: str | None, base_url: str | None, requested_provider: str = ""
+) -> bool:
     """Whether the envelope-layout route honors part-level markers on role:tool.
 
     OpenRouter/Nous Portal relocate a part-level ``cache_control`` onto the ``tool_result``
@@ -29,7 +31,9 @@ def envelope_tool_part_cache_markers_supported(provider: str | None, base_url: s
     """
     from agent.agent_runtime_helpers import _is_litellm_route
 
-    return not _is_litellm_route((provider or "").strip().lower(), base_url or "")
+    return not _is_litellm_route(
+        (provider or "").strip().lower(), base_url or "", requested_provider=requested_provider
+    )
 
 
 def is_one_shot_request(messages: list[dict[str, Any]] | None, tools: list[dict[str, Any]] | None) -> bool:

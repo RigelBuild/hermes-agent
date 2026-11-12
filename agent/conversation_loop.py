@@ -1331,7 +1331,8 @@ def _redecorate_prompt_cache_for_provider(
             # LiteLLM-style envelope routes forward part-level markers into
             # tool_result.content[] → non-retryable 400 (#89886).
             tool_part_markers=envelope_tool_part_cache_markers_supported(
-                getattr(agent, "provider", ""), getattr(agent, "base_url", "")
+                getattr(agent, "provider", ""), getattr(agent, "base_url", ""),
+                requested_provider=getattr(agent, "requested_provider", ""),
             ),
         )
         messages, planned_tools = plan.messages, plan.tools

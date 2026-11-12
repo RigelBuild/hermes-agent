@@ -1631,6 +1631,7 @@ def plan_cache_sections_for_destination(
     messages: list, tools: Optional[list], *, provider: str, base_url: str, api_mode: str,
     model: str, cache_disabled: Optional[bool] = None, cache_ttl: Optional[str] = None,
     static_system_prefix: Optional[str] = None,
+    requested_provider: Optional[str] = None,
 ) -> tuple[list, list]:
     """Plan request-local cache sections for one resolved destination (MoA / auxiliary senders):
     stripped copies (non-caching route) or a ``build_prompt_cache_plan`` layout; never mutates
@@ -1648,7 +1649,10 @@ def plan_cache_sections_for_destination(
     # The policy function reads agent.* only as fallbacks for kwargs we don't pass; blank_cache_policy_stub
     # is the only sanctioned stub so _cache_disabled cannot be left off again (#76085).
     stub = blank_cache_policy_stub(cache_disabled)
-    dest = dict(provider=provider, base_url=base_url, api_mode=api_mode, model=model)
+    dest = dict(
+        provider=provider, requested_provider=requested_provider, base_url=base_url,
+        api_mode=api_mode, model=model,
+    )
     should_cache, native_layout = anthropic_prompt_cache_policy(stub, **dest)
     if not should_cache:
         canonical_messages = copy.deepcopy(messages or [])
@@ -1660,18 +1664,26 @@ def plan_cache_sections_for_destination(
         cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model),
         native_anthropic=native_layout,
         static_system_prefix=static_system_prefix if isinstance(static_system_prefix, str) else None,
-        direct_native_tool_cache=_direct_native_anthropic_tool_cache_capability(stub, **dest),
+        direct_native_tool_cache=_direct_native_anthropic_tool_cache_capability(
+            stub, provider=provider, base_url=base_url, api_mode=api_mode, model=model
+        ),
         # LiteLLM-style envelope routes forward part-level markers into tool_result.content[] →
         # non-retryable 400.
-        tool_part_markers=envelope_tool_part_cache_markers_supported(provider, base_url),
+        tool_part_markers=envelope_tool_part_cache_markers_supported(
+            provider, base_url, requested_provider=requested_provider or ""
+        ),
     )
     return plan.messages, plan.tools
 
 
-def _is_litellm_route(provider_lower: str, base_url: str) -> bool:
-    """True when a route is a LiteLLM proxy: ``litellm`` as a whole delimited token (not
-    substring) in the provider id or host; a path segment never qualifies."""
-    return _has_litellm_token(provider_lower, ":-_/") or _has_litellm_token(base_url_hostname(base_url), ".-")
+def _is_litellm_route(provider_lower: str, base_url: str, requested_provider: str = "") -> bool:
+    """True when ``litellm`` is a whole delimited token in provider, identity or host."""
+    requested_lower = (requested_provider or "").strip().lower().removeprefix("custom:")
+    return (
+        _has_litellm_token(provider_lower, ":-_/")
+        or _has_litellm_token(requested_lower, ":-_/")
+        or _has_litellm_token(base_url_hostname(base_url), ".-")
+    )
 
 
 def _has_litellm_token(value: str, delimiters: str) -> bool:
@@ -1693,12 +1705,15 @@ def _moa_aggregator_cache_policy(agent, eff_model: str) -> tuple[bool, bool]:
         agg_model = str(agg.get("model") or "").strip()
         if agg_provider and agg_model:
             agg_base_url = agg_api_mode = ""
+            agg_requested_provider = agg_provider
             with contextlib.suppress(Exception):
                 rt = resolve_runtime_provider(requested=agg_provider, target_model=agg_model)
                 agg_base_url = rt.get("base_url") or ""
                 agg_api_mode = rt.get("api_mode") or ""
+                agg_requested_provider = rt.get("requested_provider") or agg_provider
             return anthropic_prompt_cache_policy(
-                agent, provider=agg_provider, base_url=agg_base_url, api_mode=agg_api_mode, model=agg_model
+                agent, provider=agg_provider, requested_provider=agg_requested_provider,
+                base_url=agg_base_url, api_mode=agg_api_mode, model=agg_model
             )
     except Exception as _moa_exc:  # pragma: no cover - defensive
         logger.debug("MoA aggregator cache-policy resolution failed: %s", _moa_exc)
@@ -1739,8 +1754,8 @@ def _route_may_be_custom(agent, eff_provider: str, provider_lower: str, eff_base
 
 
 def anthropic_prompt_cache_policy(
-    agent, *, provider: Optional[str] = None, base_url: Optional[str] = None,
-    api_mode: Optional[str] = None, model: Optional[str] = None,
+    agent, *, provider: Optional[str] = None, requested_provider: Optional[str] = None,
+    base_url: Optional[str] = None, api_mode: Optional[str] = None, model: Optional[str] = None,
 ) -> tuple[bool, bool]:
     """Decide whether to apply Anthropic prompt caching; returns ``(should_cache, use_native_layout)``.
     Native layout puts markers on inner content blocks (Anthropic wire), else on the message
@@ -1757,6 +1772,10 @@ def anthropic_prompt_cache_policy(
         return (False, False)
     eff_provider = (provider if provider is not None else agent.provider) or ""
     eff_base_url = base_url if base_url is not None else (agent.base_url or "")
+    eff_requested_provider = (
+        requested_provider if requested_provider is not None
+        else getattr(agent, "requested_provider", "")
+    ) or ""
     eff_api_mode = api_mode if api_mode is not None else (agent.api_mode or "")
     eff_model = (model if model is not None else agent.model) or ""
     if eff_provider.strip().lower() == "moa":
@@ -1786,7 +1805,8 @@ def anthropic_prompt_cache_policy(
     # for the two transports this planner handles, not Responses/Bedrock.
     supports_cache_markers = eff_api_mode in {"anthropic_messages", "chat_completions"}
     litellm_openai_wire = (
-        eff_api_mode == "chat_completions" and is_claude and _is_litellm_route(provider_lower, eff_base_url)
+        eff_api_mode == "chat_completions" and is_claude
+        and _is_litellm_route(provider_lower, eff_base_url, eff_requested_provider)
     )
     if supports_cache_markers and (
         is_anthropic_wire
@@ -2418,7 +2438,8 @@ def switch_model(
     if custom_providers is not None:
         agent._custom_providers = custom_providers
     agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy(
-        provider=new_provider, base_url=agent.base_url, api_mode=api_mode, model=new_model
+        provider=new_provider, requested_provider=getattr(agent, "requested_provider", new_provider),
+        base_url=agent.base_url, api_mode=api_mode, model=new_model
     )
     if hasattr(agent, "context_compressor") and agent.context_compressor:
         _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot)

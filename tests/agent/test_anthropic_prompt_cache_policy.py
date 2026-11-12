@@ -722,6 +722,30 @@ class TestLiteLLMOpenAIWire:
     (they may not tolerate the marker block format).
     """
 
+    @pytest.mark.parametrize("requested_provider", ["litellm", "custom:litellm"])
+    def test_named_litellm_route_caches_claude_without_host_token(self, requested_provider):
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://gateway.example.com/v1",
+            api_mode="chat_completions",
+            model="claude-opus-4.8",
+        )
+        agent.requested_provider = requested_provider
+
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    @pytest.mark.parametrize("requested_provider", ["custom", ""])
+    def test_unmarked_requested_provider_stays_conservative(self, requested_provider):
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://gateway.example.com/v1",
+            api_mode="chat_completions",
+            model="claude-opus-4.8",
+        )
+        agent.requested_provider = requested_provider
+
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
     @pytest.mark.parametrize(
         "provider,base_url",
         [
