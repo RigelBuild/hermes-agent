@@ -145,3 +145,77 @@ def test_prompt_toolset_resolver_keeps_disabled_discord_out_of_replay_hint(
     prompt = scheduler_prompt._replay_hint(job["fire_claim"]["replay"], job)
     assert "discord tool" not in prompt
     assert "check what this job already delivered before repeating" in prompt
+
+
+def test_replay_hint_falls_back_when_toolset_lookup_fails(monkeypatch):
+    from cron import scheduler, scheduler_prompt
+
+    monkeypatch.setattr(
+        scheduler,
+        "_resolve_delivery_targets",
+        lambda job: [{"platform": "discord", "chat_id": "guild-channel", "thread_id": None}],
+    )
+
+    def fail_load_config():
+        raise SystemExit("backend unavailable")
+
+    monkeypatch.setattr(scheduler, "load_config_readonly", fail_load_config)
+    replay = {"started_at": "2026-11-10T00:00:00+00:00"}
+    prompt = scheduler_prompt._replay_hint(replay, {"id": "replay-hint"})
+    assert "discord tool" not in prompt
+    assert "check what this job already delivered before repeating" in prompt
+
+
+def test_run_job_records_discord_replay_toolset_resolution_failure(
+    tmp_path, monkeypatch, cron_owner
+):
+    from cron import scheduler
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "model:\n  default: test-model\nplatform_toolsets:\n  cron: oops\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: home)
+    monkeypatch.setattr(
+        scheduler,
+        "_resolve_delivery_targets",
+        lambda job: [{"platform": "discord", "chat_id": "guild-channel", "thread_id": None}],
+    )
+    monkeypatch.setattr(
+        scheduler, "_reload_dotenv_and_publish_delivery_target", lambda job: None
+    )
+    monkeypatch.setattr(scheduler, "_cron_preflight_enabled", lambda cfg: False)
+    resolve_toolsets = scheduler._resolve_cron_enabled_toolsets
+
+    def fail_on_malformed_cron_toolsets(job, cfg):
+        if (cfg.get("platform_toolsets") or {}).get("cron") == "oops":
+            raise RuntimeError("Cron toolset resolution failed")
+        return resolve_toolsets(job, cfg)
+
+    monkeypatch.setattr(
+        scheduler, "_resolve_cron_enabled_toolsets", fail_on_malformed_cron_toolsets
+    )
+    monkeypatch.setattr(
+        scheduler, "_resolve_job_runtime", lambda job, job_id, jc: ({"provider": "test"}, "test-model")
+    )
+    monkeypatch.setattr(scheduler, "_open_cron_session_db", lambda job: _SessionDB())
+    monkeypatch.setattr(scheduler, "_finalize_cron_session", lambda *args, **kwargs: None)
+    monkeypatch.setattr(scheduler, "_teardown_cron_agent", lambda *args, **kwargs: None)
+    monkeypatch.setattr(scheduler, "_write_usage_audit", lambda *args, **kwargs: None)
+    job = {
+        "id": "replay-bad-toolsets",
+        "name": "Bad toolsets replay",
+        "prompt": "Do it",
+        "deliver": "origin",
+        "fire_claim": {"replay": {"started_at": "2026-11-10T00:00:00+00:00"}},
+    }
+    execution = session_cron._execution.set((None, "session", job["id"], "fire"))
+    try:
+        result = scheduler.run_job(job, execution_id="fire")
+        assert result[0] is False
+        assert "Cron toolset resolution failed" in result[3]
+    finally:
+        session_cron._execution.reset(execution)

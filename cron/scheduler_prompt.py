@@ -309,16 +309,19 @@ def _replay_hint(replay: dict, job: dict) -> str:
         for target in _sched._resolve_delivery_targets(job)
     )
     if discord_deliver:
-        effective_cfg = _sched.load_config_readonly()
-        enabled_toolsets = _sched._resolve_cron_enabled_toolsets(job, effective_cfg)
-        disabled_toolsets = _sched._resolve_cron_disabled_toolsets(effective_cfg)
-        from toolsets import resolve_toolset
+        try:
+            effective_cfg = _sched.load_config_readonly()
+            enabled_toolsets = _sched._resolve_cron_enabled_toolsets(job, effective_cfg)
+            disabled_toolsets = _sched._resolve_cron_disabled_toolsets(effective_cfg)
+            from toolsets import resolve_toolset
 
-        discord_tool_enabled = any(
-            "discord" in resolve_toolset(str(name)) for name in enabled_toolsets
-        ) and not any(
-            "discord" in resolve_toolset(str(name)) for name in disabled_toolsets
-        )
+            discord_tool_enabled = any(
+                "discord" in resolve_toolset(str(name)) for name in enabled_toolsets
+            ) and not any(
+                "discord" in resolve_toolset(str(name)) for name in disabled_toolsets
+            )
+        except (Exception, SystemExit):
+            discord_tool_enabled = False
     else:
         discord_tool_enabled = False
     delivered_check = (
