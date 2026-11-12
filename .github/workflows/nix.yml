@@ -1,3 +1,4 @@
+# This fork runs this workflow on GitHub-hosted runners.
 name: Nix flake check
 
 # Builds every output of the flake: the package, the devShell, and the 21
@@ -13,7 +14,8 @@ name: Nix flake check
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, rigel-release]
+  workflow_dispatch:
   workflow_call:
     inputs:
       commit:
@@ -48,21 +50,21 @@ env:
   CANDIDATE_COMMIT: ${{ inputs.commit || github.sha }}
 
 jobs:
-  # A `paths:` filter cannot gate this workflow: a push to main must run it
-  # whatever changed, because the flake packages the product and nine of the
-  # checks run the built binary. The `nix` lane is a slow lane
+  # A `paths:` filter cannot gate this workflow: pushes to main and rigel-release
+  # must run it whatever changed, because the flake packages the product and nine
+  # of the checks run the built binary. The `nix` lane is a slow lane
   # (classify_changes.py): on a pull request it runs for the flake files and
   # the dependency manifests, or the run-e2e label. On push the classifier
   # fails open and every lane is true, so a product change that breaks the
-  # flake turns main red after the merge.
+  # flake turns the branch red after the merge.
   detect:
     name: Detect affected areas
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       nix: ${{ steps.classify.outputs.nix }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           # A stable run passes the claim commit. Every other event tests its own head SHA.
           ref: ${{ inputs.commit || github.sha }}
@@ -89,7 +91,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ inputs.commit || github.sha }}
 
@@ -138,13 +140,12 @@ jobs:
     if: needs.detect.outputs.nix == 'true' || inputs.release == true
     # The build compiles the package and its whole dependency closure, so this
     # takes minutes and not seconds when the cache misses. `nix flake check`
-    # builds 21 checks, and --max-jobs defaults to the core count. It uses the
-    # wider runner with no more configuration.
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    # builds 21 checks, and `--max-jobs` uses the GitHub-hosted runner's cores.
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - name: Checkout code
-        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           # A stable run passes the claim commit. Every other event tests its own head SHA.
           ref: ${{ inputs.commit || github.sha }}
@@ -180,12 +181,9 @@ jobs:
           # of the lockfile, so an old store still removes most of the work.
           restore-prefixes-first-match: nix-${{ runner.os }}-
 
-          # Save from main only. A cache that a PR writes is visible to that
-          # PR alone and never to another branch, so a save there spends the
-          # 10 GB quota of the repository and helps no later run. A PR still
-          # restores: it reads the cache that the merge to main wrote. This is
-          # the same rule that docker.yml applies to `cache-to`.
-          save: ${{ github.event_name != 'pull_request' }}
+          # Save only on pushes or stable-release calls. Manual dispatches can
+          # run on arbitrary branches, where their cache would not be reusable.
+          save: ${{ github.event_name == 'push' || inputs.release == true }}
 
           # Collect garbage before the save, so the store stays inside the
           # 10 GB quota of the repository. Without a limit the store grows at
