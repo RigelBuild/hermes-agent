@@ -3105,7 +3105,8 @@ class TestRunConversation:
 
     @pytest.mark.parametrize(
         ("requested_provider", "should_cache"),
-        [("litellm", True), ("custom:litellm", True), ("custom", False), ("", False)],
+        [("litellm", True), ("custom:litellm", True), ("custom", False), ("", False),
+         ("custom:foo", False), ("custom:notlitellm", False)],
     )
     def test_litellm_route_request_cache_markers(self, agent, requested_provider, should_cache):
         self._setup_agent(agent)
@@ -3197,7 +3198,6 @@ class TestRunConversation:
                 "cache_control": {"type": "ephemeral"},
             },
         ]
-
 
     def test_codex_content_filter_incomplete_routes_to_policy_fallback(self, agent):
         self._setup_agent(agent)

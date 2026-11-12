@@ -304,8 +304,39 @@ class TestRedecoratePromptCacheOnPolicyChange:
             if isinstance(part, dict)
         )
 
+    @pytest.mark.parametrize("requested_provider", ["litellm", "custom:litellm"])
+    def test_redecorates_named_litellm_route_without_tool_part_markers(self, requested_provider):
+        agent = _cache_agent(
+            use_caching=True,
+            native=False,
+            prompt=self._STATIC,
+            static=self._STATIC,
+            provider="custom",
+            model="claude-opus-4.8",
+        )
+        agent.requested_provider = requested_provider
+        agent.base_url = "https://gateway.example.com/v1"
+        messages = [
+            {"role": "system", "content": self._STATIC},
+            {"role": "user", "content": "run the tool"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "tool result"},
+            {"role": "user", "content": "continue"},
+        ]
 
+        decorated, _, _ = _redecorate_prompt_cache_for_provider(agent, messages)
 
+        tool_message = next(message for message in decorated if message.get("role") == "tool")
+        assert "cache_control" not in tool_message
+        assert not any(
+            isinstance(part, dict) and "cache_control" in part
+            for part in (tool_message.get("content") if isinstance(tool_message.get("content"), list) else [])
+        )
+        assert _count_cache_markers(decorated) > 0
 
     def test_moa_guidance_stays_outside_last_breakpoint(self):
         prompt = "sys"
