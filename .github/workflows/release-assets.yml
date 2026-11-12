@@ -161,7 +161,7 @@ jobs:
       - name: Assemble flat binary cache
         run: |
           set -euo pipefail
-          python scripts/releases/nix_release_cache.py assemble \
+          python3 scripts/releases/nix_release_cache.py assemble \
             -out release-assets -upstream https://cache.nixos.org platforms/*
           committed=$(tr -d '[:space:]' < nix/release-cache.pub)
           derived=$(tr -d '[:space:]' < release-assets/nix-release-cache.pub)
@@ -170,25 +170,27 @@ jobs:
             exit 1
           fi
 
-      - name: List and reconcile existing release assets
+      - name: Prepare release asset reconciliation
         run: |
           set -euo pipefail
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "$TAG" --notes "hermes-agent $TAG"
           gh release view "$TAG" --json assets --jq '[.assets[].name]' > "$RUNNER_TEMP/existing-assets.json"
-          python scripts/releases/nix_release_cache.py count \
+          python3 scripts/releases/nix_release_cache.py count \
             -out release-assets \
             -existing-assets "$RUNNER_TEMP/existing-assets.json"
-          python scripts/releases/nix_release_cache.py reconcile \
+          python3 scripts/releases/nix_release_cache.py reconcile \
             -out release-assets \
-            -existing-assets "$RUNNER_TEMP/existing-assets.json" \
-            -stale-out "$RUNNER_TEMP/stale-assets.json"
-          while IFS= read -r asset; do
-            [[ -n "$asset" ]] || continue
-            gh release delete-asset "$TAG" "$asset" --yes
-          done < <(python -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1], encoding="utf-8"))))' "$RUNNER_TEMP/stale-assets.json")
+            -existing-assets "$RUNNER_TEMP/existing-assets.json" > "$RUNNER_TEMP/stale-assets.txt"
 
-
-      - name: Attach assets to release
+      - name: Upload release assets
         run: |
           set -euo pipefail
           gh release upload "$TAG" release-assets/* --clobber
+
+      - name: Delete stale cache assets
+        run: |
+          set -euo pipefail
+          while IFS= read -r asset; do
+            [[ -n "$asset" ]] || continue
+            gh release delete-asset "$TAG" "$asset" --yes
+          done < "$RUNNER_TEMP/stale-assets.txt"

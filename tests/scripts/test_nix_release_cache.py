@@ -184,6 +184,18 @@ def test_reconcile_assets_only_removes_stale_cache_assets_and_counts_existing(tm
     with pytest.raises(ValueError, match="would have 3 assets"):
         validate_asset_count(output, ["release-notes.txt"], max_assets=2)
 
+def test_reconcile_cli_prints_stale_asset_names_one_per_line(tmp_path: Path, capsys) -> None:
+    from scripts.releases.nix_release_cache import main
+
+    output = tmp_path / "release-assets"
+    output.mkdir()
+    (output / "nix-cache-info").write_text("StoreDir: /nix/store\n", encoding="utf-8")
+    existing = tmp_path / "existing-assets.json"
+    existing.write_text(json.dumps(["obsolete.nar.xz", "release-notes.txt"]), encoding="utf-8")
+
+    assert main(["reconcile", "-out", str(output), "-existing-assets", str(existing)]) == 0
+    assert capsys.readouterr().out == "obsolete.nar.xz\n"
+
 
 def test_assemble_dedupes_shared_paths_but_rejects_identity_conflicts(tmp_path: Path) -> None:
     first = _platform(

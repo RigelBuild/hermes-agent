@@ -132,18 +132,17 @@
           else if !(builtins.match "v[A-Za-z0-9._+-]*-rigel\\.[A-Za-z0-9._+-]+" pin.tag != null) then
             throw "nix/release-closure/${system}.json tag must match v*-rigel.*"
           else
-            pkgs.runCommandLocal "hermes-agent-release"
-              {
-                closure = builtins.fetchClosure {
-                  fromStore = "https://github.com/RigelBuild/hermes-agent/releases/download/${pin.tag}";
-                  fromPath = pin.storePath;
-                  inputAddressed = true;
-                };
-                meta.mainProgram = "hermes";
-              }
-              ''
-                mkdir -p "$out/bin"
-                ln -s "$closure/bin/hermes" "$out/bin/hermes"
-              '';
+            let
+              closure = builtins.fetchClosure {
+                fromStore = "https://github.com/RigelBuild/hermes-agent/releases/download/${pin.tag}";
+                fromPath = pin.storePath;
+                inputAddressed = true;
+              };
+            in
+            pkgs.symlinkJoin {
+              name = "hermes-agent-release";
+              paths = [ closure ];
+              meta.mainProgram = "hermes";
+            };
     };
 }

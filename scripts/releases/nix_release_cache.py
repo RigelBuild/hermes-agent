@@ -394,10 +394,9 @@ def _parser() -> argparse.ArgumentParser:
     pin_parser.add_argument("-path-info", required=True, type=Path)
     pin_parser.add_argument("-out", required=True, type=Path)
 
-    reconcile_parser = commands.add_parser("reconcile", help="list existing assets not in the new asset set")
+    reconcile_parser = commands.add_parser("reconcile", help="print existing cache assets absent from the new asset set")
     reconcile_parser.add_argument("-out", required=True, type=Path, help="assembled release asset directory")
     reconcile_parser.add_argument("-existing-assets", required=True, type=Path, help="JSON array of current release asset names")
-    reconcile_parser.add_argument("-stale-out", required=True, type=Path, help="write stale asset names as JSON")
 
     count_parser = commands.add_parser("count", help="check the release asset cap after stale assets are removed")
     count_parser.add_argument("-out", required=True, type=Path, help="assembled release asset directory")
@@ -417,8 +416,8 @@ def main(argv: list[str] | None = None) -> int:
             existing = json.loads(args.existing_assets.read_text(encoding="utf-8"))
             if not isinstance(existing, list) or not all(isinstance(name, str) for name in existing):
                 raise ValueError(f"{args.existing_assets}: expected a JSON array of asset names")
-            stale = reconcile_assets(args.out, existing)
-            args.stale_out.write_text(json.dumps(stale) + "\n", encoding="utf-8")
+            for asset in reconcile_assets(args.out, existing):
+                print(asset)
         elif args.command == "count":
             existing = json.loads(args.existing_assets.read_text(encoding="utf-8"))
             if not isinstance(existing, list) or not all(isinstance(name, str) for name in existing):
