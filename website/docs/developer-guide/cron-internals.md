@@ -249,7 +249,7 @@ unknown attempt remains in run history with the skipped detail. This does not co
 can still run. One-shot jobs and other unknown outcomes stay paused; recovery delivers
 their failure notice through the job's configured failure target.
 
-A replay may also read its job's `deliver` Discord channel, and threads under it, for the duration of its window. The read returns only this bot's messages at or after the replay's `started_at`, and it never grants ordinary channel history. Posts there are still refused, and every other channel keeps the `discord.post_channels` boundary.
+A replay may also read its job's `deliver` Discord channel, and threads under it, for the duration of its window. The read returns only this bot's messages at or after the replay's `started_at`, and it never grants ordinary channel history. Posts there are still refused. Reads inside `discord.post_channels` stay unfiltered, and every other channel keeps the `discord.post_channels` boundary.
 
 **Fire-claim lease during a run.** A firing run holds `fire_claim = {at, by}` and
 a heartbeat thread refreshes `at` every 60 s (the lease is 300 s). A heartbeat

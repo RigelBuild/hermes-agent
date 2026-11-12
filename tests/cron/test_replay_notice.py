@@ -18,11 +18,9 @@ def notice(start, stop):
         f"REPLAY: A run of this same scheduled occurrence started at {start} "
         f"and was stopped by a gateway restart at {stop}. It may already "
         "have posted messages or delivered part of its result. Before you post "
-        "anything, read what is there: use the discord tool (list_forum_posts, "
-        "fetch_messages) on the channels and threads this job posts to. Look at "
-        f"every message sent at or after {start}. Do not post again anything "
-        "that is already there. Do only the steps that are missing. If nothing is "
-        "missing, respond with exactly [SILENT].\n\n"
+        "anything, check what this job already delivered before repeating. "
+        "Do not post again anything that is already there. Do only the steps "
+        "that are missing. If nothing is missing, respond with exactly [SILENT].\n\n"
     )
 
 
@@ -33,6 +31,7 @@ def prompt_env(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(notepad, "render_notepad_section", lambda job_id: "")
+    monkeypatch.setattr(scheduler_prompt, "_run_time_line", lambda: "")
     monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "approve")
 
 
@@ -50,6 +49,22 @@ def test_malformed_replay_marker_uses_unknown_times(prompt_env, marker):
     job = {"id": "job", "prompt": "Do the task.", "fire_claim": {"replay": marker}}
     assert scheduler_prompt._build_job_prompt(job) == scheduler_prompt._CRON_HINT + notice("unknown", "unknown") + "Do the task."
 
+
+def test_replay_notice_names_discord_only_for_discord_deliver(prompt_env, monkeypatch):
+    from cron import scheduler
+
+    job = {"id": "job", "prompt": "Do the task.", "deliver": "local"}
+    replay = dict(job, fire_claim={"replay": {"started_at": START, "interrupted_at": STOP}})
+    monkeypatch.setattr(scheduler, "_resolve_delivery_targets", lambda job: [])
+    prompt = scheduler_prompt._build_job_prompt(replay)
+    assert "check what this job already delivered before repeating" in prompt
+    assert "discord tool" not in prompt
+
+    monkeypatch.setattr(
+        scheduler, "_resolve_delivery_targets",
+        lambda job: [{"platform": "discord", "chat_id": "channel", "thread_id": None}])
+    prompt = scheduler_prompt._build_job_prompt(replay)
+    assert "use the discord tool" in prompt
 
 @pytest.mark.parametrize("with_skill", [False, True])
 def test_replay_notice_passes_assembled_prompt_scanner(prompt_env, monkeypatch, with_skill):
