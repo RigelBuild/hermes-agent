@@ -181,11 +181,9 @@ jobs:
           # of the lockfile, so an old store still removes most of the work.
           restore-prefixes-first-match: nix-${{ runner.os }}-
 
-          # Save only on non-PR runs. A cache that a PR writes is visible to
-          # that PR alone and never to another branch, so a save there spends
-          # the 10 GB repository quota and helps no later run. PRs still restore
-          # caches saved by non-PR runs.
-          save: ${{ github.event_name != 'pull_request' }}
+          # Save only on pushes or stable-release calls. Manual dispatches can
+          # run on arbitrary branches, where their cache would not be reusable.
+          save: ${{ github.event_name == 'push' || inputs.release == true }}
 
           # Collect garbage before the save, so the store stays inside the
           # 10 GB quota of the repository. Without a limit the store grows at
@@ -238,4 +236,3 @@ jobs:
           if actual != expected:
               raise SystemExit(f"Nix package version mismatch: expected {expected}, got {actual}")
           PY
-
