@@ -10,6 +10,7 @@ so the part-level form stays on for it.
 
 import copy
 
+import pytest
 from agent.prompt_caching import (
     apply_anthropic_cache_control,
     build_prompt_cache_plan,
@@ -60,6 +61,19 @@ class TestEnvelopeToolPartMarkerSuppression:
         assert not envelope_tool_part_cache_markers_supported(
             "custom", "https://litellm-proxy.example.com/v1"
         )
+
+    @pytest.mark.parametrize("requested_provider", ["litellm", "custom:litellm"])
+    def test_named_litellm_route_disables_tool_part_markers(self, requested_provider):
+        assert not envelope_tool_part_cache_markers_supported(
+            "custom", "https://gateway.example.com/v1", requested_provider=requested_provider
+        )
+
+    @pytest.mark.parametrize("requested_provider", ["custom", ""])
+    def test_unmarked_requested_provider_keeps_tool_part_markers(self, requested_provider):
+        assert envelope_tool_part_cache_markers_supported(
+            "custom", "https://gateway.example.com/v1", requested_provider=requested_provider
+        )
+
 
     def test_openrouter_route_stays_supported(self):
         assert envelope_tool_part_cache_markers_supported(

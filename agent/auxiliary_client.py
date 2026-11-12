@@ -3800,11 +3800,13 @@ class _FallbackDestination(NamedTuple):
     base_url: str
     api_mode: Optional[str]
     model: Optional[str]
+    requested_provider: Optional[str] = None
 
 
 def _complete_fallback_destination(
     provider: str, base_url: str, api_mode: Optional[str], model: Optional[str]
 ) -> _FallbackDestination:
+    requested_provider = provider
     if not api_mode:
         if _endpoint_speaks_anthropic_messages(base_url):
             api_mode = "anthropic_messages"
@@ -3815,7 +3817,8 @@ def _complete_fallback_destination(
                     requested=provider, explicit_base_url=base_url or None, target_model=model or ""
                 )
                 api_mode = str(runtime.get("api_mode") or "").strip() or None
-    return _FallbackDestination(provider, base_url, api_mode, model)
+                requested_provider = runtime.get("requested_provider") or provider
+    return _FallbackDestination(provider, base_url, api_mode, model, requested_provider)
 
 
 def _fallback_destination_from_entry(
@@ -3851,6 +3854,7 @@ def _replan_synchronous_cache_sections(
     from agent.prompt_caching import is_one_shot_request
     return plan_cache_sections_for_destination(
         messages, tools, provider=destination.provider, base_url=destination.base_url,
+        requested_provider=getattr(destination, "requested_provider", None),
         api_mode=destination.api_mode or "", model=destination.model or "", cache_ttl=configured_cache_ttl(),
         cache_disabled=True if is_one_shot_request(messages, tools) else None,
     )
@@ -3909,6 +3913,7 @@ def _plan_fallback_candidate(
         retry_destination = _FallbackDestination(
             provider, destination.base_url or str(getattr(client, "base_url", "") or ""),
             destination.api_mode, model or destination.model,
+            destination.requested_provider or provider,
         )
         return retry_destination, _fallback_request_kwargs(retry_destination, **common)
 

@@ -3103,6 +3103,66 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    @pytest.mark.parametrize(
+        ("requested_provider", "should_cache"),
+        [("litellm", True), ("custom:litellm", True), ("custom", False), ("", False)],
+    )
+    def test_litellm_route_request_cache_markers(self, agent, requested_provider, should_cache):
+        self._setup_agent(agent)
+        agent.provider = "custom"
+        agent.requested_provider = requested_provider
+        agent.base_url = "https://gateway.example.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.api_mode = "chat_completions"
+        agent.model = "claude-opus-4.8"
+        agent._cached_system_prompt = "stable instructions"
+        agent._cached_system_prompt_static = "stable instructions"
+        agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy()
+        agent._cache_ttl = "5m"
+        history = [
+            {"role": "user", "content": "run a tool"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "result"},
+        ]
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer", finish_reason="stop"
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("continue", conversation_history=history)
+
+        assert result["completed"] is True
+        request = agent.client.chat.completions.create.call_args.kwargs
+        markers = [
+            message for message in request["messages"]
+            if "cache_control" in message or any(
+                isinstance(part, dict) and "cache_control" in part
+                for part in (message.get("content") if isinstance(message.get("content"), list) else [])
+            )
+        ]
+        assert bool(markers) is should_cache
+        request_tool = next(message for message in request["messages"] if message.get("role") == "tool")
+        assert "cache_control" not in request_tool
+        assert not any(
+            isinstance(part, dict) and "cache_control" in part
+            for part in (request_tool.get("content") if isinstance(request_tool.get("content"), list) else [])
+        )
+
+
     def test_prompt_cache_marks_static_system_prefix_on_wire(self, agent):
         self._setup_agent(agent)
         agent._cached_system_prompt = "stable instructions\n\nsession context"
@@ -3137,6 +3197,7 @@ class TestRunConversation:
                 "cache_control": {"type": "ephemeral"},
             },
         ]
+
 
     def test_codex_content_filter_incomplete_routes_to_policy_fallback(self, agent):
         self._setup_agent(agent)

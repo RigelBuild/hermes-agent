@@ -852,7 +852,9 @@ The marker is applied differently based on content type:
 
 Prompt caching is automatically enabled when:
 - The model is an Anthropic Claude model (detected by model name)
-- The provider supports `cache_control` (native Anthropic API or OpenRouter)
+- The provider supports `cache_control` (native Anthropic API, OpenRouter, or a LiteLLM route)
+
+For Claude on a LiteLLM OpenAI-compatible route, Hermes detects `litellm` as a whole token in the provider, requested provider identity, or gateway host. A named custom provider can keep the `custom:` prefix in its requested identity. This route uses envelope cache markers; role:tool part markers stay disabled because LiteLLM forwards those parts without relocating their markers.
 
 ```yaml
 # config.yaml — TTL is configurable: "5m", "1h", or "auto"
