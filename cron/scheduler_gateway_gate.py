@@ -49,6 +49,7 @@ def _note_fire_refused(job_ids, detail: str) -> None:
     """Stamp ``last_fire_error`` (shown by ``hermes cron list``) and drop the dispatch marks the
     due scan just wrote: the slot was never handed over, so nothing must "restore" or "reclaim" it."""
     from cron.jobs import _hermes_now, _jobs_lock, load_jobs, save_jobs
+    from cron.occurrences import slot_replay
 
     ids = set(job_ids)
     with _jobs_lock():
@@ -58,8 +59,7 @@ def _note_fire_refused(job_ids, detail: str) -> None:
                 continue
             job["last_fire_error"] = {"at": _hermes_now().isoformat(), "detail": detail[:500]}
             # A replay's slot was never handed over: keep it so the next tick still replays it.
-            pending = job.get("pending_slot")
-            if not (isinstance(pending, dict) and isinstance(pending.get("replay"), dict)):
+            if slot_replay(job) is None:
                 job.pop("pending_slot", None)
             if job.get("run_claim") is not None:
                 job["run_claim"] = None

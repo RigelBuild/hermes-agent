@@ -13,6 +13,8 @@ import logging
 import math
 import threading
 import time
+from contextvars import ContextVar, Token
+from dataclasses import dataclass
 from datetime import UTC, datetime
 import urllib.error
 import urllib.parse
@@ -461,7 +463,8 @@ def _thread_created_at(thread: dict[str, Any]) -> tuple[int, str]:
 
 
 def _list_forum_posts(
-    token: str, channel_id: str, query: str = "", limit: int = 50, **_kwargs: Any,
+    token: str, channel_id: str, query: str = "", limit: int = 50, *,
+    replay_scope: tuple[str, float] | None = None, **_kwargs: Any,
 ) -> str:
     """List active and archived forum threads, newest first."""
     channel = _discord_request("GET", f"/channels/{channel_id}", token)
@@ -508,6 +511,7 @@ def _list_forum_posts(
     filtered = [
         thread for thread in by_id.values()
         if query.casefold() in str(thread.get("name", "")).casefold()
+        and (replay_scope is None or _replay_thread_kept(thread, *replay_scope))
     ]
     filtered.sort(key=lambda thread: _thread_created_at(thread)[0], reverse=True)
     posts = []
@@ -1059,7 +1063,8 @@ def check_discord_tool_requirements() -> bool:
 
 # ── handlers ─────────────────────────────────────────────────────────────────
 # Cron jobs run unattended over untrusted input, so there the tool only reads and posts inside
-# ``discord.post_channels`` (a listed channel or a thread under one) for the forum workflow.
+# ``discord.post_channels`` (a listed channel or a thread under one) for the forum workflow. A replay
+# also reads its job's deliver channel inside its window (DL-1691); see ``_run_replay_read``.
 _CRON_ACTIONS = frozenset({"list_forum_posts", "create_forum_post", "post_message", "fetch_messages"})
 
 
@@ -1069,18 +1074,115 @@ def _in_cron_session() -> bool:
     return is_truthy_value(get_session_env("HERMES_CRON_SESSION", ""))
 
 
-def _require_cron_scope(token: str, action: str, channel_id: str) -> None:
+_REPLAY_READ_ACTIONS = frozenset({"list_forum_posts", "fetch_messages"})
+_REPLAY_PAGE_LIMIT = 100
+_REPLAY_MAX_PAGES = 10  # up to 1,000 messages after started_at; beyond that, has_more is set
+_DISCORD_EPOCH_MS = 1420070400000
+
+
+@dataclass(frozen=True)
+class CronReplayRead:
+    """A replay's read window (DL-1691): its job's Discord deliver channel IDs and its ``started_at``.
+    ``started_at`` is None when it cannot be parsed; every replay read is then refused."""
+
+    deliver_channel_ids: frozenset[str]
+    started_at: datetime | None
+
+
+# Set for each cron run by ``cron.scheduler``; None for every other run.
+_CRON_REPLAY_READ = ContextVar("discord_cron_replay_read", default=None)
+
+
+def bind_cron_replay_read(deliver_channel_ids: frozenset[str], started_at: object) -> Token:
+    """Open this run's replay read window; pass the returned token to ``reset_cron_replay_read``."""
+    return _CRON_REPLAY_READ.set(CronReplayRead(frozenset(deliver_channel_ids), _parse_started_at(started_at)))
+
+
+def reset_cron_replay_read(token: Token) -> None:
+    _CRON_REPLAY_READ.reset(token)
+
+
+def _parse_started_at(value: object) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _require_cron_scope(token: str, action: str, channel_id: str) -> CronReplayRead | None:
     """In a cron session, refuse actions outside the forum workflow and any channel outside
-    ``discord.post_channels``; an unset allowlist refuses everything (fail closed)."""
+    ``discord.post_channels``; an unset allowlist refuses everything (fail closed). A replay's read
+    actions also reach its deliver channels, and the replay window is returned for those reads."""
     if not _in_cron_session():
-        return
+        return None
     if action not in _CRON_ACTIONS:
         raise ValueError(
             f"Action '{action}' is not available in cron jobs; allowed: {', '.join(sorted(_CRON_ACTIONS))}")
     allowed = _load_post_channels_config()
     if not allowed:
         raise ValueError("discord.post_channels is not set; cron jobs may not use the discord tool")
-    _require_post_scope(token, channel_id, allowed=allowed)
+    replay = _CRON_REPLAY_READ.get()
+    if replay is None or action not in _REPLAY_READ_ACTIONS:
+        _require_post_scope(token, channel_id, allowed=allowed)
+        return None
+    if replay.started_at is None:
+        raise ValueError("The replay's started_at is unreadable; refusing the replay read")
+    _require_post_scope(token, channel_id, allowed=allowed | replay.deliver_channel_ids)
+    return replay
+
+
+def _snowflake_before(ms: int) -> str:
+    """A snowflake just below epoch milliseconds ``ms``: ``after=`` it returns messages sent at or after ``ms``."""
+    return str(((ms - _DISCORD_EPOCH_MS) << 22) - 1)
+
+
+def _replay_message_kept(msg: dict[str, Any], bot_id: str, started_ms: float) -> bool:
+    """This bot's message sent at or after ``started_ms``. A message with an unreadable time is dropped."""
+    try:
+        sent_ms = datetime.fromisoformat(str(msg.get("timestamp"))).timestamp() * 1000
+    except ValueError:
+        return False
+    return str((msg.get("author") or {}).get("id")) == bot_id and sent_ms >= started_ms
+
+
+def _replay_thread_kept(thread: dict[str, Any], bot_id: str, started_ms: float) -> bool:
+    """A forum post this bot started at or after ``started_ms``, or one with activity since then
+    (the bot may have replied in it). Posts started by anyone else are never listed."""
+    if str(thread.get("owner_id")) != bot_id:
+        return False
+    if _thread_created_at(thread)[0] >= started_ms:
+        return True
+    return int(thread.get("last_message_id") or 0) > int(_snowflake_before(int(started_ms)))
+
+
+def _replay_fetch_messages(token: str, channel_id: str, bot_id: str, started_ms: float) -> str:
+    """This bot's messages in ``channel_id`` sent at or after ``started_ms``, read forward page by page.
+    ``before``, ``after`` and ``limit`` from the caller are ignored on a replay read."""
+    after = _snowflake_before(int(started_ms))
+    kept: list[dict[str, Any]] = []
+    has_more = True
+    for _ in range(_REPLAY_MAX_PAGES):
+        page = json.loads(_fetch_messages(token, channel_id, limit=_REPLAY_PAGE_LIMIT, after=after))["messages"]
+        kept.extend(m for m in page if _replay_message_kept(m, bot_id, started_ms))
+        if len(page) < _REPLAY_PAGE_LIMIT:
+            has_more = False
+            break
+        after = str(max(int(m["id"]) for m in page))
+    return json.dumps({"messages": kept, "count": len(kept), "has_more": has_more})
+
+
+def _run_replay_read(
+    action: str, action_fn: Any, token: str, kwargs: dict[str, Any], replay: CronReplayRead,
+) -> str:
+    """Run a replay's read: only this bot's posts and messages at or after the replay's ``started_at``."""
+    started_ms = replay.started_at.timestamp() * 1000
+    bot_id = str(_discord_request("GET", "/users/@me", token).get("id") or "")
+    if not bot_id:
+        raise ValueError("Could not resolve the bot user; refusing the replay read")
+    if action == "list_forum_posts":
+        return action_fn(token=token, replay_scope=(bot_id, started_ms), **kwargs)
+    return _replay_fetch_messages(token, str(kwargs["channel_id"]), bot_id, started_ms)
 
 
 _HANDLER_DEFAULTS = {
@@ -1108,9 +1210,11 @@ def _run_discord_action(action: str, valid_actions: dict[str, Any], tool_label: 
     if missing:
         return tool_error(f"Missing required parameters for '{action}': {', '.join(missing)}")
     try:
-        _require_cron_scope(token, action, kwargs.get("channel_id") or "")
+        replay = _require_cron_scope(token, action, kwargs.get("channel_id") or "")
         _require_mesh_scope(
             token, action, channel_id=kwargs.get("channel_id") or "", guild_id=kwargs.get("guild_id") or "")
+        if replay is not None:
+            return _run_replay_read(action, action_fn, token, kwargs, replay)
         return action_fn(token=token, **kwargs)
     except ValueError as e:
         return tool_error(str(e))

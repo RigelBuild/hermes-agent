@@ -301,6 +301,21 @@ def _run_time_line() -> str:
     return f"[CURRENT RUN TIME: {safe_strftime(now, '%A, %Y-%m-%d %H:%M %Z').strip()}{zone}]\n\n"
 
 
+def _replay_hint(replay: dict) -> str:
+    started_at = replay.get("started_at") or "unknown"
+    interrupted_at = replay.get("interrupted_at") or "unknown"
+    return (
+        f"REPLAY: A run of this same scheduled occurrence started at {started_at} "
+        f"and was stopped by a gateway restart at {interrupted_at}. It may already "
+        "have posted messages or delivered part of its result. Before you post "
+        "anything, read what is there: use the discord tool (list_forum_posts, "
+        "fetch_messages) on the channels and threads this job posts to. Look at "
+        f"every message sent at or after {started_at}. Do not post again anything "
+        "that is already there. Do only the steps that are missing. If nothing is "
+        "missing, respond with exactly [SILENT].\n\n"
+    )
+
+
 def _build_job_prompt(
     job: dict, prerun_script: Optional[tuple] = None, extra_prompt: Optional[str] = None,
     runtime_data_prompt: Optional[str] = None,
@@ -360,7 +375,9 @@ def _build_job_prompt(
         "use terminal and file tools instead. "
         if approval_context._get_cron_approval_mode() == "deny" else ""
     )
-    prompt = _CRON_HINT + _run_time_line() + execute_code_hint + prompt
+    from cron.occurrences import claim_replay
+    replay = claim_replay(job)
+    prompt = _CRON_HINT + (_replay_hint(replay) if replay is not None else "") + _run_time_line() + execute_code_hint + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

@@ -283,6 +283,19 @@ def test_refused_dispatch_keeps_replay_stamp(clock, monkeypatch):
     assert stored["last_fire_error"]["detail"] == "no gateway"
 
 
+def test_gateway_down_preserves_malformed_replay_slot(clock, monkeypatch):
+    from cron import scheduler_gateway_gate
+
+    job = jobs.create_job("report", "every 24h")
+    records = jobs.load_jobs()
+    records[0]["pending_slot"] = {"scheduled_at": job["next_run_at"], "replay": "invalid"}
+    jobs.save_jobs(records)
+    monkeypatch.setattr(scheduler_gateway_gate, "_gateway_unavailable", lambda _home: "down")
+    assert scheduler_gateway_gate.refuse_agent_jobs_without_gateway([job]) == []
+    stored = jobs.get_job(job["id"])
+    assert stored["pending_slot"]["replay"] == "invalid"
+
+
 def test_second_shutdown_does_not_stamp_again(clock):
     job = jobs.create_job("report", "every 24h", repeat=3)
     clock[0] = datetime.fromisoformat(job["next_run_at"])
