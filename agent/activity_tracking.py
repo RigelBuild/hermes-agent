@@ -25,6 +25,21 @@ def _activity_lock(obj) -> threading.Lock:
     return _lock
 
 
+def save_idle_gap(agent, now: Optional[float] = None) -> None:
+    """Preserve an unconsumed idle gap across turn-start activity-clock resets."""
+    # This is time since the last real activity, not yet consumed; it carries across a turn ending before compaction
+    # because no provider call ran in between.
+    with _activity_lock(agent):
+        previous_activity_ts = getattr(agent, "_last_activity_ts", None)
+        if previous_activity_ts is None:
+            return
+        prior_gap = getattr(agent, "_idle_resume_gap_s", 0)
+        agent._idle_resume_gap_s = max(
+            prior_gap if isinstance(prior_gap, (int, float)) else 0,
+            (time.time() if now is None else now) - previous_activity_ts,
+        )
+
+
 class ActivityTrackingMixin:
     """Liveness timestamps/labels and rate-limited session activity persistence."""
 

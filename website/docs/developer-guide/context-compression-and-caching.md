@@ -139,7 +139,8 @@ never-estimate acceptance. The following policies remain unchanged:
   on an estimated delta. Boundary fingerprint matching does not fingerprint the
   whole prefix, model, tools, or system prompt.
 - Opt-in idle compaction uses its own floor/cooldown and can act on unanchored
-  pressure; it does not share the threshold gate's one-request wait.
+  pressure; it does not share the threshold gate's one-request wait. A pending
+  idle gap is carried across turn resets until compaction consumes it.
 - Pre-agent gateway hygiene retains its rough-history fallback and hard-message
   safety valve. The replay harness's `gateway` shape reloads transcript dictionaries;
   it does **not** exercise that separate hygiene policy.

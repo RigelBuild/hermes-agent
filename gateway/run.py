@@ -31,6 +31,7 @@ from datetime import datetime
 from typing import Callable, Dict, Optional, Any, List, Tuple, cast
 
 from agent.async_utils import safe_schedule_threadsafe
+from agent.activity_tracking import save_idle_gap
 from agent.i18n import t
 from agent.conversation_compression import (
     COMPACTION_DONE_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_STATUS, COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
@@ -4106,7 +4107,9 @@ class GatewayRunner(
         See #15654, #9051.
         """
         if interrupt_depth == 0:
-            agent._last_activity_ts = time.time()
+            now = time.time()
+            save_idle_gap(agent, now)
+            agent._last_activity_ts = now
             agent._last_activity_desc = "starting new turn (cached)"
             agent._last_activity_provenance = ActivityProvenance.UNKNOWN
             # Reset the SessionDB flush cursor so the new turn's messages are fully persisted — a stale
