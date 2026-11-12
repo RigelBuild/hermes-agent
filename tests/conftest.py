@@ -333,6 +333,8 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
                                            sources=(install_state._active_root,))
     monkeypatch.setattr(install_state, "machine_places", lambda: isolated_places)
     install_state.probe.cache_clear()
+    from pm.shipped_store import shipped_roots
+    shipped_roots.cache_clear()
     from hermes_cli import onboarding_due
 
     onboarding_due.reset_for_tests()

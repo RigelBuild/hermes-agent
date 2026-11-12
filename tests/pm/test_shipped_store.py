@@ -141,6 +141,16 @@ def test_seal_refuses_a_store_missing_a_required_package(tmp_path):
         seal(paths.lockfile_path(), target, trees, tmp_path / "shipped")
 
 
+def test_seal_refuses_a_store_with_an_extra_package(tmp_path):
+    target = current_target()
+    names = _required(target)
+    trees = {name: _binary_tree(tmp_path / "trees" / name, name, target) for name in names}
+    trees["uv"] = _binary_tree(tmp_path / "trees" / "uv", "uv", target)
+
+    with pytest.raises(ValueError, match="extra=.*uv"):
+        seal(paths.lockfile_path(), target, trees, tmp_path / "shipped")
+
+
 def test_seal_refuses_a_tree_without_its_executable(tmp_path):
     target = current_target()
     names = _required(target)

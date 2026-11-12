@@ -1041,10 +1041,7 @@ def drift(*, include_venv: bool = True) -> dict[str, str]:
     facts = _facts()
     target = current_target()
     for name in required_packages(lockfile.names(), target):
-        try:
-            package = get_package(name)
-        except KeyError:
-            continue
+        package = get_package(name)
         if _installed_location(package, lockfile, target) is None:
             problems[name] = "not installed or outdated"
     try:
