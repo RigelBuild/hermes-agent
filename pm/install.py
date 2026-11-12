@@ -20,6 +20,7 @@ from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.plugin_inputs import Candidates, Members, PluginInput, Selection, StagedUpdate
 from pm.registry import get_package, walk
+from pm.sealed_store import sealed_roots
 from pm.store import Store, current_target, digest_matches, merge_tree, tree_digest
 
 LOG = logging.getLogger(__name__)
@@ -89,7 +90,7 @@ def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
                         roots: tuple[Path, ...] | None = None, heal: bool = True):
     """Prefer the current pin. An explicit read may retain a prior PM install. ``heal=False``
     keeps the lookup read-only (scripts/tool_store_pins.py asks it about a store it must not touch)."""
-    search_roots = dict.fromkeys(roots if roots is not None else (paths.store_root(), paths.writable_store_root()))
+    search_roots = dict.fromkeys(roots if roots is not None else (paths.store_root(), paths.writable_store_root(), *sealed_roots()))
     fallback = None
     for root in search_roots:
         store = Store(root)

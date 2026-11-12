@@ -88,6 +88,7 @@ let
       source = "nix";
       distribution = "nix";
       pmRuntime = toString pmRuntime;
+      sealedStore = toString sealedPmStore;
       updateMechanism = "external";
       payload = "bootstrap";
       tag = null;
@@ -109,6 +110,32 @@ let
   pmRuntime = callPackage ./pm-runtime.nix {
     inherit uv2nix pyproject-nix pyproject-build-systems;
   };
+
+  # The lock packages pm's drift() requires, sealed read-only with their lock
+  # identity. The install stamp's sealedStore names it, so a stale
+  # ~/.hermes/tools/facts.json cannot make a Nix install report drift.
+  # Every lock package is passed; scripts.build.sealed_store selects the
+  # required subset, so pm/sealed_store.py stays the one definition.
+  sealedPmStore =
+    let
+      target =
+        let
+          arch = if stdenv.hostPlatform.isAarch64 then "arm64" else "x64";
+          os =
+            if stdenv.hostPlatform.isDarwin then "darwin"
+            else if stdenv.hostPlatform.isLinux then "linux"
+            else "win32";
+        in
+        "${os}-${arch}";
+      pins = builtins.fromJSON (builtins.readFile ../pm/lock.json);
+      trees = lib.concatMapStringsSep " " (name: "${name}=${pmPackages.${name}}") (
+        builtins.filter (name: pmPackages ? ${name}) (builtins.attrNames pins.packages)
+      );
+    in
+    runCommand "hermes-pm-sealed-store" { } ''
+      PYTHONPATH=${hermesNpmLib.pythonSrc} ${pmPackages.python}/bin/python3 -m scripts.build.sealed_store \
+        --lockfile ${../pm/lock.json} --target ${target} --out $out ${trees}
+    '';
 
   # Icons render on the runtime venv: Pillow and resvg-py are core dependencies.
   generatedIcons = callPackage ./icons.nix {
