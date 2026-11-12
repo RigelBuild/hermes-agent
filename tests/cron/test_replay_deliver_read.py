@@ -113,12 +113,16 @@ def test_replay_fetch_on_post_channels_returns_user_and_pre_start_messages_uncha
     assert not any(path == "/users/@me" for _, path in fake.calls)
 
 
-def test_replay_fetch_on_deliver_channel_returns_only_bot_messages_after_started(replay):
-    fake = FakeDiscord(messages=[
-        message("after-bot", BOT, ts(timedelta(minutes=1))),
-        message("after-user", USER, ts(timedelta(minutes=2))),
-        message("before-bot", BOT, ts(timedelta(minutes=-1))),
-    ])
+def test_replay_fetch_on_deliver_channel_returns_only_bot_messages_after_started(
+    replay,
+):
+    fake = FakeDiscord(
+        messages=[
+            message("after-bot", BOT, ts(timedelta(minutes=1))),
+            message("after-user", USER, ts(timedelta(minutes=2))),
+            message("before-bot", BOT, ts(timedelta(minutes=-1))),
+        ]
+    )
     with patch("tools.discord_tool._discord_request", side_effect=fake):
         result = json.loads(discord_core(action="fetch_messages", channel_id=DELIVER))
     assert [item["id"] for item in result["messages"]] == ["after-bot"]
@@ -148,7 +152,6 @@ def test_replay_forum_read_on_post_channels_is_unfiltered(replay):
         result = json.loads(discord_core(action="list_forum_posts", channel_id=POST))
     assert {post["id"] for post in result["posts"]} == {"thread-bot", "thread-user"}
     assert not any(path == "/users/@me" for _, path in fake.calls)
-
 
 
 def test_replay_fetch_on_channel_outside_deliver_and_post_channels_is_refused(replay):
