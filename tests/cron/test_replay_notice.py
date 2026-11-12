@@ -1,4 +1,5 @@
 """Replay prompts preserve the interrupted occurrence's delivery context."""
+
 import asyncio
 import json
 from contextlib import nullcontext
@@ -63,14 +64,20 @@ def test_malformed_replay_marker_uses_unknown_times(prompt_env, marker):
     )
 
 
-def test_replay_notice_names_discord_only_for_discord_deliver(prompt_env, monkeypatch):
+def test_replay_notice_names_discord_only_when_delivered_and_tool_enabled(
+    prompt_env, monkeypatch
+):
     from cron import scheduler
 
     job = {"id": "job", "prompt": "Do the task.", "deliver": "local"}
     replay = dict(
         job, fire_claim={"replay": {"started_at": START, "interrupted_at": STOP}}
     )
-    monkeypatch.setattr(scheduler, "_resolve_delivery_targets", lambda job: [])
+    monkeypatch.setattr(scheduler, "load_config_readonly", dict)
+    monkeypatch.setattr(
+        scheduler, "_resolve_cron_enabled_toolsets", lambda job, cfg: []
+    )
+    monkeypatch.setattr(scheduler, "_resolve_cron_disabled_toolsets", lambda cfg: [])
     prompt = scheduler_prompt._build_job_prompt(replay)
     assert "check what this job already delivered before repeating" in prompt
     assert "discord tool" not in prompt
@@ -80,30 +87,63 @@ def test_replay_notice_names_discord_only_for_discord_deliver(prompt_env, monkey
         "_resolve_delivery_targets",
         lambda job: [{"platform": "discord", "chat_id": "channel", "thread_id": None}],
     )
+    monkeypatch.setattr(
+        scheduler, "_resolve_cron_enabled_toolsets", lambda job, cfg: ["hermes-discord"]
+    )
     prompt = scheduler_prompt._build_job_prompt(replay)
     assert "use the discord tool" in prompt
 
+    monkeypatch.setattr(
+        scheduler, "_resolve_cron_disabled_toolsets", lambda cfg: ["hermes-discord"]
+    )
+    prompt = scheduler_prompt._build_job_prompt(replay)
+    assert "check what this job already delivered before repeating" in prompt
+    assert "discord tool" not in prompt
+
 
 @pytest.mark.parametrize("with_skill", [False, True])
-def test_replay_notice_passes_assembled_prompt_scanner(prompt_env, monkeypatch, with_skill):
-    job = {"id": "job", "prompt": "Do the task.", "fire_claim": {"replay": {"started_at": START, "interrupted_at": STOP}}}
+def test_replay_notice_passes_assembled_prompt_scanner(
+    prompt_env, monkeypatch, with_skill
+):
+    job = {
+        "id": "job",
+        "prompt": "Do the task.",
+        "fire_claim": {"replay": {"started_at": START, "interrupted_at": STOP}},
+    }
     if with_skill:
         job["skills"] = ["example"]
-        monkeypatch.setattr(scheduler_prompt, "_load_cron_skill_parts", lambda job, names: ["Use this skill."])
+        monkeypatch.setattr(
+            scheduler_prompt,
+            "_load_cron_skill_parts",
+            lambda job, names: ["Use this skill."],
+        )
     prompt = scheduler_prompt._build_job_prompt(job)
     assert notice(START, STOP) in prompt
-    assert scheduler_prompt._scan_assembled_cron_prompt(prompt, job, has_skills=with_skill) == prompt
+    assert (
+        scheduler_prompt._scan_assembled_cron_prompt(prompt, job, has_skills=with_skill)
+        == prompt
+    )
 
 
-def test_canonical_creation_and_execution_use_stored_replay(prompt_env, monkeypatch, tmp_path):
+def test_canonical_creation_and_execution_use_stored_replay(
+    prompt_env, monkeypatch, tmp_path
+):
     from cron import jobs, scheduler
     from gateway import run, session_cron, session_local_recovery, session_policy
 
-    stored_job = {"id": "job", "prompt": "Do the task.", "fire_claim": {"replay": {"started_at": START, "interrupted_at": STOP}}}
-    monkeypatch.setattr(jobs, "get_job", lambda jid: stored_job if jid == "job" else None)
+    stored_job = {
+        "id": "job",
+        "prompt": "Do the task.",
+        "fire_claim": {"replay": {"started_at": START, "interrupted_at": STOP}},
+    }
+    monkeypatch.setattr(
+        jobs, "get_job", lambda jid: stored_job if jid == "job" else None
+    )
     monkeypatch.setattr(run, "_load_gateway_config", dict)
     monkeypatch.setattr(run, "_profile_runtime_scope", lambda home: nullcontext())
-    monkeypatch.setattr(scheduler, "_load_cron_job_config", lambda *args: SimpleNamespace(model="test"))
+    monkeypatch.setattr(
+        scheduler, "_load_cron_job_config", lambda *args: SimpleNamespace(model="test")
+    )
 
     @dataclass
     class Policy:
@@ -111,22 +151,60 @@ def test_canonical_creation_and_execution_use_stored_replay(prompt_env, monkeypa
         platform: str = "cli"
         model: str = "test"
         request_json: str = ""
-    monkeypatch.setattr(session_policy, "build_policy", lambda *args, **kwargs: Policy())
-    monkeypatch.setattr(session_policy, "bind_launch_key", lambda authority, sid, policy, *args, **kwargs: policy)
-    monkeypatch.setattr(session_local_recovery, "local_identity", lambda *args: "session")
-    monkeypatch.setattr(session_local_recovery, "local_source", lambda *args: SimpleNamespace())
+
+    monkeypatch.setattr(
+        session_policy, "build_policy", lambda *args, **kwargs: Policy()
+    )
+    monkeypatch.setattr(
+        session_policy,
+        "bind_launch_key",
+        lambda authority, sid, policy, *args, **kwargs: policy,
+    )
+    monkeypatch.setattr(
+        session_local_recovery, "local_identity", lambda *args: "session"
+    )
+    monkeypatch.setattr(
+        session_local_recovery, "local_source", lambda *args: SimpleNamespace()
+    )
     from gateway import session
+
     monkeypatch.setattr(session.SessionEntry, "to_dict", lambda self: {})
     authority = SimpleNamespace(
-        profile_id="profile", db=SimpleNamespace(db_path=str(tmp_path / "state.db"), get_session=lambda sid: None),
-        runner=SimpleNamespace(session_store=SimpleNamespace(_generate_session_key=lambda source: "route")),
-        sessions={"session": SimpleNamespace(source=SimpleNamespace(user_id="actor"))}, pending_results={},
+        profile_id="profile",
+        db=SimpleNamespace(
+            db_path=str(tmp_path / "state.db"), get_session=lambda sid: None
+        ),
+        runner=SimpleNamespace(
+            session_store=SimpleNamespace(_generate_session_key=lambda source: "route")
+        ),
+        sessions={"session": SimpleNamespace(source=SimpleNamespace(user_id="actor"))},
+        pending_results={},
     )
     actor = SimpleNamespace(subject="actor")
-    receipt, request_id = session_cron._create(authority, actor, {"job_id": "job", "request_id": "fire", "extra_prompt": None})
+    receipt, request_id = session_cron._create(
+        authority, actor, {"job_id": "job", "request_id": "fire", "extra_prompt": None}
+    )
     policy = Policy(**receipt["policy"])
     assert json.loads(policy.request_json)["cron_job"] == stored_job
-    monkeypatch.setattr(session_cron, "_run_identified", lambda run_job, job, execution_id, **kwargs: (True, "", scheduler_prompt._build_job_prompt(job), None))
-    row = {"payload": {"text": ""}, "request_id": request_id, "principal_id": "actor", "admission_id": "admission"}
-    prompt = asyncio.run(session_cron.execute(authority, SimpleNamespace(session_id="session"), row, policy))
+    monkeypatch.setattr(
+        session_cron,
+        "_run_identified",
+        lambda run_job, job, execution_id, **kwargs: (
+            True,
+            "",
+            scheduler_prompt._build_job_prompt(job),
+            None,
+        ),
+    )
+    row = {
+        "payload": {"text": ""},
+        "request_id": request_id,
+        "principal_id": "actor",
+        "admission_id": "admission",
+    }
+    prompt = asyncio.run(
+        session_cron.execute(
+            authority, SimpleNamespace(session_id="session"), row, policy
+        )
+    )
     assert prompt == scheduler_prompt._CRON_HINT + notice(START, STOP) + "Do the task."

@@ -308,11 +308,24 @@ def _replay_hint(replay: dict, job: dict) -> str:
         str(target.get("platform") or "").lower() == "discord"
         for target in _sched._resolve_delivery_targets(job)
     )
+    if discord_deliver:
+        effective_cfg = _sched.load_config_readonly()
+        enabled_toolsets = _sched._resolve_cron_enabled_toolsets(job, effective_cfg)
+        disabled_toolsets = _sched._resolve_cron_disabled_toolsets(effective_cfg)
+        from toolsets import resolve_toolset
+
+        discord_tool_enabled = any(
+            "discord" in resolve_toolset(str(name)) for name in enabled_toolsets
+        ) and not any(
+            "discord" in resolve_toolset(str(name)) for name in disabled_toolsets
+        )
+    else:
+        discord_tool_enabled = False
     delivered_check = (
         "read what is there: use the discord tool (list_forum_posts, fetch_messages) on the channels "
         "and threads this job posts to. Look at every message sent at or after "
         f"{started_at}."
-        if discord_deliver
+        if discord_deliver and discord_tool_enabled
         else "check what this job already delivered before repeating."
     )
     return (

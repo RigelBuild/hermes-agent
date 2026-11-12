@@ -8,13 +8,17 @@ import pytest
 
 from gateway.session_context import _VAR_MAP
 from tools import discord_tool
-from tools.discord_tool import bind_cron_replay_read, discord_core, reset_cron_replay_read
+from tools.discord_tool import (
+    bind_cron_replay_read,
+    discord_core,
+    reset_cron_replay_read,
+)
 
 BOT = "9999"
 USER = "42"
-POST = "500"      # discord.post_channels
-DELIVER = "700"   # the job's deliver channel, not in post_channels
-OTHER = "900"     # neither allowed nor the deliver channel
+POST = "500"  # discord.post_channels
+DELIVER = "700"  # the job's deliver channel, not in post_channels
+OTHER = "900"  # neither allowed nor the deliver channel
 GUILD = "1"
 T0 = datetime(2026, 11, 10, 10, 0, tzinfo=UTC)
 STARTED = T0.isoformat()
@@ -30,8 +34,12 @@ def snow(delta: timedelta = timedelta()) -> str:
 
 def message(msg_id: str, author: str, when: str) -> dict:
     return {
-        "id": msg_id, "content": "x", "author": {"id": author}, "timestamp": when,
-        "attachments": [], "reactions": [],
+        "id": msg_id,
+        "content": "x",
+        "author": {"id": author},
+        "timestamp": when,
+        "attachments": [],
+        "reactions": [],
     }
 
 
@@ -100,7 +108,9 @@ def test_ordinary_cron_read_outside_post_channels_is_refused(cron, allowed):
     assert not any(path.endswith("/messages") for _, path in fake.calls)
 
 
-def test_replay_fetch_on_post_channels_returns_user_and_pre_start_messages_unchanged(replay):
+def test_replay_fetch_on_post_channels_returns_user_and_pre_start_messages_unchanged(
+    replay,
+):
     messages = [
         message("before-user", USER, ts(timedelta(minutes=-1))),
         message("before-bot", BOT, ts(timedelta(minutes=-1))),
@@ -109,7 +119,11 @@ def test_replay_fetch_on_post_channels_returns_user_and_pre_start_messages_uncha
     fake = FakeDiscord(messages=messages)
     with patch("tools.discord_tool._discord_request", side_effect=fake):
         result = json.loads(discord_core(action="fetch_messages", channel_id=POST))
-    assert [item["id"] for item in result["messages"]] == ["before-user", "before-bot", "after-user"]
+    assert [item["id"] for item in result["messages"]] == [
+        "before-user",
+        "before-bot",
+        "after-user",
+    ]
     assert not any(path == "/users/@me" for _, path in fake.calls)
 
 
@@ -154,36 +168,114 @@ def test_replay_forum_read_on_post_channels_is_unfiltered(replay):
     assert not any(path == "/users/@me" for _, path in fake.calls)
 
 
-def test_replay_fetch_on_channel_outside_deliver_and_post_channels_is_refused(replay):
+@pytest.mark.parametrize("channel_type", [1, 3])
+def test_replay_read_refuses_dm_deliver_channel_at_read_time(replay, channel_type):
+    fake = FakeDiscord(channels={DELIVER: {"id": DELIVER, "type": channel_type}})
+    with (
+        patch("tools.discord_tool._discord_request", side_effect=fake),
+        patch("tools.discord_tool._operator_guilds", return_value=frozenset({GUILD})),
+    ):
+        result = json.loads(discord_core(action="fetch_messages", channel_id=DELIVER))
+    assert "DM and group DM" in result["error"]
+    assert not any(path.endswith("/messages") for _, path in fake.calls)
+
+
+def test_replay_read_refuses_other_guild_deliver_channel_at_read_time(replay):
+    fake = FakeDiscord(
+        channels={DELIVER: {"id": DELIVER, "type": 0, "guild_id": "other"}}
+    )
+    with (
+        patch("tools.discord_tool._discord_request", side_effect=fake),
+        patch("tools.discord_tool._operator_guilds", return_value=frozenset({GUILD})),
+    ):
+        result = json.loads(discord_core(action="fetch_messages", channel_id=DELIVER))
+    assert "outside the operator guilds" in result["error"]
+    assert not any(path.endswith("/messages") for _, path in fake.calls)
+
+
+def test_replay_thread_validator_uses_fetched_thread_and_parent_channels(replay):
+    thread = "thread-502"
+    fake = FakeDiscord(
+        channels={
+            thread: {"id": thread, "type": 11, "guild_id": GUILD, "parent_id": DELIVER},
+        }
+    )
+    validator = discord_tool.validate_cron_replay_deliver_channels
+    with (
+        patch("tools.discord_tool._discord_request", side_effect=fake),
+        patch("tools.discord_tool._operator_guilds", return_value=frozenset({GUILD})),
+        patch(
+            "tools.discord_tool.validate_cron_replay_deliver_channels", wraps=validator
+        ) as validate,
+    ):
+        result = json.loads(discord_core(action="fetch_messages", channel_id=thread))
+    assert "error" not in result
+    assert validate.call_args.args[1] == frozenset({thread, DELIVER})
+    assert sum(path == f"/channels/{thread}" for _, path in fake.calls) == 1
+    assert sum(path == f"/channels/{DELIVER}" for _, path in fake.calls) == 1
+    assert any(path.endswith("/messages") for _, path in fake.calls)
+
+
+def test_replay_read_validation_failure_returns_tool_error_without_message_fetch(
+    replay,
+):
     fake = FakeDiscord()
-    with patch("tools.discord_tool._discord_request", side_effect=fake):
-        result = json.loads(discord_core(action="fetch_messages", channel_id=OTHER))
-    assert "outside discord.post_channels" in result["error"]
+    with (
+        patch("tools.discord_tool._discord_request", side_effect=fake),
+        patch(
+            "tools.discord_tool.validate_cron_replay_deliver_channels",
+            side_effect=ValueError("invalid"),
+        ),
+    ):
+        result = json.loads(discord_core(action="fetch_messages", channel_id=DELIVER))
+    assert result["error"] == "invalid"
     assert not any(path.endswith("/messages") for _, path in fake.calls)
 
 
 def test_replay_post_to_deliver_channel_is_refused(replay):
     fake = FakeDiscord()
     with patch("tools.discord_tool._discord_request", side_effect=fake):
-        result = json.loads(discord_core(action="post_message", channel_id=DELIVER, content="x"))
+        result = json.loads(
+            discord_core(action="post_message", channel_id=DELIVER, content="x")
+        )
     assert "outside discord.post_channels" in result["error"]
     assert not fake.posted()
 
 
 def test_replay_forum_list_keeps_only_bot_posts_started_or_active_after_started(replay):
     threads = [
-        {"id": "11", "name": "checkin", "owner_id": BOT, "parent_id": DELIVER,
-         "thread_metadata": {"create_timestamp": ts(timedelta(minutes=1))},
-         "last_message_id": snow(timedelta(minutes=1))},
-        {"id": "12", "name": "checkin", "owner_id": USER, "parent_id": DELIVER,
-         "thread_metadata": {"create_timestamp": ts(timedelta(minutes=1))},
-         "last_message_id": snow(timedelta(minutes=1))},
-        {"id": "13", "name": "old", "owner_id": BOT, "parent_id": DELIVER,
-         "thread_metadata": {"create_timestamp": ts(timedelta(hours=-1))},
-         "last_message_id": snow(timedelta(hours=-1))},
-        {"id": "14", "name": "old-but-replied", "owner_id": BOT, "parent_id": DELIVER,
-         "thread_metadata": {"create_timestamp": ts(timedelta(hours=-1))},
-         "last_message_id": snow(timedelta(minutes=2))},
+        {
+            "id": "11",
+            "name": "checkin",
+            "owner_id": BOT,
+            "parent_id": DELIVER,
+            "thread_metadata": {"create_timestamp": ts(timedelta(minutes=1))},
+            "last_message_id": snow(timedelta(minutes=1)),
+        },
+        {
+            "id": "12",
+            "name": "checkin",
+            "owner_id": USER,
+            "parent_id": DELIVER,
+            "thread_metadata": {"create_timestamp": ts(timedelta(minutes=1))},
+            "last_message_id": snow(timedelta(minutes=1)),
+        },
+        {
+            "id": "13",
+            "name": "old",
+            "owner_id": BOT,
+            "parent_id": DELIVER,
+            "thread_metadata": {"create_timestamp": ts(timedelta(hours=-1))},
+            "last_message_id": snow(timedelta(hours=-1)),
+        },
+        {
+            "id": "14",
+            "name": "old-but-replied",
+            "owner_id": BOT,
+            "parent_id": DELIVER,
+            "thread_metadata": {"create_timestamp": ts(timedelta(hours=-1))},
+            "last_message_id": snow(timedelta(minutes=2)),
+        },
     ]
     fake = FakeDiscord(threads=threads)
     with patch("tools.discord_tool._discord_request", side_effect=fake):
@@ -255,7 +347,9 @@ def test_replay_with_unreadable_started_at_refuses_every_replay_read(cron, allow
     token = bind_cron_replay_read(frozenset({DELIVER}), "not-a-time")
     try:
         with patch("tools.discord_tool._discord_request", side_effect=fake):
-            result = json.loads(discord_core(action="fetch_messages", channel_id=DELIVER))
+            result = json.loads(
+                discord_core(action="fetch_messages", channel_id=DELIVER)
+            )
     finally:
         reset_cron_replay_read(token)
     assert "started_at is unreadable" in result["error"]
@@ -266,7 +360,9 @@ def test_replay_refuses_naive_started_at(cron, allowed):
     token = bind_cron_replay_read(frozenset({DELIVER}), "2026-11-10T10:00:00")
     try:
         with patch("tools.discord_tool._discord_request", side_effect=fake):
-            result = json.loads(discord_core(action="fetch_messages", channel_id=DELIVER))
+            result = json.loads(
+                discord_core(action="fetch_messages", channel_id=DELIVER)
+            )
     finally:
         reset_cron_replay_read(token)
     assert "started_at is unreadable" in result["error"]
@@ -280,7 +376,9 @@ def test_replay_read_of_thread_under_deliver_channel_is_filtered(replay):
             message("after-user", USER, ts(timedelta(minutes=1))),
             message("after-bot", BOT, ts(timedelta(minutes=2))),
         ],
-        channels={thread: {"id": thread, "type": 11, "guild_id": GUILD, "parent_id": DELIVER}},
+        channels={
+            thread: {"id": thread, "type": 11, "guild_id": GUILD, "parent_id": DELIVER}
+        },
     )
     with patch("tools.discord_tool._discord_request", side_effect=fake):
         result = json.loads(discord_core(action="fetch_messages", channel_id=thread))
@@ -290,8 +388,11 @@ def test_replay_read_of_thread_under_deliver_channel_is_filtered(replay):
 def test_replay_forum_creation_on_deliver_channel_is_refused(replay):
     fake = FakeDiscord()
     with patch("tools.discord_tool._discord_request", side_effect=fake):
-        result = json.loads(discord_core(
-            action="create_forum_post", channel_id=DELIVER, name="x", content="x"))
+        result = json.loads(
+            discord_core(
+                action="create_forum_post", channel_id=DELIVER, name="x", content="x"
+            )
+        )
     assert "outside discord.post_channels" in result["error"]
     assert not fake.posted()
 
@@ -300,56 +401,59 @@ def test_scheduler_binds_only_replay_with_a_discord_deliver(monkeypatch):
     from cron import scheduler
 
     targets = []
-    with patch("tools.discord_tool.validate_cron_replay_deliver_channels") as validate_targets:
-        monkeypatch.setattr(scheduler, "_resolve_delivery_targets", lambda job: targets)
-        monkeypatch.setattr(discord_tool, "_get_bot_token", lambda: "test-token")
-        scope = object.__new__(scheduler._CronRunScope)
-        scope._replay_read_token = None
-        replay_job = {"id": "job", "fire_claim": {"replay": {"started_at": STARTED}}}
+    monkeypatch.setattr(scheduler, "_resolve_delivery_targets", lambda job: targets)
+    scope = object.__new__(scheduler._CronRunScope)
+    scope._replay_read_token = None
+    replay_job = {"id": "job", "fire_claim": {"replay": {"started_at": STARTED}}}
 
-        scope.bind_replay_read({"id": "job"})
-        scope.bind_replay_read(replay_job)
-        targets.append({"platform": "telegram", "chat_id": "non-discord", "thread_id": None})
-        scope.bind_replay_read(replay_job)
-        assert discord_tool._CRON_REPLAY_READ.get() is None
-        validate_targets.assert_not_called()
+    scope.bind_replay_read({"id": "job"})
+    scope.bind_replay_read(replay_job)
+    targets.append(
+        {"platform": "telegram", "chat_id": "non-discord", "thread_id": None}
+    )
+    scope.bind_replay_read(replay_job)
+    assert discord_tool._CRON_REPLAY_READ.get() is None
 
-        targets.append({"platform": "discord", "chat_id": DELIVER, "thread_id": None})
-        scope.bind_replay_read(replay_job)
-        window = discord_tool._CRON_REPLAY_READ.get()
-        assert window.deliver_channel_ids == frozenset({DELIVER})
-        assert window.started_at == T0
-        validate_targets.assert_called_once_with("test-token", frozenset({DELIVER}))
-        reset_cron_replay_read(scope._replay_read_token)
+    targets.append(
+        {"platform": "discord", "chat_id": DELIVER, "thread_id": "thread-deliver"}
+    )
+    scope.bind_replay_read(replay_job)
+    window = discord_tool._CRON_REPLAY_READ.get()
+    assert window.deliver_channel_ids == frozenset({DELIVER, "thread-deliver"})
+    assert window.started_at == T0
+    reset_cron_replay_read(scope._replay_read_token)
 
 
-def _replay_scope(monkeypatch, target, channel):
+def _replay_scope(monkeypatch, target):
     from cron import scheduler
 
     monkeypatch.setattr(
-        scheduler, "_resolve_delivery_targets",
-        lambda job: [{"platform": "discord", "chat_id": target, "thread_id": None}])
-    monkeypatch.setattr(discord_tool, "_get_bot_token", lambda: "test-token")
-    monkeypatch.setattr(discord_tool, "_load_post_channels_config", lambda: {POST})
-    monkeypatch.setattr(discord_tool, "_operator_guilds", lambda token, allowed: frozenset({GUILD}))
-    monkeypatch.setattr(discord_tool, "_discord_request", lambda method, path, token, **kwargs: channel)
+        scheduler,
+        "_resolve_delivery_targets",
+        lambda job: [{"platform": "discord", "chat_id": target, "thread_id": None}],
+    )
     scope = object.__new__(scheduler._CronRunScope)
     scope._replay_read_token = None
     return scope
 
 
-@pytest.mark.parametrize("channel_type", [1, 3])
-def test_scheduler_refuses_dm_type_deliver_channel(monkeypatch, channel_type):
-    target = "dm-1"
-    scope = _replay_scope(monkeypatch, target, {"id": target, "type": channel_type})
-    with pytest.raises(ValueError, match="DM"):
-        scope.bind_replay_read({"id": "job", "fire_claim": {"replay": {"started_at": STARTED}}})
-    assert discord_tool._CRON_REPLAY_READ.get() is None
+def test_scheduler_binds_dm_delivery_for_read_time_refusal(monkeypatch):
+    scope = _replay_scope(monkeypatch, "dm-1")
+    scope.bind_replay_read(
+        {"id": "job", "fire_claim": {"replay": {"started_at": STARTED}}}
+    )
+    assert discord_tool._CRON_REPLAY_READ.get().deliver_channel_ids == frozenset(
+        {"dm-1"}
+    )
+    reset_cron_replay_read(scope._replay_read_token)
 
 
-def test_scheduler_refuses_other_guild_deliver_channel(monkeypatch):
-    target = "other-guild-channel"
-    scope = _replay_scope(monkeypatch, target, {"id": target, "type": 0, "guild_id": "other-guild"})
-    with pytest.raises(ValueError, match="operator guilds"):
-        scope.bind_replay_read({"id": "job", "fire_claim": {"replay": {"started_at": STARTED}}})
-    assert discord_tool._CRON_REPLAY_READ.get() is None
+def test_scheduler_binds_other_guild_delivery_for_read_time_refusal(monkeypatch):
+    scope = _replay_scope(monkeypatch, "other-guild-channel")
+    scope.bind_replay_read(
+        {"id": "job", "fire_claim": {"replay": {"started_at": STARTED}}}
+    )
+    assert discord_tool._CRON_REPLAY_READ.get().deliver_channel_ids == frozenset(
+        {"other-guild-channel"}
+    )
+    reset_cron_replay_read(scope._replay_read_token)

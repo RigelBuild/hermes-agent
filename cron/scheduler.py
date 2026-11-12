@@ -2424,13 +2424,9 @@ class _CronRunScope:
             self._var_map[name].set("")
 
     def bind_replay_read(self, job: dict) -> None:
-        """A replay may read only configured Discord delivery targets inside its window."""
+        """Bind this replay's Discord delivery channels as its read scope."""
         from cron.occurrences import claim_replay
-        from tools.discord_tool import (
-            _get_bot_token,
-            bind_cron_replay_read,
-            validate_cron_replay_deliver_channels,
-        )
+        from tools.discord_tool import bind_cron_replay_read
 
         replay = claim_replay(job)
         if replay is None:
@@ -2444,7 +2440,6 @@ class _CronRunScope:
         )
         if not channel_ids:
             return
-        validate_cron_replay_deliver_channels(_get_bot_token() or "", channel_ids)
         self._replay_read_token = bind_cron_replay_read(
             channel_ids, replay.get("started_at")
         )
