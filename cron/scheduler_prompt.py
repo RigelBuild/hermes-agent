@@ -301,16 +301,41 @@ def _run_time_line() -> str:
     return f"[CURRENT RUN TIME: {safe_strftime(now, '%A, %Y-%m-%d %H:%M %Z').strip()}{zone}]\n\n"
 
 
-def _replay_hint(replay: dict) -> str:
+def _replay_hint(replay: dict, job: dict) -> str:
     started_at = replay.get("started_at") or "unknown"
     interrupted_at = replay.get("interrupted_at") or "unknown"
+    discord_deliver = any(
+        str(target.get("platform") or "").lower() == "discord"
+        for target in _sched._resolve_delivery_targets(job)
+    )
+    if discord_deliver:
+        try:
+            effective_cfg = _sched.load_config_readonly()
+            enabled_toolsets = _sched._resolve_cron_enabled_toolsets(job, effective_cfg)
+            disabled_toolsets = _sched._resolve_cron_disabled_toolsets(effective_cfg)
+            from toolsets import resolve_toolset
+
+            discord_tool_enabled = any(
+                "discord" in resolve_toolset(str(name)) for name in enabled_toolsets
+            ) and not any(
+                "discord" in resolve_toolset(str(name)) for name in disabled_toolsets
+            )
+        except (Exception, SystemExit):
+            discord_tool_enabled = False
+    else:
+        discord_tool_enabled = False
+    delivered_check = (
+        "read what is there: use the discord tool (list_forum_posts, fetch_messages) on the channels "
+        "and threads this job posts to. Look at every message sent at or after "
+        f"{started_at}."
+        if discord_deliver and discord_tool_enabled
+        else "check what this job already delivered before repeating."
+    )
     return (
         f"REPLAY: A run of this same scheduled occurrence started at {started_at} "
         f"and was stopped by a gateway restart at {interrupted_at}. It may already "
         "have posted messages or delivered part of its result. Before you post "
-        "anything, read what is there: use the discord tool (list_forum_posts, "
-        "fetch_messages) on the channels and threads this job posts to. Look at "
-        f"every message sent at or after {started_at}. Do not post again anything "
+        f"anything, {delivered_check} Do not post again anything "
         "that is already there. Do only the steps that are missing. If nothing is "
         "missing, respond with exactly [SILENT].\n\n"
     )
@@ -377,7 +402,7 @@ def _build_job_prompt(
     )
     from cron.occurrences import claim_replay
     replay = claim_replay(job)
-    prompt = _CRON_HINT + (_replay_hint(replay) if replay is not None else "") + _run_time_line() + execute_code_hint + prompt
+    prompt = _CRON_HINT + (_replay_hint(replay, job) if replay is not None else "") + _run_time_line() + execute_code_hint + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

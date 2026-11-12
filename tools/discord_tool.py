@@ -621,11 +621,25 @@ def _load_post_channels_config() -> Optional[set[str]]:
     return {str(item).strip() for item in raw if str(item).strip()}
 
 
-_THREAD_CHANNEL_TYPES = frozenset({10, 11, 12})  # announcement, public and private threads
+_THREAD_CHANNEL_TYPES = frozenset(
+    {10, 11, 12}
+)  # announcement, public and private threads
+
+
+class _PostScopeError(ValueError):
+    """A refused post-scope check with the channel metadata it already fetched."""
+
+    def __init__(self, message: str, channel: dict[str, Any]):
+        super().__init__(message)
+        self.channel = channel
 
 
 def _require_post_scope(
-    token: str, channel_id: str, channel: Optional[dict[str, Any]] = None, *, allow_thread_parent: bool = True,
+    token: str,
+    channel_id: str,
+    channel: Optional[dict[str, Any]] = None,
+    *,
+    allow_thread_parent: bool = True,
     allowed: Optional[set[str]] = None,
 ) -> None:
     """Refuse posts outside ``discord.post_channels``. Only a thread (forum post) inherits its
@@ -638,10 +652,15 @@ def _require_post_scope(
     if allow_thread_parent:
         if channel is None:
             channel = _discord_request("GET", f"/channels/{channel_id}", token) or {}
-        if channel.get("type") in _THREAD_CHANNEL_TYPES and str(channel.get("parent_id") or "") in allowed:
+        if (
+            channel.get("type") in _THREAD_CHANNEL_TYPES
+            and str(channel.get("parent_id") or "") in allowed
+        ):
             return
-    raise ValueError(
-        f"Channel {channel_id} is outside discord.post_channels; allowed: {', '.join(sorted(allowed)) or '<none>'}")
+    raise _PostScopeError(
+        f"Channel {channel_id} is outside discord.post_channels; allowed: {', '.join(sorted(allowed)) or '<none>'}",
+        channel or {},
+    )
 
 
 _MESH_WRITE_ACTIONS = frozenset({"create_thread", "create_forum_post", "post_message"})
@@ -649,7 +668,9 @@ _DM_CHANNEL_TYPES = frozenset({1, 3})
 
 
 @functools.lru_cache(maxsize=128)
-def _operator_guilds(token: str, post_channels: frozenset[str]) -> frozenset[str] | None:
+def _operator_guilds(
+    token: str, post_channels: frozenset[str]
+) -> frozenset[str] | None:
     """Resolve each configured channel to its guild; one invalid entry closes the scope."""
     if not post_channels:
         return None
@@ -667,9 +688,80 @@ def _operator_guilds(token: str, post_channels: frozenset[str]) -> frozenset[str
                 return None
             guilds.add(guild_id)
     except Exception as exc:
-        logger.debug("discord: could not resolve discord.post_channels guild scope: %s", exc)
+        logger.debug(
+            "discord: could not resolve discord.post_channels guild scope: %s", exc
+        )
         return None
     return frozenset(guilds)
+
+
+def validate_cron_replay_deliver_channels(
+    token: str,
+    channel_ids: frozenset[str],
+    *,
+    channels: Optional[dict[str, dict[str, Any]]] = None,
+) -> None:
+    """Require replay targets to be guild channels within the configured operator guilds."""
+    if not channel_ids:
+        return
+    try:
+        allowed = _load_post_channels_config()
+    except _PostScopeConfigError as exc:
+        raise ValueError(
+            f"Could not read discord.post_channels; refusing replay scope: {exc}"
+        ) from exc
+    if not allowed:
+        raise ValueError(
+            "discord.post_channels is not set; replay reads require operator guilds"
+        )
+    operator_guilds = _operator_guilds(token, frozenset(allowed))
+    if operator_guilds is None:
+        raise ValueError(
+            "Could not resolve every discord.post_channels entry to a guild; refusing replay reads"
+        )
+    resolved_channels = channels or {}
+    for channel_id in channel_ids:
+        channel = resolved_channels.get(channel_id)
+        if channel is None:
+            channel = _discord_request("GET", f"/channels/{channel_id}", token)
+        if not isinstance(channel, dict) or channel.get("id") != channel_id:
+            raise ValueError(f"Could not resolve replay delivery channel {channel_id}")
+        if channel.get("type") in _DM_CHANNEL_TYPES:
+            raise ValueError(
+                "Discord DM and group DM channels are not available to cron replay reads"
+            )
+        guild_id = channel.get("guild_id")
+        if not isinstance(guild_id, str) or guild_id not in operator_guilds:
+            raise ValueError(
+                f"Channel {channel_id} is outside the operator guilds; refusing replay read"
+            )
+
+
+def _replay_read_channel_ids(
+    token: str,
+    channel_id: str,
+    replay: "CronReplayRead",
+    *,
+    channel: Optional[dict[str, Any]] = None,
+) -> tuple[frozenset[str], dict[str, dict[str, Any]]]:
+    """Resolve a direct replay target or a thread under one to its validated channel IDs."""
+    if channel_id in replay.deliver_channel_ids and channel is None:
+        return frozenset({channel_id}), {}
+    if channel is None:
+        channel = _discord_request("GET", f"/channels/{channel_id}", token)
+    if not isinstance(channel, dict):
+        return frozenset(), {}
+    if channel.get("type") in _THREAD_CHANNEL_TYPES:
+        parent_id = str(channel.get("parent_id") or "")
+        if parent_id in replay.deliver_channel_ids:
+            return frozenset({channel_id, parent_id}), {channel_id: channel}
+        if channel_id in replay.deliver_channel_ids:
+            return frozenset({channel_id}), {channel_id: channel}
+        return frozenset(), {}
+    if channel_id in replay.deliver_channel_ids:
+        return frozenset({channel_id}), {channel_id: channel}
+    return frozenset(), {}
+
 
 
 def _require_mesh_scope(token: str, action: str, *, channel_id: str, guild_id: str) -> None:
@@ -1110,26 +1202,39 @@ def _parse_started_at(value: object) -> datetime | None:
     return parsed if parsed.tzinfo is not None else None
 
 
-def _require_cron_scope(token: str, action: str, channel_id: str) -> CronReplayRead | None:
-    """In a cron session, refuse actions outside the forum workflow and any channel outside
-    ``discord.post_channels``; an unset allowlist refuses everything (fail closed). A replay's read
-    actions also reach its deliver channels, and the replay window is returned for those reads."""
+def _require_cron_scope(
+    token: str, action: str, channel_id: str
+) -> CronReplayRead | None:
+    """Keep the normal post_channels boundary; fail closed on every invalid replay read (DL-1691)."""
     if not _in_cron_session():
         return None
     if action not in _CRON_ACTIONS:
         raise ValueError(
-            f"Action '{action}' is not available in cron jobs; allowed: {', '.join(sorted(_CRON_ACTIONS))}")
+            f"Action '{action}' is not available in cron jobs; allowed: {', '.join(sorted(_CRON_ACTIONS))}"
+        )
     allowed = _load_post_channels_config()
     if not allowed:
-        raise ValueError("discord.post_channels is not set; cron jobs may not use the discord tool")
-    replay = _CRON_REPLAY_READ.get()
-    if replay is None or action not in _REPLAY_READ_ACTIONS:
+        raise ValueError(
+            "discord.post_channels is not set; cron jobs may not use the discord tool"
+        )
+    try:
         _require_post_scope(token, channel_id, allowed=allowed)
         return None
-    if replay.started_at is None:
-        raise ValueError("The replay's started_at is unreadable; refusing the replay read")
-    _require_post_scope(token, channel_id, allowed=allowed | replay.deliver_channel_ids)
-    return replay
+    except _PostScopeError as post_scope_error:
+        replay = _CRON_REPLAY_READ.get()
+        if replay is None or action not in _REPLAY_READ_ACTIONS:
+            raise post_scope_error
+        if replay.started_at is None:
+            raise ValueError(
+                "The replay's started_at is unreadable; refusing the replay read"
+            ) from post_scope_error
+        channel_ids, channels = _replay_read_channel_ids(
+            token, channel_id, replay, channel=post_scope_error.channel
+        )
+        if not channel_ids:
+            raise post_scope_error
+        validate_cron_replay_deliver_channels(token, channel_ids, channels=channels)
+        return replay
 
 
 def _snowflake_before(ms: int) -> str:
