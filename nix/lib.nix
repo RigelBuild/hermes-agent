@@ -238,7 +238,7 @@ let
   # The pnpm store for the whole lockfile, shared by all members; each
   # build installs only its own slice of it.  nixpkgs has no hashless pnpm
   # importer, so this is a fixed-output derivation pinned by
-  # nix/pnpm-deps-hash: after a pnpm-lock.yaml change, run
+  # nix/pnpm-deps-hash/<system>: after a pnpm-lock.yaml change, run
   # `nix run .#update-pnpm-lockfile` (CI prints the expected hash too).
   pnpmDeps = fetchPnpmDeps {
     pname = "hermes-agent";
@@ -257,7 +257,12 @@ let
       export NIX_NPM_REGISTRY=''${NIX_NPM_REGISTRY:-https://registry.npmjs.org/}
       export PATH=${pmNode}/bin:$PATH
     '';
-    hash = lib.fileContents ./pnpm-deps-hash;
+    hash =
+      let
+        hashFile = repoRoot + "/nix/pnpm-deps-hash/${stdenv.hostPlatform.system}";
+      in
+      if builtins.pathExists hashFile then lib.fileContents hashFile else
+        throw "Missing ${toString hashFile}; run `nix run .#update-pnpm-lockfile` on ${stdenv.hostPlatform.system} to create it.";
   };
 
   # Build a per-package pnpm source: workspace resolution files + the
@@ -357,9 +362,11 @@ in
 
     PATH=${nodejs}/bin:$PATH ${lib.getExe' pnpm "pnpm"} install --lockfile-only
 
-    # pnpmDeps is pinned by one fixed-output hash: build it with an empty
-    # hash and take the real one from Nix's mismatch report.
-    : > nix/pnpm-deps-hash
+    # Measure this system's pnpmDeps hash and leave other systems untouched.
+    system=${stdenv.hostPlatform.system}
+    hash_file="nix/pnpm-deps-hash/$system"
+    mkdir -p nix/pnpm-deps-hash
+    : > "$hash_file"
     log=$(mktemp)
     trap 'rm -f "$log"' EXIT
     nix build .#pnpm-deps --no-link 2>&1 | tee "$log" || true
@@ -368,9 +375,10 @@ in
       echo "update-pnpm-lockfile: no hash in the nix build output above" >&2
       exit 1
     fi
-    echo "$hash" > nix/pnpm-deps-hash
+    echo "$hash" > "$hash_file"
 
     nix build .#tui .#web .#webapp .#desktop
+    echo "Updated pnpmDeps hash for $system; other systems need their own run."
     echo "Lockfile and pnpmDeps hash updated and all pnpm packages built."
   '';
 

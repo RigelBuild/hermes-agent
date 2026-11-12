@@ -120,7 +120,7 @@ The prepared source needs these inputs:
 Request the complete workspace union once. A later, narrower install can
 remove dependencies that another product needs. This provider modifies the
 prepared workspace. It does not build a frontend.
-Nix supplies dependencies through `fetchPnpmDeps` (its fixed-output hash is `nix/pnpm-deps-hash`) instead of this command.
+Nix supplies dependencies through `fetchPnpmDeps` (its fixed-output hash is in `nix/pnpm-deps-hash/<system>`) instead of this command.
 
 `--reuse` opts into reusing a completed dependency install. Desktop bundles use
 this with CI's cached `node_modules` tree. The receipt lives inside that tree

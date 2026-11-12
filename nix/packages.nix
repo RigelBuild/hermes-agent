@@ -100,7 +100,7 @@
         desktop = full.hermesDesktop;
 
         # The fixed-output pnpm store every frontend installs from; its hash
-        # lives in nix/pnpm-deps-hash (`nix run .#update-pnpm-lockfile`).
+        # lives in nix/pnpm-deps-hash/<system> (`nix run .#update-pnpm-lockfile`).
         pnpm-deps = full.hermesNpmLib.pnpmDeps;
         update-pnpm-lockfile = full.hermesNpmLib.updatePnpmLockfile;
       }
