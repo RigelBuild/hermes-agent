@@ -28,7 +28,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: .github/scripts/release-tag.sh check-pr "$BASE_SHA" "$HEAD_SHA"
+        run: python3 scripts/releases/release_tag.py check-pr "$BASE_SHA" "$HEAD_SHA"
 
   mint:
     if: github.event_name != 'pull_request'
@@ -62,4 +62,4 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           RELEASE_SHA: ${{ github.sha }}
           RELEASE_REPOSITORY: ${{ github.repository }}
-        run: .github/scripts/release-tag.sh mint "$RELEASE_SHA" "$RELEASE_REPOSITORY"
+        run: python3 scripts/releases/release_tag.py mint "$RELEASE_SHA" "$RELEASE_REPOSITORY"
