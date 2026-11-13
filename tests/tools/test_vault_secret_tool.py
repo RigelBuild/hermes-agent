@@ -307,6 +307,48 @@ def test_run_passes_piped_sops_stdin_without_opening_a_file(unlocked, monkeypatc
     assert capture.read_bytes() == _AGE.encode()
 
 
+def test_run_passes_here_string_sops_stdin_without_opening_a_file(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    _scratch(tmp, monkeypatch, vst)
+    capture = _fake_sops(unlocked, monkeypatch)
+    command = 'sops set --value-stdin "$K" \'secrets.yaml\' <<< "$K"'
+
+    result = _call(vst, action="run", reason="test sops secret here-string input", command=command,
+                   workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert result["success"] and result["exit_code"] == 0
+    assert capture.read_bytes() == _AGE.encode() + b"\n"
+
+
+def test_run_passes_heredoc_sops_stdin_without_opening_a_file(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    _scratch(tmp, monkeypatch, vst)
+    capture = _fake_sops(unlocked, monkeypatch)
+    command = 'sops set --value-stdin "$K" \'secrets.yaml\' <<EOF\nheredoc body\nEOF'
+
+    result = _call(vst, action="run", reason="test sops secret heredoc input", command=command,
+                   workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert result["success"] and result["exit_code"] == 0
+    assert capture.read_bytes() == b"heredoc body\n"
+
+
+def test_run_refuses_a_tilde_sops_stdin_path(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    scratch = _scratch(tmp, monkeypatch, vst)
+    source = scratch / "secret input"
+    source.write_text("encrypted value bytes\n", encoding="utf-8")
+    source.chmod(0o600)
+    capture = _fake_sops(unlocked, monkeypatch)
+    command = "sops set --value-stdin \"$K\" 'secrets.yaml' < ~/secret-input"
+
+    result = _call(vst, action="run", reason="test sops tilde stdin path", command=command,
+                   workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert not result["success"] and "stdin redirect refused" in result["error"]
+    assert not capture.exists()
+
+
 @pytest.mark.parametrize("command, reaches_fake_sops", [
     ("sops set --value-stdin \"$K\" 'secrets.yaml' < {path}", True),
     ("env sops set --value-stdin \"$K\" 'secrets.yaml' < {path}", True),
