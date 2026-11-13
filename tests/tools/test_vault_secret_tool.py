@@ -1,6 +1,8 @@
 """vault_secret: search any 1Password item, list field labels, and run a command with a field injected."""
 
 import json
+import os
+import shlex
 import stat
 from types import SimpleNamespace
 
@@ -151,7 +153,7 @@ def test_vault_secret_approval_shows_item_and_field_metadata_to_reviewer(unlocke
 def test_run_injects_the_field_and_redacts_it_in_every_common_form(unlocked):
     vst, tmp = unlocked
     command = ('test "$K" = "' + _AGE + '" && echo match; echo "$K"; printf %s "$K" | base64; '
-               'python3 -c "import json,os; print(json.dumps(os.environ[\'K\']))"; echo "$K" > out.txt; wc -c < out.txt')
+               'python3 -c "import json,os; print(json.dumps(os.environ[\'K\']))"; echo "$K" > out.txt; wc -c out.txt')
     res = _call(vst, action="run", reason="test run of the injected field", command=command, workdir=str(tmp),
                 env={"K": {"item": "op:sopsid", "field": "pk"}})
     assert res["success"] and res["exit_code"] == 0 and res["injected"] == ["K"]
@@ -160,7 +162,355 @@ def test_run_injects_the_field_and_redacts_it_in_every_common_form(unlocked):
     import base64
     assert base64.b64encode(_AGE.encode()).decode() not in res["output"]
 
+def _fake_sops(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    binary_dir = tmp / "bin"
+    binary_dir.mkdir()
+    binary = binary_dir / "sops"
+    binary.write_text("#!/bin/sh\ncat > \"$SOPS_STDIN_CAPTURE\"\n", encoding="utf-8")
+    binary.chmod(0o700)
+    capture = tmp / "sops-stdin"
 
+    from tools.environments.local import build_subprocess_env
+
+    def build_env(*, extra=None):
+        env = build_subprocess_env(extra=extra)
+        env["PATH"] = str(binary_dir) + os.pathsep + env["PATH"]
+        env["SOPS_STDIN_CAPTURE"] = str(capture)
+        return env
+
+    monkeypatch.setattr("tools.environments.local.build_subprocess_env", build_env)
+    return capture
+
+
+def _sops_command(path):
+    return f"sops set --value-stdin \"$K\" 'secrets.yaml' < {shlex.quote(str(path))}"
+
+
+def _sops_run(vst, tmp, path, command=None):
+    return _call(vst, action="run", reason="test sops secret file input",
+                 command=command or _sops_command(path),
+                 workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+
+def _scratch(tmp, monkeypatch, vst):
+    scratch = tmp / "scratch"
+    scratch.mkdir(mode=0o700)
+    monkeypatch.setattr(vst, "_scratch_root", lambda: str(scratch))
+    return scratch
+
+
+def test_run_refuses_a_swapped_symlink_at_the_sops_stdin_path(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    scratch = _scratch(tmp, monkeypatch, vst)
+    source = scratch / "secret input"
+    source.write_text("approved source\n", encoding="utf-8")
+    source.chmod(0o600)
+    target = tmp / "ssh-key"
+    target.write_text("swapped target contents\n", encoding="utf-8")
+    target.chmod(0o600)
+    capture = _fake_sops(unlocked, monkeypatch)
+    source.unlink()
+    source.symlink_to(target)
+
+    result = _sops_run(vst, tmp, source)
+
+    assert not result["success"] and "symlinks are refused" in result["error"]
+    assert not capture.exists(), "the shell or sops read the swapped-in target"
+
+
+def test_run_refuses_a_symlinked_directory_in_the_sops_stdin_path(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    scratch = _scratch(tmp, monkeypatch, vst)
+    real_dir = tmp / "real-dir"
+    real_dir.mkdir()
+    source = real_dir / "secret input"
+    source.write_text("secret input\n", encoding="utf-8")
+    source.chmod(0o600)
+    (scratch / "dirlink").symlink_to(real_dir, target_is_directory=True)
+    capture = _fake_sops(unlocked, monkeypatch)
+
+    result = _sops_run(vst, tmp, scratch / "dirlink" / "secret input")
+
+    assert not result["success"] and "symlinks are refused" in result["error"]
+    assert not capture.exists()
+
+
+def test_run_rejects_hardlinked_sops_stdin_file(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    scratch = _scratch(tmp, monkeypatch, vst)
+    source = scratch / "secret input"
+    source.write_text("secret input\n", encoding="utf-8")
+    source.chmod(0o600)
+    os.link(source, tmp / "second-link")
+    capture = _fake_sops(unlocked, monkeypatch)
+
+    result = _sops_run(vst, tmp, source)
+
+    assert not result["success"] and "link count 2" in result["error"]
+    assert not capture.exists()
+
+
+def test_run_rejects_group_readable_sops_stdin_file(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    scratch = _scratch(tmp, monkeypatch, vst)
+    source = scratch / "secret input"
+    source.write_text("secret input\n", encoding="utf-8")
+    source.chmod(0o640)
+    capture = _fake_sops(unlocked, monkeypatch)
+
+    result = _sops_run(vst, tmp, source)
+
+    assert not result["success"] and "mode 0640" in result["error"]
+    assert not capture.exists()
+
+
+def test_run_passes_open_sops_stdin_file_to_command(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    scratch = _scratch(tmp, monkeypatch, vst)
+    source = scratch / "secret input"
+    source.write_text("encrypted value bytes\n", encoding="utf-8")
+    source.chmod(0o600)
+    capture = _fake_sops(unlocked, monkeypatch)
+
+    result = _sops_run(vst, tmp, source)
+
+    assert result["success"] and result["exit_code"] == 0
+    assert capture.read_bytes() == b"encrypted value bytes\n"
+
+
+def test_run_passes_relative_sops_stdin_resolved_against_workdir(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    scratch = _scratch(tmp, monkeypatch, vst)
+    (scratch / "secret input").write_text("relative bytes\n", encoding="utf-8")
+    (scratch / "secret input").chmod(0o600)
+    capture = _fake_sops(unlocked, monkeypatch)
+    command = "sops set --value-stdin \"$K\" 'secrets.yaml' < 'secret input'"
+
+    result = _call(vst, action="run", reason="test sops secret file input", command=command,
+                   workdir=str(scratch), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert result["success"] and result["exit_code"] == 0
+    assert capture.read_bytes() == b"relative bytes\n"
+
+
+def test_run_passes_piped_sops_stdin_without_opening_a_file(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    _scratch(tmp, monkeypatch, vst)
+    capture = _fake_sops(unlocked, monkeypatch)
+    command = 'printf %s "$K" | sops set --value-stdin "$K" \'secrets.yaml\''
+
+    result = _call(vst, action="run", reason="test sops secret pipe input", command=command,
+                   workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert result["success"] and result["exit_code"] == 0
+    assert capture.read_bytes() == _AGE.encode()
+
+
+def test_run_passes_cat_pipe_sops_stdin_unchecked_as_documented(unlocked, monkeypatch):
+    """Documented limit: a file read by ``cat f |`` is not checked or opened by this module."""
+    vst, tmp = unlocked
+    scratch = _scratch(tmp, monkeypatch, vst)
+    source = scratch / "secret input"
+    source.write_text("encrypted value bytes\n", encoding="utf-8")
+    source.chmod(0o600)
+    capture = _fake_sops(unlocked, monkeypatch)
+    command = f"cat {shlex.quote(str(source))} | sops set --value-stdin \"$K\" 'secrets.yaml'"
+
+    result = _call(vst, action="run", reason="test cat pipe into sops is unchecked",
+                   command=command, workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert result["success"] and result["exit_code"] == 0
+    assert capture.read_bytes() == b"encrypted value bytes\n"
+
+
+def test_run_passes_eval_quoted_sops_redirect_unchecked_as_documented(unlocked, monkeypatch):
+    """Documented limit: a ``<`` inside an ``eval`` argument is not checked or opened by this module. The
+    shell reads the file itself when eval runs it, so the bytes reach sops without the no-follow open."""
+    vst, tmp = unlocked
+    scratch = _scratch(tmp, monkeypatch, vst)
+    source = scratch / "secret input"
+    source.write_text("encrypted value bytes\n", encoding="utf-8")
+    source.chmod(0o600)
+    capture = _fake_sops(unlocked, monkeypatch)
+    inner = f"sops set --value-stdin \"$K\" 'secrets.yaml' < {shlex.quote(str(source))}"
+    command = f"eval {shlex.quote(inner)}"
+
+    result = _call(vst, action="run", reason="test eval-quoted sops redirect is unchecked",
+                   command=command, workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert result["success"] and result["exit_code"] == 0
+    assert capture.read_bytes() == b"encrypted value bytes\n"
+
+
+def test_run_passes_printf_built_sops_redirect_unchecked_as_documented(unlocked, monkeypatch):
+    """Documented limit: command text built at run time (here ``eval`` over ``$(printf ...)`` with a
+    ``\\074`` escape) hides the ``<`` from the parser. The shell opens the file itself, so the checked
+    open does not run. This pins that the bytes still reach sops."""
+    vst, tmp = unlocked
+    scratch = _scratch(tmp, monkeypatch, vst)
+    source = scratch / "secret-input"
+    source.write_text("encrypted value bytes\n", encoding="utf-8")
+    source.chmod(0o600)
+    capture = _fake_sops(unlocked, monkeypatch)
+    built = f"sops set --value-stdin \"$K\" secrets.yaml \\074{shlex.quote(str(source))}"
+    command = f"eval \"$(printf '{built}')\""
+
+    result = _call(vst, action="run", reason="test printf-built redirect is unchecked",
+                   command=command, workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert result["success"] and result["exit_code"] == 0
+    assert capture.read_bytes() == b"encrypted value bytes\n"
+
+
+def test_run_refuses_a_heredoc_whose_body_contains_a_less_than(unlocked, monkeypatch):
+    """A raw ``<<`` heredoc with a lone ``<`` in its body is refused even with no sops command: the
+    plain character rule cannot tell a body from a file input, so it refuses (a known false positive)."""
+    vst, tmp = unlocked
+    _scratch(tmp, monkeypatch, vst)
+    command = "cat > f.xml <<EOF\n<root/>\nEOF"
+
+    result = _call(vst, action="run", reason="test heredoc body with less-than", command=command,
+                   workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert not result["success"] and "heredoc with a file input" in result["error"]
+
+
+def test_run_passes_here_string_sops_stdin_without_opening_a_file(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    _scratch(tmp, monkeypatch, vst)
+    capture = _fake_sops(unlocked, monkeypatch)
+    command = 'sops set --value-stdin "$K" \'secrets.yaml\' <<< "$K"'
+
+    result = _call(vst, action="run", reason="test sops secret here-string input", command=command,
+                   workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert result["success"] and result["exit_code"] == 0
+    assert capture.read_bytes() == _AGE.encode() + b"\n"
+
+
+def test_run_passes_a_heredoc_beside_sops_value_stdin_with_no_file_input(unlocked, monkeypatch):
+    """Round-4 rule: a heredoc is refused only with a lone ``<`` (a file input) in the same command. A
+    heredoc with no lone ``<`` names no file, so it runs unchanged and sops receives the body."""
+    vst, tmp = unlocked
+    _scratch(tmp, monkeypatch, vst)
+    capture = _fake_sops(unlocked, monkeypatch)
+    command = 'sops set --value-stdin "$K" \'secrets.yaml\' <<EOF\nheredoc body\nEOF'
+
+    result = _call(vst, action="run", reason="test sops heredoc with no file input", command=command,
+                   workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert result["success"] and result["exit_code"] == 0
+    assert capture.read_bytes() == b"heredoc body\n"
+
+
+def test_run_runs_a_heredoc_when_no_sops_value_stdin_is_present(unlocked, monkeypatch):
+    """A heredoc in a command with no sops ``--value-stdin`` is not refused: it runs as written."""
+    vst, tmp = unlocked
+    _scratch(tmp, monkeypatch, vst)
+    command = "cat <<EOF\nplain heredoc body\nEOF"
+
+    result = _call(vst, action="run", reason="test plain heredoc still runs", command=command,
+                   workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert result["success"] and result["exit_code"] == 0
+    assert "plain heredoc body" in result["output"]
+
+
+def test_run_refuses_a_tilde_sops_stdin_path(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    scratch = _scratch(tmp, monkeypatch, vst)
+    source = scratch / "secret input"
+    source.write_text("encrypted value bytes\n", encoding="utf-8")
+    source.chmod(0o600)
+    capture = _fake_sops(unlocked, monkeypatch)
+    command = "sops set --value-stdin \"$K\" 'secrets.yaml' < ~/secret-input"
+
+    result = _call(vst, action="run", reason="test sops tilde stdin path", command=command,
+                   workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert not result["success"] and "stdin redirect refused" in result["error"]
+    assert not capture.exists()
+
+
+@pytest.mark.parametrize("command, reaches_fake_sops", [
+    ("sops set --value-stdin \"$K\" 'secrets.yaml' < {path}", True),
+    ("env sops set --value-stdin \"$K\" 'secrets.yaml' < {path}", True),
+    ("command sops set --value-stdin \"$K\" 'secrets.yaml' < {path}", True),
+    ("time sops set --value-stdin \"$K\" 'secrets.yaml' < {path}", True),
+    ("sops --config x set --value-stdin \"$K\" 'secrets.yaml' < {path}", True),
+    ("sops set --value-stdin \"$K\" 'secrets.yaml' <{path}", True),
+    # Absolute path: the fake sops is only on PATH, so this must not reach it.
+    ("/usr/bin/sops set --value-stdin \"$K\" 'secrets.yaml' < {path}", False),
+])
+def test_run_routes_every_sops_spelling_of_a_file_stdin_through_the_checked_open(
+        unlocked, monkeypatch, command, reaches_fake_sops):
+    """Each spelling reaches the no-follow open, never a bare shell redirect. Where the fake sops is
+    on PATH, the approved bytes must reach it; the absolute path resolves elsewhere and never does."""
+    vst, tmp = unlocked
+    scratch = _scratch(tmp, monkeypatch, vst)
+    source = scratch / "secret input"
+    source.write_text("encrypted value bytes\n", encoding="utf-8")
+    source.chmod(0o600)
+    capture = _fake_sops(unlocked, monkeypatch)
+
+    result = _call(vst, action="run", reason="test sops secret file input",
+                   command=command.format(path=shlex.quote(str(source))), workdir=str(tmp),
+                   env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert "stdin redirect refused" not in result.get("error", "")
+    if reaches_fake_sops:
+        assert result["success"] and result["exit_code"] == 0
+        assert capture.read_bytes() == b"encrypted value bytes\n"
+    else:
+        assert not result["success"]
+        assert not capture.exists()
+
+
+@pytest.mark.parametrize("command", [
+    "< {path} sops set --value-stdin \"$K\" 'secrets.yaml'",
+    "sops set --value-stdin \"$K\" 'secrets.yaml' {{v}}< {path}",
+    "echo $((1<<2))\nsops set --value-stdin \"$K\" 'secrets.yaml' < {path}",
+    "true # <<true\ntrue\nsops set --value-stdin \"$K\" 'secrets.yaml' < {path}",
+    "cat \\'x <<EOF\n'\nEOF\nsops set --value-stdin \"$K\" 'secrets.yaml' < {path}",
+    "cat \\'x <<EOF\n'\nEOF\nsops set --value-std''in \"$K\" 'secrets.yaml' < {path}",
+    "cat \\'x <<EOF\n'\nEOF\ns''ops set --value-stdin \"$K\" 'secrets.yaml' < {path}",
+    "sops set --value-stdin \"$K\" 'secrets.yaml' <<< \"$(<{path})\"",
+    "sops set --value-stdin \"$K\" 'secrets.yaml' < {path} ; cat < {path}",
+    "cat < {path} | sops set --value-stdin \"$K\" 'secrets.yaml'",
+    "true $(cat < {path})",
+    "sops set --value-stdin \"$K\" 'secrets.yaml' <\"{path}\"  # \"unterminated",
+])
+def test_run_refuses_unhandled_file_stdin_redirects(unlocked, monkeypatch, command):
+    vst, tmp = unlocked
+    scratch = _scratch(tmp, monkeypatch, vst)
+    source = scratch / "secret input"
+    source.write_text("encrypted value bytes\n", encoding="utf-8")
+    source.chmod(0o600)
+    capture = _fake_sops(unlocked, monkeypatch)
+
+    result = _call(vst, action="run", reason="test sops secret file input",
+                   command=command.format(path=shlex.quote(str(source))), workdir=str(tmp),
+                   env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert not result["success"] and "stdin redirect refused" in result["error"]
+    assert not capture.exists()
+
+
+def test_run_refuses_a_file_stdin_redirect_with_no_sops_command(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    scratch = _scratch(tmp, monkeypatch, vst)
+    source = scratch / "secret input"
+    source.write_text("encrypted value bytes\n", encoding="utf-8")
+    source.chmod(0o600)
+    capture = _fake_sops(unlocked, monkeypatch)
+
+    result = _call(vst, action="run", reason="test file redirect without sops",
+                   command=f"cat < {shlex.quote(str(source))}", workdir=str(tmp),
+                   env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert not result["success"] and "stdin redirect refused" in result["error"]
+    assert not capture.exists()
 
 def test_run_refuses_a_value_too_short_to_redact(unlocked):
     """Redaction skips needles under _MIN_REDACT, so a short value would come back verbatim."""
@@ -169,6 +519,7 @@ def test_run_refuses_a_value_too_short_to_redact(unlocked):
                 env={"K": {"item": "op:sopsid", "field": "pk"}, "P": {"item": "op:sopsid", "field": "pin"}})
     assert not res["success"] and "P" in res["error"] and "42" not in json.dumps(res)
     assert not (tmp / "ran.txt").exists()
+
 
 def test_run_refuses_reserved_names_and_bad_references(unlocked):
     vst, _ = unlocked
