@@ -6,9 +6,10 @@ Actions:
 - run: read named fields server-side, inject each as an environment variable of one ``bash -c``
   child, and return its exit code and output with every injected value (and its common
   encodings) redacted. Only a literal ``sops set --value-stdin <scratch-file`` redirect is opened without
-  following links and passed to SOPS as an already-open descriptor. Other ways of reading a file
-  (``cat f | sops``, ``eval``, ``bash -c``, ``source``, ``.``, aliases) are not protected and not checked;
-  a raw heredoc beside any lone ``<`` is refused.
+  following links and passed to SOPS as an already-open descriptor. Not protected and not checked: a pipe
+  (``cat f | sops``), and any command text built at run time (``eval``, ``trap``, ``bash -c``, ``source``,
+  ``.``, aliases, ``$(printf ...)``). Only a literal ``<`` on the sops command goes through the checked open.
+  A raw heredoc whose body or command contains any lone ``<`` is refused, even when sops is absent.
   The value never reaches the model, argv or disk.
 
 - create / edit: write one item (off unless ``vault.onepassword.allow_write``). Values come from a
@@ -279,11 +280,15 @@ def _input_redirects(command: str) -> tuple[list[int], set[int]]:
 
 def _sops_stdin_redirection(command: str) -> tuple[str, int, int] | None:
     """(path, start, end) of the one literal ``sops set --value-stdin <scratch-file`` redirect, or None
-    when the command opens no file. Only that redirect is checked and opened here. Any other unquoted
-    ``<`` file input is refused. A command with a raw ``<<`` heredoc and any lone ``<`` is refused by a
-    plain character check, so quoting and spelling cannot hide the file input. Not protected, and not
-    checked: a pipe (``cat f | sops``), ``eval``, ``bash -c``, ``source``, ``.`` and ``alias``. A
-    heredoc in a command with no lone ``<`` runs unchanged."""
+    when the command opens no file. Only a literal ``<`` on that sops command goes through the checked
+    open. Any other unquoted ``<`` file input is refused.
+
+    Not protected, and not checked: any command text built at run time, such as ``eval``, ``trap``,
+    ``bash -c``, ``source``, ``.``, aliases, or ``$(printf ...)`` with a ``\\074`` escape. The parser sees
+    no ``<`` there, so these run as written. A pipe (``cat f | sops``) is not checked either.
+
+    A raw ``<<`` heredoc with any lone ``<`` anywhere in the command, including its body, is refused by a
+    plain character check, even when sops is absent. A heredoc with no lone ``<`` runs unchanged."""
     import shlex
 
     from tools.approval_detection import (

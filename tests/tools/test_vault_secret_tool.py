@@ -343,6 +343,39 @@ def test_run_passes_eval_quoted_sops_redirect_unchecked_as_documented(unlocked, 
     assert capture.read_bytes() == b"encrypted value bytes\n"
 
 
+def test_run_passes_printf_built_sops_redirect_unchecked_as_documented(unlocked, monkeypatch):
+    """Documented limit: command text built at run time (here ``eval`` over ``$(printf ...)`` with a
+    ``\\074`` escape) hides the ``<`` from the parser. The shell opens the file itself, so the checked
+    open does not run. This pins that the bytes still reach sops."""
+    vst, tmp = unlocked
+    scratch = _scratch(tmp, monkeypatch, vst)
+    source = scratch / "secret-input"
+    source.write_text("encrypted value bytes\n", encoding="utf-8")
+    source.chmod(0o600)
+    capture = _fake_sops(unlocked, monkeypatch)
+    built = f"sops set --value-stdin \"$K\" secrets.yaml \\074{shlex.quote(str(source))}"
+    command = f"eval \"$(printf '{built}')\""
+
+    result = _call(vst, action="run", reason="test printf-built redirect is unchecked",
+                   command=command, workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert result["success"] and result["exit_code"] == 0
+    assert capture.read_bytes() == b"encrypted value bytes\n"
+
+
+def test_run_refuses_a_heredoc_whose_body_contains_a_less_than(unlocked, monkeypatch):
+    """A raw ``<<`` heredoc with a lone ``<`` in its body is refused even with no sops command: the
+    plain character rule cannot tell a body from a file input, so it refuses (a known false positive)."""
+    vst, tmp = unlocked
+    _scratch(tmp, monkeypatch, vst)
+    command = "cat > f.xml <<EOF\n<root/>\nEOF"
+
+    result = _call(vst, action="run", reason="test heredoc body with less-than", command=command,
+                   workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert not result["success"] and "heredoc with a file input" in result["error"]
+
+
 def test_run_passes_here_string_sops_stdin_without_opening_a_file(unlocked, monkeypatch):
     vst, tmp = unlocked
     _scratch(tmp, monkeypatch, vst)
