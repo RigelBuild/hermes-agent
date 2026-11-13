@@ -5,9 +5,11 @@ Actions:
 - fields: one item's field ids, labels, sections and types; never values.
 - run: read named fields server-side, inject each as an environment variable of one ``bash -c``
   child, and return its exit code and output with every injected value (and its common
-  encodings) redacted. Literal ``sops set --value-stdin`` scratch-file redirects are opened without
-  following links and passed to SOPS as an already-open descriptor; the value never reaches the model,
-  argv or disk.
+  encodings) redacted. Only a literal ``sops set --value-stdin <scratch-file`` redirect is opened without
+  following links and passed to SOPS as an already-open descriptor. Other ways of reading a file
+  (``cat f | sops``, ``eval``, ``bash -c``, ``source``, aliases) are not protected; ``run`` refuses
+  only ``eval``, ``bash -c``/``sh -c``, ``source``, ``.`` and ``alias`` alongside a sops ``--value-stdin``
+  command. The value never reaches the model, argv or disk.
 
 - create / edit: write one item (off unless ``vault.onepassword.allow_write``). Values come from a
   0600 file under the scratch dir or a command's stdout; an inline value is accepted only for a
@@ -155,7 +157,9 @@ def vault_secret_run(command: str, env: Any, workdir: str = "", timeout: Any = N
         if sops_stdin:
             stdin_path, redirection_start, redirection_end = sops_stdin
             stdin_fd = _open_sops_stdin(stdin_path, cwd)
-            command = command[:redirection_start] + f"<&{stdin_fd}" + command[redirection_end:]
+            # The sops command reads fd 0 only: the scratch fd is closed there. pass_fds still keeps it
+            # open in the bash -c shell, so an earlier command in the script can read it. That is a known limit.
+            command = command[:redirection_start] + f"<&{stdin_fd} {stdin_fd}<&-" + command[redirection_end:]
         proc = subprocess.run(["bash", "-c", command], cwd=cwd, env=child_env, stdin=subprocess.DEVNULL,
                               capture_output=True, text=True, encoding="utf-8", errors="replace",
                               timeout=limit, check=False, pass_fds=(stdin_fd,) if stdin_fd is not None else ())
@@ -236,35 +240,89 @@ def _open_under(root: str, rel: str) -> tuple[int, int, str]:
 
 
 def _input_redirects(command: str) -> list[int]:
-    """Offsets of every unquoted ``<`` that opens a file. Heredoc bodies are blanked first (offsets
-    are kept), so a quote inside a body cannot hide a later redirect. ``<<`` and ``<<<`` name no file.
-    The scanner does not track ANSI-C ``$'...'`` quoting, so when it is present every ``<`` counts."""
+    """Offsets of every unquoted ``<`` that opens a file, from two scans: the heredoc-masked text and
+    the raw command. ``<<`` and ``<<<`` name no file. The scanner does not track ANSI-C ``$'...'``
+    quoting, so when it is present every ``<`` counts. Heredoc masking can hide an operator, so a
+    heredoc beside sops ``--value-stdin`` is refused before this scan is trusted (see
+    ``_sops_stdin_redirection``)."""
     from tools.approval_detection import _scan_shell
     from tools.self_repo_guard import _mask_heredocs
 
-    text, _ = _mask_heredocs(command)
+    masked, _ = _mask_heredocs(command)
 
-    def opens_file(i: int) -> bool:
+    def opens_file(text: str, i: int) -> bool:
         return text[i] == "<" and not text.startswith("<<", i) and not (i and text[i - 1] == "<")
 
-    if "$'" in text:
-        return [i for i in range(len(text)) if opens_file(i)]
-    found: list[int] = []
+    def scan(text: str) -> set[int]:
+        if "$'" in text:
+            return {i for i in range(len(text)) if opens_file(text, i)}
+        found: set[int] = set()
 
-    def walk(start: int, end: int) -> None:
-        for kind, i, j, quote in _scan_shell(text, start, end, subst="uq", comments=True):
-            if kind == "subst":  # $(...) and backticks run their own commands, so scan inside them too
-                walk(i + (2 if text.startswith("$(", i) else 1), j - 1)
-            elif kind == "char" and quote is None and opens_file(i):
-                found.append(i)
+        def walk(start: int, end: int) -> None:
+            for kind, i, j, quote in _scan_shell(text, start, end, subst="uq", comments=True):
+                if kind == "subst":  # $(...) and backticks run their own commands, so scan inside them too
+                    walk(i + (2 if text.startswith("$(", i) else 1), j - 1)
+                elif kind == "char" and quote is None and opens_file(text, i):
+                    found.add(i)
 
-    walk(0, len(text))
+        walk(0, len(text))
+        return found
+
+    return sorted(scan(masked) | scan(command))
+
+_INDIRECT_READERS = frozenset({"eval", "source", ".", "alias"})
+
+
+def _command_word_positions(command: str) -> list[tuple[str, str]]:
+    """(name, next_word) for each command-position word. ``next_word`` is the word after it, so
+    ``bash -c`` and ``sh -c`` can be spotted."""
+    from tools.approval_detection import (
+        _deobfuscate_shell_word_for_detection, _iter_shell_command_word_spans, _read_shell_word,
+    )
+
+    found: list[tuple[str, str]] = []
+    for _, end, word in _iter_shell_command_word_spans(command):
+        name = os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
+        _, _, nxt = _read_shell_word(command, end)
+        found.append((name, nxt))
     return found
 
 
+def _is_indirect_reader(position: tuple[str, str]) -> bool:
+    name, nxt = position
+    return name in _INDIRECT_READERS or (name in {"bash", "sh"} and nxt == "-c")
+
+
+def _sops_value_stdin_present(command: str) -> bool:
+    """True when the command may feed sops from stdin: the text names ``value-stdin`` anywhere (so a
+    substitution counts), or a sops command word has ``set`` and ``--value-stdin`` after quote removal.
+    Conservative: text that only mentions ``value-stdin`` counts too."""
+    from tools.approval_detection import (
+        _deobfuscate_shell_word_for_detection, _iter_shell_command_word_spans, _shell_tokens_with_spans,
+    )
+
+    if "value-stdin" in command:
+        return True
+    for start, _, word in _iter_shell_command_word_spans(command):
+        if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() != "sops":
+            continue
+        tokens = _shell_tokens_with_spans(command, start)
+        if tokens is None:
+            return True
+        words = [token[0] for token in tokens]
+        if "set" in words[1:] and "--value-stdin" in words[words.index("set", 1) + 1:]:
+            return True
+    return False
+
+
 def _sops_stdin_redirection(command: str) -> tuple[str, int, int] | None:
-    """(path, start, end) of the one ``sops set --value-stdin`` file input, or None when the command
-    opens no file. Any other file input is refused: bash opens the path it names."""
+    """(path, start, end) of the one literal ``sops set --value-stdin <scratch-file`` redirect, or None
+    when the command opens no file. Only that redirect is checked and opened here. Any other unquoted
+    ``<`` file input is refused. A heredoc beside sops ``--value-stdin`` is refused too, because masking
+    can hide a file input inside one. Pipes (``cat f | sops``), ``eval``, ``bash -c``, ``source``, ``.``
+    and aliases are not protected; ``run`` refuses only ``eval``, ``bash -c``/``sh -c``, ``source``, ``.``
+    and ``alias`` alongside sops ``--value-stdin``. A heredoc in a command with no sops ``--value-stdin``
+    runs unchanged."""
     import shlex
 
     from tools.approval_detection import (
@@ -272,18 +330,23 @@ def _sops_stdin_redirection(command: str) -> tuple[str, int, int] | None:
         _shell_command_segment, _shell_tokens_with_spans,
     )
 
+    refused = "stdin redirect refused: the only file input allowed is one sops set --value-stdin scratch file"
+    if re.search(r"(?<!<)<<(?!<)", command) and _sops_value_stdin_present(command):
+        raise ValueError("stdin redirect refused: a heredoc beside sops set --value-stdin; "
+                         "use a pipe or here-string")
     operators = _input_redirects(command)
     if not operators:
         return None
-    refused = "stdin redirect refused: the only file input allowed is one sops set --value-stdin scratch file"
     # The detector resolves wrappers (env, command, time, ...) and absolute paths to the executable.
     sops = {start for start, _, word in _iter_shell_command_word_spans(command)
             if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() == "sops"}
     if len(operators) != 1 or len(sops) != 1:
         raise ValueError(refused)
     operator, (start,) = operators[0], sops
-    # The redirect must sit inside the sops command itself, with no fd number before the operator.
-    if not start < operator < start + len(_shell_command_segment(command, start)) or command[operator - 1].isdigit():
+    # The redirect must sit inside the sops command itself, with no fd number before the operator
+    # (``0<f``, ``{v}<f``, ``3<f``) and no other char glued to it.
+    if not start < operator < start + len(_shell_command_segment(command, start)) or (
+            operator and command[operator - 1] in "0123456789}"):
         raise ValueError(refused)
     tokens = _shell_tokens_with_spans(command, start)
     if tokens is None:
@@ -291,6 +354,9 @@ def _sops_stdin_redirection(command: str) -> tuple[str, int, int] | None:
     words = [token[0] for token in tokens]
     if "set" not in words[1:] or "--value-stdin" not in words[words.index("set", 1) + 1:]:
         raise ValueError(refused)
+    # eval, bash -c / sh -c, source, ``.`` and alias can read the same scratch file by another route.
+    if any(_is_indirect_reader(pos) for pos in _command_word_positions(command)):
+        raise ValueError("stdin redirect refused: eval, bash -c, source or alias alongside sops --value-stdin")
     literal = "stdin redirect refused: the sops input must be a literal scratch file path"
     _, path_end, raw_path = _read_shell_word(command, operator + 1)
     if not raw_path or re.search(r"[$`*?\[{~]", raw_path):
