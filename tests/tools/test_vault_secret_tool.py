@@ -324,6 +324,25 @@ def test_run_passes_cat_pipe_sops_stdin_unchecked_as_documented(unlocked, monkey
     assert capture.read_bytes() == b"encrypted value bytes\n"
 
 
+def test_run_passes_eval_quoted_sops_redirect_unchecked_as_documented(unlocked, monkeypatch):
+    """Documented limit: a ``<`` inside an ``eval`` argument is not checked or opened by this module. The
+    shell reads the file itself when eval runs it, so the bytes reach sops without the no-follow open."""
+    vst, tmp = unlocked
+    scratch = _scratch(tmp, monkeypatch, vst)
+    source = scratch / "secret input"
+    source.write_text("encrypted value bytes\n", encoding="utf-8")
+    source.chmod(0o600)
+    capture = _fake_sops(unlocked, monkeypatch)
+    inner = f"sops set --value-stdin \"$K\" 'secrets.yaml' < {shlex.quote(str(source))}"
+    command = f"eval {shlex.quote(inner)}"
+
+    result = _call(vst, action="run", reason="test eval-quoted sops redirect is unchecked",
+                   command=command, workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert result["success"] and result["exit_code"] == 0
+    assert capture.read_bytes() == b"encrypted value bytes\n"
+
+
 def test_run_passes_here_string_sops_stdin_without_opening_a_file(unlocked, monkeypatch):
     vst, tmp = unlocked
     _scratch(tmp, monkeypatch, vst)
@@ -337,19 +356,19 @@ def test_run_passes_here_string_sops_stdin_without_opening_a_file(unlocked, monk
     assert capture.read_bytes() == _AGE.encode() + b"\n"
 
 
-def test_run_refuses_a_heredoc_beside_sops_value_stdin(unlocked, monkeypatch):
-    """Main ruling: any heredoc with sops ``--value-stdin`` is refused, because masking can hide a file
-    input inside a heredoc body. A pipe or here-string still feeds sops."""
+def test_run_passes_a_heredoc_beside_sops_value_stdin_with_no_file_input(unlocked, monkeypatch):
+    """Round-4 rule: a heredoc is refused only with a lone ``<`` (a file input) in the same command. A
+    heredoc with no lone ``<`` names no file, so it runs unchanged and sops receives the body."""
     vst, tmp = unlocked
     _scratch(tmp, monkeypatch, vst)
     capture = _fake_sops(unlocked, monkeypatch)
     command = 'sops set --value-stdin "$K" \'secrets.yaml\' <<EOF\nheredoc body\nEOF'
 
-    result = _call(vst, action="run", reason="test sops heredoc refusal", command=command,
+    result = _call(vst, action="run", reason="test sops heredoc with no file input", command=command,
                    workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
 
-    assert not result["success"] and "heredoc beside sops set --value-stdin" in result["error"]
-    assert not capture.exists()
+    assert result["success"] and result["exit_code"] == 0
+    assert capture.read_bytes() == b"heredoc body\n"
 
 
 def test_run_runs_a_heredoc_when_no_sops_value_stdin_is_present(unlocked, monkeypatch):
@@ -421,6 +440,9 @@ def test_run_routes_every_sops_spelling_of_a_file_stdin_through_the_checked_open
     "echo $((1<<2))\nsops set --value-stdin \"$K\" 'secrets.yaml' < {path}",
     "true # <<true\ntrue\nsops set --value-stdin \"$K\" 'secrets.yaml' < {path}",
     "cat \\'x <<EOF\n'\nEOF\nsops set --value-stdin \"$K\" 'secrets.yaml' < {path}",
+    "cat \\'x <<EOF\n'\nEOF\nsops set --value-std''in \"$K\" 'secrets.yaml' < {path}",
+    "cat \\'x <<EOF\n'\nEOF\ns''ops set --value-stdin \"$K\" 'secrets.yaml' < {path}",
+    "sops set --value-stdin \"$K\" 'secrets.yaml' <<< \"$(<{path})\"",
     "sops set --value-stdin \"$K\" 'secrets.yaml' < {path} ; cat < {path}",
     "cat < {path} | sops set --value-stdin \"$K\" 'secrets.yaml'",
     "true $(cat < {path})",
