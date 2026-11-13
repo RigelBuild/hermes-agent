@@ -1,6 +1,8 @@
 """vault_secret: search any 1Password item, list field labels, and run a command with a field injected."""
 
 import json
+import os
+import shlex
 import stat
 from types import SimpleNamespace
 
@@ -160,6 +162,122 @@ def test_run_injects_the_field_and_redacts_it_in_every_common_form(unlocked):
     import base64
     assert base64.b64encode(_AGE.encode()).decode() not in res["output"]
 
+def _fake_sops(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    binary_dir = tmp / "bin"
+    binary_dir.mkdir()
+    binary = binary_dir / "sops"
+    binary.write_text("#!/bin/sh\ncat > \"$SOPS_STDIN_CAPTURE\"\n", encoding="utf-8")
+    binary.chmod(0o700)
+    capture = tmp / "sops-stdin"
+
+    from tools.environments.local import build_subprocess_env
+
+    def build_env(*, extra=None):
+        env = build_subprocess_env(extra=extra)
+        env["PATH"] = str(binary_dir) + os.pathsep + env["PATH"]
+        env["SOPS_STDIN_CAPTURE"] = str(capture)
+        return env
+
+    monkeypatch.setattr("tools.environments.local.build_subprocess_env", build_env)
+    return capture
+
+
+def _sops_command(path):
+    return f"sops set --value-stdin \"$K\" 'secrets.yaml' < {shlex.quote(str(path))}"
+
+
+def _sops_run(vst, tmp, path):
+    return _call(vst, action="run", reason="test sops secret file input", command=_sops_command(path),
+                 workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+
+def test_run_opens_sops_stdin_before_shell_can_follow_a_swapped_symlink(unlocked, monkeypatch):
+    from tools import approval
+
+    vst, tmp = unlocked
+    scratch = tmp / "scratch"
+    scratch.mkdir(mode=0o700)
+    source = scratch / "secret input"
+    source.write_text("approved source\n", encoding="utf-8")
+    source.chmod(0o600)
+    target = tmp / "ssh-key"
+    target.write_text("swapped target contents\n", encoding="utf-8")
+    target.chmod(0o600)
+    monkeypatch.setattr(vst, "_scratch_root", lambda: str(scratch))
+    capture = _fake_sops(unlocked, monkeypatch)
+    monkeypatch.setattr(approval, "get_current_session_key", lambda default="default": "vault-sops-race")
+    monkeypatch.setattr("tools.approval_context.get_current_session_key",
+                        lambda default="default": "vault-sops-race")
+    monkeypatch.setattr(approval, "is_approved", lambda *_args: False)
+    monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: False)
+    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
+    monkeypatch.setattr("tools.approval_context._get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(approval, "_presence", lambda cb=None: (None, False, True, False))
+    monkeypatch.setattr(approval, "_smart_verdict", lambda display, *_args: "approve")
+    monkeypatch.setattr(approval, "_human_decision", lambda spec, **kwargs: {"approved": True, "message": None})
+
+    approved = approval.request_tool_approval("vault_secret", "test sops secret file input", args={
+        "command": _sops_command(source),
+        "env": {"K": {"item": "op:sopsid", "field": "pk"}},
+    }, review=True)
+    assert approved["approved"]
+    source.unlink()
+    source.symlink_to(target)
+
+    result = _sops_run(vst, tmp, source)
+
+    assert not result["success"]
+    assert not capture.exists(), "the shell or sops read the swapped-in target"
+
+
+def test_run_rejects_hardlinked_sops_stdin_file(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    scratch = tmp / "scratch"
+    scratch.mkdir(mode=0o700)
+    source = scratch / "secret input"
+    source.write_text("secret input\n", encoding="utf-8")
+    source.chmod(0o600)
+    os.link(source, tmp / "second-link")
+    monkeypatch.setattr(vst, "_scratch_root", lambda: str(scratch))
+    capture = _fake_sops(unlocked, monkeypatch)
+
+    result = _sops_run(vst, tmp, source)
+
+    assert not result["success"]
+    assert not capture.exists()
+
+
+def test_run_rejects_wrong_mode_sops_stdin_file(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    scratch = tmp / "scratch"
+    scratch.mkdir(mode=0o700)
+    source = scratch / "secret input"
+    source.write_text("secret input\n", encoding="utf-8")
+    source.chmod(0o640)
+    monkeypatch.setattr(vst, "_scratch_root", lambda: str(scratch))
+    capture = _fake_sops(unlocked, monkeypatch)
+
+    result = _sops_run(vst, tmp, source)
+
+    assert not result["success"]
+    assert not capture.exists()
+
+
+def test_run_passes_open_sops_stdin_file_to_command(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    scratch = tmp / "scratch"
+    scratch.mkdir(mode=0o700)
+    source = scratch / "secret input"
+    source.write_text("encrypted value bytes\n", encoding="utf-8")
+    source.chmod(0o600)
+    monkeypatch.setattr(vst, "_scratch_root", lambda: str(scratch))
+    capture = _fake_sops(unlocked, monkeypatch)
+
+    result = _sops_run(vst, tmp, source)
+
+    assert result["success"] and result["exit_code"] == 0
+    assert capture.read_bytes() == b"encrypted value bytes\n"
 
 
 def test_run_refuses_a_value_too_short_to_redact(unlocked):
@@ -169,6 +287,7 @@ def test_run_refuses_a_value_too_short_to_redact(unlocked):
                 env={"K": {"item": "op:sopsid", "field": "pk"}, "P": {"item": "op:sopsid", "field": "pin"}})
     assert not res["success"] and "P" in res["error"] and "42" not in json.dumps(res)
     assert not (tmp / "ran.txt").exists()
+
 
 def test_run_refuses_reserved_names_and_bad_references(unlocked):
     vst, _ = unlocked

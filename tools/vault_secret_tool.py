@@ -5,7 +5,9 @@ Actions:
 - fields: one item's field ids, labels, sections and types; never values.
 - run: read named fields server-side, inject each as an environment variable of one ``bash -c``
   child, and return its exit code and output with every injected value (and its common
-  encodings) redacted. The value never reaches the model, argv or disk.
+  encodings) redacted. Literal ``sops set --value-stdin`` scratch-file redirects are opened without
+  following links and passed to SOPS as an already-open descriptor; the value never reaches the model,
+  argv or disk.
 
 - create / edit: write one item (off unless ``vault.onepassword.allow_write``). Values come from a
   0600 file under the scratch dir or a command's stdout; an inline value is accepted only for a
@@ -147,8 +149,15 @@ def vault_secret_run(command: str, env: Any, workdir: str = "", timeout: Any = N
 
     child_env = build_subprocess_env(extra=values)
     secrets = list(values.values())
+    stdin_fd = None
     try:
-        proc = subprocess.run(["bash", "-c", command], cwd=cwd, env=child_env, stdin=subprocess.DEVNULL,
+        sops_stdin = _sops_stdin_redirection(command)
+        if sops_stdin:
+            stdin_path, redirection_start, redirection_end = sops_stdin
+            stdin_fd = _open_sops_stdin(stdin_path)
+            command = command[:redirection_start] + "<&0" + command[redirection_end:]
+        proc = subprocess.run(["bash", "-c", command], cwd=cwd, env=child_env,
+                              stdin=stdin_fd if stdin_fd is not None else subprocess.DEVNULL,
                               capture_output=True, text=True, encoding="utf-8", errors="replace",
                               timeout=limit, check=False)
         output, code = (proc.stdout or "") + (proc.stderr or ""), proc.returncode
@@ -156,9 +165,13 @@ def vault_secret_run(command: str, env: Any, workdir: str = "", timeout: Any = N
         partial = exc.stdout or ""
         partial = partial.decode(errors="replace") if isinstance(partial, bytes) else partial
         output, code = partial + f"\n[timed out after {limit}s]", None
+    except (OSError, ValueError) as exc:
+        return _err(str(exc)[:300])
     finally:
         values.clear()
         del child_env
+        if stdin_fd is not None:
+            os.close(stdin_fd)
     output = redact(output, secrets)
     secrets.clear()
     if len(output) > _OUTPUT_LIMIT:
@@ -218,6 +231,67 @@ def _open_under(root: str, rel: str) -> tuple[int, int, str]:
         return dir_fd, os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd), parts[-1]
     except BaseException:
         os.close(dir_fd)
+        raise
+
+def _sops_stdin_redirection(command: str) -> tuple[str, int, int] | None:
+    """Return the SOPS input path and raw source span for its stdin redirect."""
+    import shlex
+
+    from tools.approval_detection import (
+        _iter_shell_command_starts, _read_shell_word, _scan_shell, _shell_tokens_with_spans,
+    )
+
+    redirect = None
+    for start in _iter_shell_command_starts(command):
+        tokens = _shell_tokens_with_spans(command, start)
+        if not tokens or [token[0] for token in tokens[:3]] != ["sops", "set", "--value-stdin"]:
+            continue
+        if len(tokens) < 5:
+            raise ValueError("sops --value-stdin needs one scratch-file input redirect")
+        end = tokens[-1][2]
+        operators = [i for kind, i, _, quote in _scan_shell(command, start, end, subst="uq", comments=True)
+                     if kind == "char" and quote is None and command[i] == "<"]
+        if not operators:
+            raise ValueError("sops --value-stdin needs one scratch-file input redirect")
+        if len(operators) != 1 or redirect is not None:
+            raise ValueError("multiple sops --value-stdin input redirects are refused")
+        operator = operators[0]
+        path_start, path_end, raw_path = _read_shell_word(command, operator + 1)
+        if path_start == path_end or "$" in raw_path or "`" in raw_path:
+            raise ValueError("sops --value-stdin needs one literal scratch-file input redirect")
+        try:
+            path_words = shlex.split(raw_path)
+        except ValueError:
+            raise ValueError("sops --value-stdin needs one literal scratch-file input redirect") from None
+        if len(path_words) != 1 or not path_words[0]:
+            raise ValueError("sops --value-stdin needs one literal scratch-file input redirect")
+        redirect = (path_words[0], operator, path_end)
+
+    return redirect
+
+
+def _open_sops_stdin(path: str) -> int:
+    """Open a scratch input without following links and validate its inode before use."""
+    root, rel = _relative_to_scratch(path)
+    try:
+        dir_fd, fd, _ = _open_under(root, rel)
+    except (OSError, ValueError) as exc:
+        reason = getattr(exc, "strerror", None) or str(exc)
+        raise ValueError(f"{path}: cannot open ({reason}; symlinks are refused)") from None
+    os.close(dir_fd)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"{path}: not a regular file")
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            raise ValueError(f"{path}: mode {stat.S_IMODE(info.st_mode):04o}; expected 0600")
+        if info.st_nlink != 1:
+            raise ValueError(f"{path}: link count {info.st_nlink}; expected 1")
+        if info.st_uid != os.getuid():
+            raise ValueError(f"{path}: not owned by this user")
+        return fd
+    except BaseException:
+        os.close(fd)
         raise
 
 
