@@ -441,14 +441,17 @@ def test_run_passes_a_home_tilde_sops_stdin_path(unlocked, monkeypatch):
     "~",
     "~+/scratch/value",
     "~-/scratch/value",
+    "~other/scratch/value",
+    "~/scratch/value~old",
 ])
 def test_run_refuses_nonliteral_home_tilde_sops_stdin_paths(unlocked, monkeypatch, path):
     vst, tmp = unlocked
     scratch = _scratch(tmp, monkeypatch, vst)
     monkeypatch.setenv("HOME", str(tmp))
-    source = scratch / "value"
-    source.write_text("encrypted value bytes\n", encoding="utf-8")
-    source.chmod(0o600)
+    for name in ("value", "value~old"):
+        source = scratch / name
+        source.write_text("encrypted value bytes\n", encoding="utf-8")
+        source.chmod(0o600)
     capture = _fake_sops(unlocked, monkeypatch)
     command = f'''sops set --value-stdin "$K" 'secrets.yaml' < {path}'''
 
