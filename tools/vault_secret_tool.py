@@ -283,6 +283,8 @@ def _sops_stdin_redirection(command: str) -> tuple[str, int, int] | None:
     when the command opens no file. Only a literal ``<`` on that sops command goes through the checked
     open. Any other unquoted ``<`` file input is refused.
 
+    An unquoted leading ``~/`` path expands against process HOME before the checked fd rewrite.
+
     Not protected, and not checked: any command text built at run time, such as ``eval``, ``trap``,
     ``bash -c``, ``source``, ``.``, aliases, or ``$(printf ...)`` with a ``\\074`` escape. The parser sees
     no ``<`` there, so these run as written. A pipe (``cat f | sops``) is not checked either.
@@ -335,7 +337,8 @@ def _sops_stdin_redirection(command: str) -> tuple[str, int, int] | None:
         raise ValueError(literal)
     path = path_words[0]
     if "~" in path:
-        if not raw_path.startswith("~/") or not path.startswith("~/") or "~" in path[2:]:
+        # Expand against the approver's process HOME; the fd rewrite means bash never sees this tilde.
+        if not raw_path.startswith("~/") or "~" in path[2:]:
             raise ValueError(literal)
         path = os.path.expanduser(path)
     return path, operator, path_end
