@@ -358,7 +358,7 @@ def _maybe_apply_moa_cache_control(
         # blank_cache_policy_stub is the only sanctioned stub (carries _cache_disabled).
         should_cache, native_layout = anthropic_prompt_cache_policy(
             blank_cache_policy_stub(cache_disabled), provider=provider,
-            requested_provider=runtime.get("requested_provider") or provider, base_url=base_url,
+            requested_provider=provider, base_url=base_url,
             api_mode=runtime.get("api_mode") or "", model=model,
         )
         if not should_cache:
@@ -369,7 +369,7 @@ def _maybe_apply_moa_cache_control(
             messages, cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model),
             native_anthropic=native_layout,
             tool_part_markers=envelope_tool_part_cache_markers_supported(
-                provider, base_url, requested_provider=runtime.get("requested_provider") or provider
+                provider, base_url, requested_provider=provider
             ),
         )
     except Exception as exc:  # pragma: no cover - decoration must never break a call
@@ -1194,7 +1194,7 @@ class MoAChatCompletions:
             # Agent TTL + stable system prefix so MoA does not regress 1h → 5m.
             agg_messages, tools = plan_cache_sections_for_destination(
                 planning_messages, tools, provider=agg_runtime.get("provider") or "",
-                requested_provider=agg_runtime.get("requested_provider") or agg_runtime.get("provider") or "",
+                requested_provider=agg_runtime.get("provider") or "",
                 base_url=agg_runtime.get("base_url") or "", api_mode=agg_runtime.get("api_mode") or "",
                 model=agg_runtime.get("model") or "", cache_disabled=cache_disabled, cache_ttl=cache_ttl,
                 static_system_prefix=getattr(_agent, "_cached_system_prompt_static", None),

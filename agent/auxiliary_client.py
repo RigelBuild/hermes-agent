@@ -3854,7 +3854,7 @@ def _replan_synchronous_cache_sections(
     from agent.prompt_caching import is_one_shot_request
     return plan_cache_sections_for_destination(
         messages, tools, provider=destination.provider, base_url=destination.base_url,
-        requested_provider=getattr(destination, "requested_provider", None),
+        requested_provider=destination.requested_provider,
         api_mode=destination.api_mode or "", model=destination.model or "", cache_ttl=configured_cache_ttl(),
         cache_disabled=True if is_one_shot_request(messages, tools) else None,
     )

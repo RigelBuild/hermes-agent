@@ -68,12 +68,11 @@ class TestEnvelopeToolPartMarkerSuppression:
             "custom", "https://gateway.example.com/v1", requested_provider=requested_provider
         )
 
-    @pytest.mark.parametrize("requested_provider", ["custom", ""])
+    @pytest.mark.parametrize("requested_provider", ["custom", "", "custom:foo", "custom:notlitellm"])
     def test_unmarked_requested_provider_keeps_tool_part_markers(self, requested_provider):
         assert envelope_tool_part_cache_markers_supported(
             "custom", "https://gateway.example.com/v1", requested_provider=requested_provider
         )
-
 
     def test_openrouter_route_stays_supported(self):
         assert envelope_tool_part_cache_markers_supported(

@@ -87,6 +87,20 @@ class TestFallbackChainAdvancement:
             assert agent.model == "gpt-4o"
             assert agent._fallback_activated is True
 
+    def test_fallback_route_uses_configured_provider_as_cache_identity(self):
+        agent = _make_agent(fallback_model=[{
+            "provider": "custom", "model": "claude-opus-4.8", "requested_provider": "litellm",
+        }])
+        policy = MagicMock(return_value=(False, False))
+        agent._anthropic_prompt_cache_policy = policy
+
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(_mock_client(base_url="https://gateway.example.com/v1"), "claude-opus-4.8")):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.requested_provider == "custom"
+        assert policy.call_args.kwargs["requested_provider"] == "custom"
+
 
     @patch("time.monotonic", return_value=1000.0)
     def test_records_sequential_switches_in_order(self, _clock):

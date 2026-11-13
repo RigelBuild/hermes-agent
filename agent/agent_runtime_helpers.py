@@ -1678,7 +1678,7 @@ def plan_cache_sections_for_destination(
 
 def _is_litellm_route(provider_lower: str, base_url: str, requested_provider: str = "") -> bool:
     """True when ``litellm`` is a whole delimited token in provider, identity or host."""
-    requested_lower = (requested_provider or "").strip().lower().removeprefix("custom:")
+    requested_lower = (requested_provider or "").strip().lower()
     return (
         _has_litellm_token(provider_lower, ":-_/")
         or _has_litellm_token(requested_lower, ":-_/")
@@ -2438,7 +2438,7 @@ def switch_model(
     if custom_providers is not None:
         agent._custom_providers = custom_providers
     agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy(
-        provider=new_provider, requested_provider=getattr(agent, "requested_provider", new_provider),
+        provider=new_provider, requested_provider=new_provider,
         base_url=agent.base_url, api_mode=api_mode, model=new_model
     )
     if hasattr(agent, "context_compressor") and agent.context_compressor:

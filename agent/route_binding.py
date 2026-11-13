@@ -65,7 +65,7 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     # Clear the per-config context_length override so the new model's own context window is
     # resolved instead of the previous model's stale value (#22387).
     agent._config_context_length = None
-    agent.model, agent.provider, agent.requested_provider = model, provider, entry.get("requested_provider") or provider
+    agent.model, agent.provider, agent.requested_provider = model, provider, provider
     agent.base_url, agent.api_mode = base_url, api_mode
     # reasoning_content echo opt-in travels with the active provider; restore_primary_runtime reverts it.
     agent._reasoning_echo_flag = bool(entry.get("reasoning_echo", False))
@@ -86,7 +86,7 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     sync_credential_pool_entry_id(agent)
 
     agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy(
-        provider=provider, requested_provider=getattr(agent, "requested_provider", provider),
+        provider=provider, requested_provider=provider,
         base_url=base_url, api_mode=api_mode, model=model)
     agent._ensure_lmstudio_runtime_loaded()  # LM Studio: preload before probing context length
     _update_fallback_context_compressor(agent)

@@ -734,7 +734,7 @@ class TestLiteLLMOpenAIWire:
 
         assert agent._anthropic_prompt_cache_policy() == (True, False)
 
-    @pytest.mark.parametrize("requested_provider", ["custom", ""])
+    @pytest.mark.parametrize("requested_provider", ["custom", "", "custom:foo", "custom:notlitellm"])
     def test_unmarked_requested_provider_stays_conservative(self, requested_provider):
         agent = _make_agent(
             provider="custom",
