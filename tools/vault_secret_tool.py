@@ -325,7 +325,7 @@ def _sops_stdin_redirection(command: str) -> tuple[str, int, int] | None:
         raise ValueError(refused)
     literal = "stdin redirect refused: the sops input must be a literal scratch file path"
     _, path_end, raw_path = _read_shell_word(command, operator + 1)
-    if not raw_path or re.search(r"[$`*?\[{~]", raw_path):
+    if not raw_path or re.search(r"[$`*?\[{]", raw_path):
         raise ValueError(literal)
     try:
         path_words = shlex.split(raw_path)
@@ -333,7 +333,12 @@ def _sops_stdin_redirection(command: str) -> tuple[str, int, int] | None:
         raise ValueError(literal) from None
     if len(path_words) != 1 or not path_words[0]:
         raise ValueError(literal)
-    return path_words[0], operator, path_end
+    path = path_words[0]
+    if "~" in path:
+        if not raw_path.startswith("~/") or not path.startswith("~/") or "~" in path[2:]:
+            raise ValueError(literal)
+        path = os.path.expanduser(path)
+    return path, operator, path_end
 
 
 def _open_sops_stdin(path: str, cwd: str) -> int:
