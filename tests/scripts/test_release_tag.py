@@ -24,20 +24,30 @@ with Path(os.environ["GH_STUB_LOG"]).open("a", encoding="utf-8") as log:
     log.write(json.dumps(args) + "\\n")
 mode = os.environ.get("GH_STUB_MODE", "success")
 if "--method" in args and args[args.index("--method") + 1] == "POST":
-    if mode == "422-mismatch":
-        print("gh: HTTP 422: Reference already exists", file=sys.stderr)
+    if mode in {"422-mismatch", "422-same", "422-annotated"}:
+        print(json.dumps({"message": "Reference already exists", "status": "422"}))
+        print("gh: Reference already exists (HTTP 422)", file=sys.stderr)
         sys.exit(1)
+    if mode == "500-failure":
+        print("gh: Internal Server Error (HTTP 500)", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+if any("/git/tags/" in arg for arg in args):
+    print(json.dumps({"object": {"sha": os.environ["GH_STUB_REMOTE_SHA"], "type": "commit"}}))
     sys.exit(0)
 if any("/git/ref/tags/" in arg for arg in args):
     count_file = Path(os.environ["GH_STUB_QUERY_COUNT"])
     count = int(count_file.read_text(encoding="utf-8")) if count_file.exists() else 0
     count += 1
     count_file.write_text(str(count), encoding="utf-8")
-    if mode == "422-mismatch" and count == 1:
+    if mode in {"422-mismatch", "422-same", "422-annotated"} and count == 1:
         sys.exit(1)
     sha = os.environ.get("GH_STUB_REMOTE_SHA")
     if sha:
-        print(sha)
+        if mode in {"annotated", "422-annotated"}:
+            print(json.dumps({"object": {"sha": "tag-object-sha", "type": "tag"}}))
+        else:
+            print(json.dumps({"object": {"sha": sha, "type": "commit"}}))
         sys.exit(0)
     sys.exit(1)
 sys.exit(2)
@@ -73,7 +83,9 @@ def git_case(tmp_path: Path) -> GitCase:
 
 
 def _git(repo: Path, *args: str) -> str:
-    result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, encoding="utf-8", check=True
+    )
     return result.stdout.strip()
 
 
@@ -102,7 +114,10 @@ def _run(case: GitCase, *args: str, **env: str) -> subprocess.CompletedProcess[s
 
 
 def _post_sha(case: GitCase) -> str:
-    calls = [json.loads(line) for line in Path(case.env["GH_STUB_LOG"]).read_text(encoding="utf-8").splitlines()]
+    calls = [
+        json.loads(line)
+        for line in Path(case.env["GH_STUB_LOG"]).read_text(encoding="utf-8-sig").splitlines()
+    ]
     post = next(call for call in calls if "--method" in call)
     return next(arg.removeprefix("sha=") for arg in post if arg.startswith("sha="))
 
@@ -126,6 +141,37 @@ def test_check_pr_accepts_next_release_number(git_case: GitCase) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "2026.9.24-rigel.2 is the next release version" in result.stdout
+
+
+def test_check_pr_accepts_version_already_at_base_tip(git_case: GitCase) -> None:
+    ancestor = _commit(git_case.repo, "first version", version="2026.9.24-rigel.1")
+    _git(git_case.repo, "switch", "-c", "pull-request")
+    head = _commit(git_case.repo, "bump version", version="2026.9.24-rigel.2")
+    _git(git_case.repo, "switch", "--detach", ancestor)
+    base_tip = _commit(git_case.repo, "base independently reaches version", version="2026.9.24-rigel.2")
+
+    result = _run(git_case, "check-pr", base_tip, head)
+
+    assert result.returncode == 0, result.stderr
+    assert ".github/rigel-version version is unchanged" in result.stdout
+
+
+@pytest.mark.parametrize(("version", "returncode"), [("2026.9.24-rigel.10", 0), ("2026.9.24-rigel.3", 1)])
+def test_check_pr_uses_numeric_maximum_release_tag(
+    git_case: GitCase, version: str, returncode: int
+) -> None:
+    base = _commit(git_case.repo, "version nine", version="2026.9.24-rigel.9")
+    _git(git_case.repo, "tag", "v2026.9.24-rigel.9", base)
+    _git(git_case.repo, "tag", "v2026.9.24-rigel.2", base)
+    head = _commit(git_case.repo, "set next version", version=version)
+
+    result = _run(git_case, "check-pr", base, head)
+
+    assert result.returncode == returncode, result.stderr
+    if returncode == 0:
+        assert f"{version} is the next release version" in result.stdout
+    else:
+        assert "expected 2026.9.24-rigel.10, got 2026.9.24-rigel.3" in result.stderr
 
 
 def test_check_pr_rejects_skipped_release_number(git_case: GitCase) -> None:
@@ -234,3 +280,96 @@ def test_mint_rejects_422_tag_race_at_different_commit(git_case: GitCase) -> Non
 
     assert result.returncode == 1
     assert f"already exists at {release_commit}, expected {bump}" in result.stderr
+
+
+def test_mint_walks_first_parent_when_merge_version_is_on_second_parent(git_case: GitCase) -> None:
+    base = _commit(git_case.repo, "first release version", version="2026.9.24-rigel.1")
+    _git(git_case.repo, "tag", "v2026.9.24-rigel.1", base)
+    _git(git_case.repo, "switch", "-c", "version-branch")
+    second_parent = _commit(git_case.repo, "set second release version", version="2026.9.24-rigel.2")
+    _git(git_case.repo, "switch", "--detach", base)
+    _commit(git_case.repo, "first-parent-only change", note="first parent\n")
+    _git(git_case.repo, "merge", "--no-ff", "version-branch", "-m", "merge version branch")
+    merge_commit = _git(git_case.repo, "rev-parse", "HEAD")
+
+    result = _run(git_case, "mint", merge_commit, "RigelBuild/hermes-agent")
+
+    assert result.returncode == 0, result.stderr
+    assert _post_sha(git_case) == merge_commit
+    assert _post_sha(git_case) != second_parent
+
+
+def test_mint_accepts_annotated_remote_tag_at_target(git_case: GitCase) -> None:
+    bump = _commit(git_case.repo, "first release version", version="2026.9.24-rigel.1")
+    release_commit = _commit(git_case.repo, "follow-up release commit", note="follow-up\n")
+
+    result = _run(
+        git_case,
+        "mint",
+        release_commit,
+        "RigelBuild/hermes-agent",
+        GH_STUB_MODE="annotated",
+        GH_STUB_REMOTE_SHA=bump,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"v2026.9.24-rigel.1 already points at {bump}" in result.stdout
+
+
+def test_mint_accepts_annotated_tag_won_by_422_race(git_case: GitCase) -> None:
+    bump = _commit(git_case.repo, "first release version", version="2026.9.24-rigel.1")
+    release_commit = _commit(git_case.repo, "follow-up release commit", note="follow-up\n")
+
+    result = _run(
+        git_case,
+        "mint",
+        release_commit,
+        "RigelBuild/hermes-agent",
+        GH_STUB_MODE="422-annotated",
+        GH_STUB_REMOTE_SHA=bump,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"v2026.9.24-rigel.1 already points at {bump}" in result.stdout
+
+
+def test_mint_rejects_remote_tag_at_different_commit(git_case: GitCase) -> None:
+    bump = _commit(git_case.repo, "first release version", version="2026.9.24-rigel.1")
+    release_commit = _commit(git_case.repo, "follow-up release commit", note="follow-up\n")
+
+    result = _run(
+        git_case,
+        "mint",
+        release_commit,
+        "RigelBuild/hermes-agent",
+        GH_STUB_REMOTE_SHA=release_commit,
+    )
+
+    assert result.returncode == 1
+    assert f"already exists at {release_commit}, expected {bump}" in result.stderr
+
+
+def test_mint_reports_non_422_post_failure(git_case: GitCase) -> None:
+    bump = _commit(git_case.repo, "first release version", version="2026.9.24-rigel.1")
+
+    result = _run(git_case, "mint", bump, "RigelBuild/hermes-agent", GH_STUB_MODE="500-failure")
+
+    assert result.returncode == 1
+    assert "gh: Internal Server Error (HTTP 500)" in result.stderr
+
+
+def test_mint_accepts_422_race_when_remote_tag_already_points_at_target(git_case: GitCase) -> None:
+    bump = _commit(git_case.repo, "first release version", version="2026.9.24-rigel.1")
+
+    result = _run(
+        git_case,
+        "mint",
+        bump,
+        "RigelBuild/hermes-agent",
+        GH_STUB_MODE="422-same",
+        GH_STUB_REMOTE_SHA=bump,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "already points at" in result.stdout
+    assert f"v2026.9.24-rigel.1 already points at {bump}" in result.stdout

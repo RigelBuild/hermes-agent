@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -79,7 +80,8 @@ def check_pr(base_sha: str, head_sha: str) -> None:
 
     base_version = version_at(merge_base, required=False)
     head_version = version_at(head_sha)
-    if base_version == head_version:
+    base_tip_version = version_at(base_sha, required=False)
+    if base_version == head_version or head_version == base_tip_version:
         print(f"{VERSION_FILE} version is unchanged; no release version check is needed")
         return
     validate_next_version(head_version)
@@ -97,11 +99,21 @@ def _tag_commit(tag: str) -> str | None:
     return commit.stdout.strip()
 
 
+def _peel_remote_tag(repo: str, tag_object: dict[str, str]) -> str:
+    if tag_object["type"] != "tag":
+        return tag_object["sha"]
+    result = _run(["gh", "api", f"repos/{repo}/git/tags/{tag_object['sha']}"])
+    if result.returncode:
+        raise ReleaseTagError(result.stderr.strip() or result.stdout.strip() or f"gh exited {result.returncode}")
+    return json.loads(result.stdout)["object"]["sha"]
+
+
 def _remote_tag_commit(repo: str, tag: str) -> str | None:
-    result = _run(["gh", "api", f"repos/{repo}/git/ref/tags/{tag}", "--jq", ".object.sha"])
+    result = _run(["gh", "api", f"repos/{repo}/git/ref/tags/{tag}"])
     if result.returncode:
         return None
-    return result.stdout.strip()
+    tag_ref = json.loads(result.stdout)
+    return _peel_remote_tag(repo, tag_ref["object"])
 
 
 def _check_existing_tag(repo: str, tag: str, target: str) -> bool:
@@ -155,10 +167,11 @@ def mint(sha: str, repo: str) -> None:
 
     output = response.stdout + response.stderr
     if "HTTP 422" in output and "Reference already exists" in output:
-        actual_result = _run(["gh", "api", f"repos/{repo}/git/ref/tags/{tag}", "--jq", ".object.sha"])
+        actual_result = _run(["gh", "api", f"repos/{repo}/git/ref/tags/{tag}"])
         if actual_result.returncode:
             raise ReleaseTagError(actual_result.stderr.strip() or actual_result.stdout.strip())
-        actual = actual_result.stdout.strip()
+        tag_ref = json.loads(actual_result.stdout)
+        actual = _peel_remote_tag(repo, tag_ref["object"])
         if actual == target:
             print(f"{tag} already points at {target}")
             return
