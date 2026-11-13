@@ -154,19 +154,20 @@ def vault_secret_run(command: str, env: Any, workdir: str = "", timeout: Any = N
         sops_stdin = _sops_stdin_redirection(command)
         if sops_stdin:
             stdin_path, redirection_start, redirection_end = sops_stdin
-            stdin_fd = _open_sops_stdin(stdin_path)
-            command = command[:redirection_start] + "<&0" + command[redirection_end:]
-        proc = subprocess.run(["bash", "-c", command], cwd=cwd, env=child_env,
-                              stdin=stdin_fd if stdin_fd is not None else subprocess.DEVNULL,
+            stdin_fd = _open_sops_stdin(stdin_path, cwd)
+            command = command[:redirection_start] + f"<&{stdin_fd}" + command[redirection_end:]
+        proc = subprocess.run(["bash", "-c", command], cwd=cwd, env=child_env, stdin=subprocess.DEVNULL,
                               capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=limit, check=False)
+                              timeout=limit, check=False, pass_fds=(stdin_fd,) if stdin_fd is not None else ())
         output, code = (proc.stdout or "") + (proc.stderr or ""), proc.returncode
     except subprocess.TimeoutExpired as exc:
         partial = exc.stdout or ""
         partial = partial.decode(errors="replace") if isinstance(partial, bytes) else partial
         output, code = partial + f"\n[timed out after {limit}s]", None
     except (OSError, ValueError) as exc:
-        return _err(str(exc)[:300])
+        secrets_message = redact(str(exc), secrets)[:300]
+        secrets.clear()
+        return _err(secrets_message)
     finally:
         values.clear()
         del child_env
@@ -233,45 +234,82 @@ def _open_under(root: str, rel: str) -> tuple[int, int, str]:
         os.close(dir_fd)
         raise
 
+
+def _input_redirects(command: str) -> list[int]:
+    """Offsets of every unquoted ``<`` that opens a file. Heredoc bodies are blanked first (offsets
+    are kept), so a quote inside a body cannot hide a later redirect. ``<<`` and ``<<<`` name no file.
+    The scanner does not track ANSI-C ``$'...'`` quoting, so when it is present every ``<`` counts."""
+    from tools.approval_detection import _scan_shell
+    from tools.self_repo_guard import _mask_heredocs
+
+    text, _ = _mask_heredocs(command)
+
+    def opens_file(i: int) -> bool:
+        return text[i] == "<" and not text.startswith("<<", i) and not (i and text[i - 1] == "<")
+
+    if "$'" in text:
+        return [i for i in range(len(text)) if opens_file(i)]
+    found: list[int] = []
+
+    def walk(start: int, end: int) -> None:
+        for kind, i, j, quote in _scan_shell(text, start, end, subst="uq", comments=True):
+            if kind == "subst":  # $(...) and backticks run their own commands, so scan inside them too
+                walk(i + (2 if text.startswith("$(", i) else 1), j - 1)
+            elif kind == "char" and quote is None and opens_file(i):
+                found.append(i)
+
+    walk(0, len(text))
+    return found
+
+
 def _sops_stdin_redirection(command: str) -> tuple[str, int, int] | None:
-    """Return the SOPS input path and raw source span for its stdin redirect."""
+    """(path, start, end) of the one ``sops set --value-stdin`` file input, or None when the command
+    opens no file. Any other file input is refused: bash opens the path it names."""
     import shlex
 
     from tools.approval_detection import (
-        _iter_shell_command_starts, _read_shell_word, _scan_shell, _shell_tokens_with_spans,
+        _deobfuscate_shell_word_for_detection, _iter_shell_command_word_spans, _read_shell_word,
+        _shell_command_segment, _shell_tokens_with_spans,
     )
 
-    redirect = None
-    for start in _iter_shell_command_starts(command):
-        tokens = _shell_tokens_with_spans(command, start)
-        if not tokens or [token[0] for token in tokens[:3]] != ["sops", "set", "--value-stdin"]:
-            continue
-        if len(tokens) < 5:
-            raise ValueError("sops --value-stdin needs one scratch-file input redirect")
-        end = tokens[-1][2]
-        operators = [i for kind, i, _, quote in _scan_shell(command, start, end, subst="uq", comments=True)
-                     if kind == "char" and quote is None and command[i] == "<"]
-        if not operators:
-            raise ValueError("sops --value-stdin needs one scratch-file input redirect")
-        if len(operators) != 1 or redirect is not None:
-            raise ValueError("multiple sops --value-stdin input redirects are refused")
-        operator = operators[0]
-        path_start, path_end, raw_path = _read_shell_word(command, operator + 1)
-        if path_start == path_end or "$" in raw_path or "`" in raw_path:
-            raise ValueError("sops --value-stdin needs one literal scratch-file input redirect")
-        try:
-            path_words = shlex.split(raw_path)
-        except ValueError:
-            raise ValueError("sops --value-stdin needs one literal scratch-file input redirect") from None
-        if len(path_words) != 1 or not path_words[0]:
-            raise ValueError("sops --value-stdin needs one literal scratch-file input redirect")
-        redirect = (path_words[0], operator, path_end)
+    operators = _input_redirects(command)
+    if not operators:
+        return None
+    refused = "stdin redirect refused: the only file input allowed is one sops set --value-stdin scratch file"
+    # The detector resolves wrappers (env, command, time, ...) and absolute paths to the executable.
+    sops = {start for start, _, word in _iter_shell_command_word_spans(command)
+            if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() == "sops"}
+    if len(operators) != 1 or len(sops) != 1:
+        raise ValueError(refused)
+    operator, (start,) = operators[0], sops
+    # The redirect must sit inside the sops command itself, with no fd number before the operator.
+    if not start < operator < start + len(_shell_command_segment(command, start)) or command[operator - 1].isdigit():
+        raise ValueError(refused)
+    tokens = _shell_tokens_with_spans(command, start)
+    if tokens is None:
+        raise ValueError("stdin redirect refused: cannot parse the sops command")
+    words = [token[0] for token in tokens]
+    if "set" not in words[1:] or "--value-stdin" not in words[words.index("set", 1) + 1:]:
+        raise ValueError(refused)
+    literal = "stdin redirect refused: the sops input must be a literal scratch file path"
+    _, path_end, raw_path = _read_shell_word(command, operator + 1)
+    if not raw_path or re.search(r"[$`*?\[{~]", raw_path):
+        raise ValueError(literal)
+    try:
+        path_words = shlex.split(raw_path)
+    except ValueError:
+        raise ValueError(literal) from None
+    if len(path_words) != 1 or not path_words[0]:
+        raise ValueError(literal)
+    return path_words[0], operator, path_end
 
-    return redirect
 
-
-def _open_sops_stdin(path: str) -> int:
+def _open_sops_stdin(path: str, cwd: str) -> int:
     """Open a scratch input without following links and validate its inode before use."""
+    # A path swap between approval and open is not bound to the approved inode;
+    # binding it needs an approval handshake, tracked as separate work.
+    if not os.path.isabs(path):
+        path = os.path.join(cwd, path)
     root, rel = _relative_to_scratch(path)
     try:
         dir_fd, fd, _ = _open_under(root, rel)
@@ -283,8 +321,8 @@ def _open_sops_stdin(path: str) -> int:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
             raise ValueError(f"{path}: not a regular file")
-        if stat.S_IMODE(info.st_mode) != 0o600:
-            raise ValueError(f"{path}: mode {stat.S_IMODE(info.st_mode):04o}; expected 0600")
+        if info.st_mode & 0o077:
+            raise ValueError(f"{path}: mode {stat.S_IMODE(info.st_mode):04o}; group/other access refused")
         if info.st_nlink != 1:
             raise ValueError(f"{path}: link count {info.st_nlink}; expected 1")
         if info.st_uid != os.getuid():
