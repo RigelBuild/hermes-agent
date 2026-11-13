@@ -100,12 +100,18 @@ def _tag_commit(tag: str) -> str | None:
 
 
 def _peel_remote_tag(repo: str, tag_object: dict[str, str]) -> str:
-    if tag_object["type"] != "tag":
-        return tag_object["sha"]
-    result = _run(["gh", "api", f"repos/{repo}/git/tags/{tag_object['sha']}"])
-    if result.returncode:
-        raise ReleaseTagError(result.stderr.strip() or result.stdout.strip() or f"gh exited {result.returncode}")
-    return json.loads(result.stdout)["object"]["sha"]
+    for _ in range(5):
+        if tag_object["type"] != "tag":
+            return tag_object["sha"]
+        result = _run(["gh", "api", f"repos/{repo}/git/tags/{tag_object['sha']}"])
+        if result.returncode:
+            raise ReleaseTagError(
+                result.stderr.strip() or result.stdout.strip() or f"gh exited {result.returncode}"
+            )
+        tag_object = json.loads(result.stdout)["object"]
+    if tag_object["type"] == "tag":
+        raise ReleaseTagError("::error::annotated remote tag exceeds maximum peel depth of 5")
+    return tag_object["sha"]
 
 
 def _remote_tag_commit(repo: str, tag: str) -> str | None:

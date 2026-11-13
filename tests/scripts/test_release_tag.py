@@ -33,8 +33,19 @@ if "--method" in args and args[args.index("--method") + 1] == "POST":
         sys.exit(1)
     sys.exit(0)
 if any("/git/tags/" in arg for arg in args):
-    print(json.dumps({"object": {"sha": os.environ["GH_STUB_REMOTE_SHA"], "type": "commit"}}))
-    sys.exit(0)
+    tag_endpoint = next(arg for arg in args if "/git/tags/" in arg)
+    if tag_endpoint.endswith("/git/tags/tag-object-sha"):
+        if mode == "annotated-nested":
+            print(json.dumps({"object": {"sha": "nested-tag-object-sha", "type": "tag"}}))
+        elif mode in {"annotated", "422-annotated"}:
+            print(json.dumps({"object": {"sha": os.environ["GH_STUB_REMOTE_SHA"], "type": "commit"}}))
+        else:
+            sys.exit(1)
+        sys.exit(0)
+    if tag_endpoint.endswith("/git/tags/nested-tag-object-sha") and mode == "annotated-nested":
+        print(json.dumps({"object": {"sha": os.environ["GH_STUB_REMOTE_SHA"], "type": "commit"}}))
+        sys.exit(0)
+    sys.exit(1)
 if any("/git/ref/tags/" in arg for arg in args):
     count_file = Path(os.environ["GH_STUB_QUERY_COUNT"])
     count = int(count_file.read_text(encoding="utf-8")) if count_file.exists() else 0
@@ -44,7 +55,7 @@ if any("/git/ref/tags/" in arg for arg in args):
         sys.exit(1)
     sha = os.environ.get("GH_STUB_REMOTE_SHA")
     if sha:
-        if mode in {"annotated", "422-annotated"}:
+        if mode in {"annotated", "422-annotated", "annotated-nested"}:
             print(json.dumps({"object": {"sha": "tag-object-sha", "type": "tag"}}))
         else:
             print(json.dumps({"object": {"sha": sha, "type": "commit"}}))
@@ -156,13 +167,13 @@ def test_check_pr_accepts_version_already_at_base_tip(git_case: GitCase) -> None
     assert ".github/rigel-version version is unchanged" in result.stdout
 
 
-@pytest.mark.parametrize(("version", "returncode"), [("2026.9.24-rigel.10", 0), ("2026.9.24-rigel.3", 1)])
+@pytest.mark.parametrize(("version", "returncode"), [("2026.9.24-rigel.11", 0), ("2026.9.24-rigel.10", 1)])
 def test_check_pr_uses_numeric_maximum_release_tag(
     git_case: GitCase, version: str, returncode: int
 ) -> None:
     base = _commit(git_case.repo, "version nine", version="2026.9.24-rigel.9")
     _git(git_case.repo, "tag", "v2026.9.24-rigel.9", base)
-    _git(git_case.repo, "tag", "v2026.9.24-rigel.2", base)
+    _git(git_case.repo, "tag", "v2026.9.24-rigel.10", base)
     head = _commit(git_case.repo, "set next version", version=version)
 
     result = _run(git_case, "check-pr", base, head)
@@ -171,8 +182,7 @@ def test_check_pr_uses_numeric_maximum_release_tag(
     if returncode == 0:
         assert f"{version} is the next release version" in result.stdout
     else:
-        assert "expected 2026.9.24-rigel.10, got 2026.9.24-rigel.3" in result.stderr
-
+        assert "expected 2026.9.24-rigel.11" in result.stderr
 
 def test_check_pr_rejects_skipped_release_number(git_case: GitCase) -> None:
     base = _commit(git_case.repo, "first version", version="2026.9.24-rigel.1")
@@ -280,6 +290,23 @@ def test_mint_rejects_422_tag_race_at_different_commit(git_case: GitCase) -> Non
 
     assert result.returncode == 1
     assert f"already exists at {release_commit}, expected {bump}" in result.stderr
+
+
+def test_mint_accepts_nested_annotated_remote_tag(git_case: GitCase) -> None:
+    bump = _commit(git_case.repo, "first release version", version="2026.9.24-rigel.1")
+    release_commit = _commit(git_case.repo, "follow-up release commit", note="follow-up\n")
+
+    result = _run(
+        git_case,
+        "mint",
+        release_commit,
+        "RigelBuild/hermes-agent",
+        GH_STUB_MODE="annotated-nested",
+        GH_STUB_REMOTE_SHA=bump,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"v2026.9.24-rigel.1 already points at {bump}" in result.stdout
 
 
 def test_mint_walks_first_parent_when_merge_version_is_on_second_parent(git_case: GitCase) -> None:
