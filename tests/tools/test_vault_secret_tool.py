@@ -417,21 +417,66 @@ def test_run_runs_a_heredoc_when_no_sops_value_stdin_is_present(unlocked, monkey
     assert "plain heredoc body" in result["output"]
 
 
-def test_run_refuses_a_tilde_sops_stdin_path(unlocked, monkeypatch):
+def test_run_passes_a_home_tilde_sops_stdin_path(unlocked, monkeypatch):
     vst, tmp = unlocked
     scratch = _scratch(tmp, monkeypatch, vst)
-    source = scratch / "secret input"
+    monkeypatch.setenv("HOME", str(tmp))
+    source = scratch / "value"
     source.write_text("encrypted value bytes\n", encoding="utf-8")
     source.chmod(0o600)
     capture = _fake_sops(unlocked, monkeypatch)
-    command = "sops set --value-stdin \"$K\" 'secrets.yaml' < ~/secret-input"
+    command = "sops set --value-stdin \"$K\" 'secrets.yaml' < ~/scratch/value"
 
     result = _call(vst, action="run", reason="test sops tilde stdin path", command=command,
+                   workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert result["success"] and result["exit_code"] == 0
+    assert capture.read_bytes() == b"encrypted value bytes\n"
+
+
+@pytest.mark.parametrize("path", [
+    "'~/scratch/value'",
+    '"~/scratch/value"',
+    r"\~/scratch/value",
+    "~",
+    "~+/scratch/value",
+    "~-/scratch/value",
+    "~other/scratch/value",
+    "~/scratch/value~old",
+])
+def test_run_refuses_nonliteral_home_tilde_sops_stdin_paths(unlocked, monkeypatch, path):
+    vst, tmp = unlocked
+    scratch = _scratch(tmp, monkeypatch, vst)
+    monkeypatch.setenv("HOME", str(tmp))
+    for name in ("value", "value~old"):
+        source = scratch / name
+        source.write_text("encrypted value bytes\n", encoding="utf-8")
+        source.chmod(0o600)
+    capture = _fake_sops(unlocked, monkeypatch)
+    command = f'''sops set --value-stdin "$K" 'secrets.yaml' < {path}'''
+
+    result = _call(vst, action="run", reason="test refused nonliteral sops tilde stdin path", command=command,
                    workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
 
     assert not result["success"] and "stdin redirect refused" in result["error"]
     assert not capture.exists()
 
+
+def test_run_refuses_a_home_tilde_sops_stdin_path_outside_scratch(unlocked, monkeypatch):
+    vst, tmp = unlocked
+    _scratch(tmp, monkeypatch, vst)
+    monkeypatch.setenv("HOME", str(tmp))
+    source = tmp / "outside"
+    source.write_text("outside scratch\n", encoding="utf-8")
+    source.chmod(0o600)
+    capture = _fake_sops(unlocked, monkeypatch)
+    command = "sops set --value-stdin \"$K\" 'secrets.yaml' < ~/scratch/../outside"
+
+    result = _call(vst, action="run", reason="test sops tilde stdin outside scratch", command=command,
+                   workdir=str(tmp), env={"K": {"item": "op:sopsid", "field": "pk"}})
+
+    assert not result["success"] and "must be under the Hermes scratch dir" in result["error"]
+    assert not capture.exists()
 
 @pytest.mark.parametrize("command, reaches_fake_sops", [
     ("sops set --value-stdin \"$K\" 'secrets.yaml' < {path}", True),
