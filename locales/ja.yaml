@@ -911,6 +911,7 @@ gateway:
     unavailable: "ハートビートは利用できません (セッションなし)。"
     paused: "⏸ ハートビートを一時停止しました: {prompt}"
     none_set: "ハートビートは設定されていません。"
+    needs_admission: "send a normal message in this channel first, then set the heartbeat"
     no_resume: "再開するハートビートがありません。"
     resumed: "▶ ハートビートを再開しました ({interval} ごと): {prompt}"
     cleared: "✓ ハートビートをクリアしました。"

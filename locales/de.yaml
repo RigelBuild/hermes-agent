@@ -911,6 +911,7 @@ gateway:
     unavailable: "Heartbeats nicht verfügbar (keine Sitzung)."
     paused: "⏸ Heartbeat pausiert: {prompt}"
     none_set: "Kein Heartbeat gesetzt."
+    needs_admission: "send a normal message in this channel first, then set the heartbeat"
     no_resume: "Kein Heartbeat zum Fortsetzen vorhanden."
     resumed: "▶ Heartbeat fortgesetzt (alle {interval}): {prompt}"
     cleared: "✓ Heartbeat gelöscht."

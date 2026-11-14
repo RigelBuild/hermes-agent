@@ -911,6 +911,7 @@ gateway:
     unavailable: "心跳不可用（没有会话）。"
     paused: "⏸ 心跳已暂停：{prompt}"
     none_set: "未设置心跳。"
+    needs_admission: "send a normal message in this channel first, then set the heartbeat"
     no_resume: "没有可恢复的心跳。"
     resumed: "▶ 心跳已恢复（每 {interval}）：{prompt}"
     cleared: "✓ 心跳已清除。"

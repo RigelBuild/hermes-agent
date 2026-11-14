@@ -8,7 +8,10 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
-from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND, display_kind_for_event
+from gateway.response_filters import (
+    INTERNAL_NOTIFICATION_DISPLAY_KIND,
+    display_kind_for_event,
+)
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 from hermes_cli.heartbeat import HeartbeatManager
@@ -38,9 +41,17 @@ def poller(monkeypatch):
     goals._get_session_db()
     clock = SimpleNamespace(now=1000.0)
     monkeypatch.setattr(heartbeat, "time", SimpleNamespace(time=lambda: clock.now))
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", user_id="42", chat_type="dm", message_id="watch-cmd")
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="42",
+        user_id="42",
+        chat_type="dm",
+        message_id="watch-cmd",
+    )
     key = build_session_key(source)
-    adapter = _HeartbeatAdapter(PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM)
+    adapter = _HeartbeatAdapter(
+        PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM
+    )
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
     runner._delivery_adapter_for = lambda source: adapter
@@ -70,7 +81,9 @@ async def test_idle_wake_coalesces_intervals_while_adapter_owns_turn(poller):
     try:
         clock.now += 60
         await runner._heartbeat_poll_once(watch)
-        assert key in adapter._active_sessions, "idle poll must start a turn, not park it in FIFO"
+        assert key in adapter._active_sessions, (
+            "idle poll must start a turn, not park it in FIFO"
+        )
         await asyncio.wait_for(started.wait(), 2)
         for _ in range(14):
             clock.now += 60
@@ -104,7 +117,11 @@ async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
         event._heartbeat_execution_started = True  # fake agent execution boundary
 
     adapter.set_message_handler(handler)
-    for state in (runner._running_agents, adapter._active_sessions, adapter._pending_messages):
+    for state in (
+        runner._running_agents,
+        adapter._active_sessions,
+        adapter._pending_messages,
+    ):
         state[key] = user
         await runner._heartbeat_poll_once(watch)
         assert state[key] is user
@@ -121,14 +138,18 @@ async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
 @pytest.mark.parametrize(
     "chat_id", ["1571155392069763142", "1571157949362081882", "1571263020523327488"]
 )
-async def test_discord_group_slash_only_heartbeat_reports_missing_provenance(monkeypatch, caplog, chat_id):
+@pytest.mark.parametrize(
+    "command", ["/heartbeat every 1m check status", "/heartbeat resume"]
+)
+async def test_discord_group_slash_only_heartbeat_is_refused(
+    monkeypatch, chat_id, command
+):
     from tests.gateway.test_authority_lane_moves_on import _chat, _gateway
-    from hermes_cli import heartbeat
     from hermes_state_runtime import list_session_admissions
 
     user_id = "1385361904591044669"
     runner, adapter, authority, _, sent, _, _ = await _gateway(monkeypatch)
-    monkeypatch.setenv("DISCORD_ALLOWED_USERS", user_id)  # _gateway sets its own default
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", user_id)
     source = adapter.build_source(
         chat_id=chat_id,
         chat_type="group",
@@ -137,23 +158,129 @@ async def test_discord_group_slash_only_heartbeat_reports_missing_provenance(mon
         guild_id="1477066497896742955",
     )
     key = runner._session_key_for_source(source)
-    assert key == f"agent:main:discord:group:{chat_id}:{user_id}"
+    if command == "/heartbeat resume":
+        session_entry = await runner.async_session_store.get_or_create_session(source)
+        seeded_manager = HeartbeatManager(session_entry.session_id)
+        seeded_manager.set("check status", 60)
+        seeded_manager.pause()
+        before_resume = seeded_manager.state
     monkeypatch.setattr(runner, "_start_heartbeat_poller", lambda: None)
-    await _chat(adapter, source, sent, "/heartbeat every 1m check status")
+
+    await _chat(adapter, source, sent, command)
+
     session_id = runner.session_store.peek_session_id(key)
     state = HeartbeatManager(session_id).state
+    if command == "/heartbeat resume":
+        assert state.status == "paused"
+        assert (state.created_at, state.fire_count) == (
+            before_resume.created_at,
+            before_resume.fire_count,
+        )
+    else:
+        assert state is None
+    assert not list_session_admissions(
+        authority.db, session_id=session_id, pending_only=False
+    )
+    from agent.i18n import t
+
+    assert sent[-1] == t("gateway.heartbeat.needs_admission")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "chat_id", ["1571155392069763142", "1571157949362081882", "1571263020523327488"]
+)
+@pytest.mark.parametrize(
+    "command", ["/heartbeat every 1m check status", "/heartbeat resume"]
+)
+async def test_discord_group_heartbeat_is_allowed_after_native_message(
+    monkeypatch, chat_id, command
+):
+    from tests.gateway.test_authority_lane_moves_on import _chat, _gateway
+
+    user_id = "1385361904591044669"
+    runner, adapter, _, _, sent, _, _ = await _gateway(monkeypatch)
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", user_id)
+    source = adapter.build_source(
+        chat_id=chat_id,
+        chat_type="group",
+        user_id=user_id,
+        scope_id="1477066497896742955",
+        guild_id="1477066497896742955",
+    )
+    await _chat(adapter, source, sent, "check status")
+
+    if command == "/heartbeat resume":
+        session_id = runner.session_store.peek_session_id(
+            runner._session_key_for_source(source)
+        )
+        manager = HeartbeatManager(session_id)
+        manager.set("check status", 60)
+        manager.pause()
+
+    monkeypatch.setattr(runner, "_start_heartbeat_poller", lambda: None)
+    await _chat(adapter, source, sent, command)
+
+    session_id = runner.session_store.peek_session_id(
+        runner._session_key_for_source(source)
+    )
+    state = HeartbeatManager(session_id).state
     assert state is not None and state.status == "active"
-    monkeypatch.setattr(heartbeat, "time", SimpleNamespace(time=lambda: state.created_at + 61))
-    assert not list_session_admissions(authority.db, session_id=session_id, pending_only=False)
+    assert "check status" in sent[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "chat_id", ["1571155392069763142", "1571157949362081882", "1571263020523327488"]
+)
+async def test_discord_group_heartbeat_without_admission_reports_missing_provenance(
+    monkeypatch, caplog, chat_id
+):
+    from tests.gateway.test_authority_lane_moves_on import _gateway
+    from hermes_cli import heartbeat
+    from hermes_state_runtime import list_session_admissions
+
+    user_id = "1385361904591044669"
+    runner, adapter, authority, _, _, _, _ = await _gateway(monkeypatch)
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", user_id)
+    source = adapter.build_source(
+        chat_id=chat_id,
+        chat_type="group",
+        user_id=user_id,
+        scope_id="1477066497896742955",
+        guild_id="1477066497896742955",
+    )
+    key = runner._session_key_for_source(source)
+    session_entry = await runner.async_session_store.get_or_create_session(source)
+    session_id = session_entry.session_id
+    HeartbeatManager(session_id).set("check status", 60)
+    monkeypatch.setattr(runner, "_start_heartbeat_poller", lambda: None)
+    monkeypatch.setattr(
+        heartbeat,
+        "time",
+        SimpleNamespace(
+            time=lambda: HeartbeatManager(session_id).state.created_at + 61
+        ),
+    )
+    assert not list_session_admissions(
+        authority.db, session_id=session_id, pending_only=False
+    )
     caplog.set_level("DEBUG", logger="gateway.run")
-    await runner._heartbeat_poll_once(runner._heartbeat_watch)
-    await runner._heartbeat_poll_once(runner._heartbeat_watch)
+
+    watch = {key: (source, session_id)}
+    await runner._heartbeat_poll_once(watch)
+    await runner._heartbeat_poll_once(watch)
+
     records = [
-        record for record in caplog.records if key in record.message and "route provenance" in record.message
+        record
+        for record in caplog.records
+        if key in record.message and "route provenance" in record.message
     ]
     assert [record.levelname for record in records] == ["WARNING", "DEBUG"]
     assert all("not_found" in record.message for record in records)
-    assert not list_session_admissions(authority.db, session_id=session_id, pending_only=False)
+    assert not list_session_admissions(
+        authority.db, session_id=session_id, pending_only=False
+    )
     assert HeartbeatManager(session_id).state.fire_count == 0
 
 
@@ -167,7 +294,9 @@ async def test_poll_watch_exception_is_warning(poller, monkeypatch, caplog):
     monkeypatch.setattr(runner, "_heartbeat_poll_watch", fail)
     await runner._heartbeat_poll_once(watch)
     assert any(
-        record.levelname == "WARNING" and key in record.message and "poll failed" in record.message
+        record.levelname == "WARNING"
+        and key in record.message
+        and "poll failed" in record.message
         for record in caplog.records
     )
 
@@ -193,7 +322,11 @@ async def test_poll_warning_window_is_per_route_and_reason(poller, monkeypatch, 
     await runner._heartbeat_poll_once({"another": watch[key]})
     clock.now = 3600.0
     await runner._heartbeat_poll_once(watch)
-    assert [record.levelname for record in caplog.records if "heartbeat poll for" in record.message] == [
+    assert [
+        record.levelname
+        for record in caplog.records
+        if "heartbeat poll for" in record.message
+    ] == [
         "WARNING",
         "DEBUG",
         "WARNING",
@@ -203,7 +336,9 @@ async def test_poll_warning_window_is_per_route_and_reason(poller, monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_emergency_stop_holds_due_tick_without_messaging_until_resume(poller, monkeypatch):
+async def test_emergency_stop_holds_due_tick_without_messaging_until_resume(
+    poller, monkeypatch
+):
     """`hermes pause` must not turn a due heartbeat into a chat message on every poll (prod: ~10k
     identical paused notices in 5h); the tick fires normally after `hermes resume`."""
     from agent import estop
@@ -244,7 +379,9 @@ async def test_emergency_stop_holds_due_tick_without_messaging_until_resume(poll
 
 
 @pytest.mark.asyncio
-async def test_emergency_stop_gate_drops_heartbeat_silently_but_tells_real_users(poller, monkeypatch):
+async def test_emergency_stop_gate_drops_heartbeat_silently_but_tells_real_users(
+    poller, monkeypatch
+):
     from agent import estop
 
     runner, adapter, watch, key, _clock = poller

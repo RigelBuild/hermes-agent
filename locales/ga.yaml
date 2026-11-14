@@ -911,6 +911,7 @@ gateway:
     unavailable: "Níl buillí croí ar fáil (gan seisiún)."
     paused: "⏸ Buille croí ar sos: {prompt}"
     none_set: "Níl aon bhuille croí socraithe."
+    needs_admission: "send a normal message in this channel first, then set the heartbeat"
     no_resume: "Níl aon bhuille croí le hatosú."
     resumed: "▶ Buille croí atosaithe (gach {interval}): {prompt}"
     cleared: "✓ Buille croí glanta."

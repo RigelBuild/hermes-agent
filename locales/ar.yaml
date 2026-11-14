@@ -911,6 +911,7 @@ gateway:
     unavailable: "النبض غير متاح (لا توجد جلسة)."
     paused: "⏸ أُوقف النبض مؤقتًا: {prompt}"
     none_set: "لم يُضبط أي نبض."
+    needs_admission: "send a normal message in this channel first, then set the heartbeat"
     no_resume: "لا يوجد نبض لاستئنافه."
     resumed: "▶ استُؤنف النبض (كل {interval}): {prompt}"
     cleared: "✓ تم مسح النبض."
