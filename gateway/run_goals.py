@@ -133,7 +133,7 @@ class GatewayGoalsMixin:
                 with self._profile_scope_for_source(source):
                     await self._heartbeat_poll_watch(watch, quick_key, source, session_id)
             except Exception as exc:
-                logger.debug("heartbeat poll for %s failed: %s", quick_key, exc)
+                logger.warning("heartbeat poll for %s failed: %s", quick_key, exc)
 
     async def _heartbeat_poll_watch(self, watch, quick_key, source, session_id):
         await self._warm_goals_session_db("heartbeat poll")

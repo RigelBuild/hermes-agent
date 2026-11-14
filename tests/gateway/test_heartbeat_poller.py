@@ -113,8 +113,49 @@ async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
     await runner._heartbeat_poll_once(watch)
     assert key in adapter._active_sessions
     await asyncio.gather(*adapter._background_tasks)
-    assert HeartbeatManager("heartbeat-session").state.fire_count == 1
-    assert runner._queue_depth(key, adapter=adapter) == 0
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chat_id", ["1571155392069763142", "1571157949362081882", "1571263020523327488"])
+async def test_discord_group_slash_only_heartbeat_reports_missing_provenance(monkeypatch, caplog, chat_id):
+    from tests.gateway.test_authority_lane_moves_on import _chat, _gateway
+    from hermes_cli import heartbeat
+    from hermes_state_runtime import list_session_admissions
+
+    user_id = "1385361904591044669"
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", user_id)
+    runner, adapter, authority, _, sent, ran, _ = await _gateway(monkeypatch)
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", user_id)
+    source = adapter.build_source(
+        chat_id=chat_id, chat_type="group", user_id=user_id,
+        scope_id="1477066497896742955", guild_id="1477066497896742955",
+    )
+    key = runner._session_key_for_source(source)
+    assert key == f"agent:main:discord:group:{chat_id}:{user_id}"
+    monkeypatch.setattr(runner, "_start_heartbeat_poller", lambda: None)
+    await _chat(adapter, source, sent, "/heartbeat every 1m check status")
+    session_id = runner.session_store.peek_session_id(key)
+    state = HeartbeatManager(session_id).state
+    assert state is not None and state.status == "active"
+    monkeypatch.setattr(heartbeat, "time", SimpleNamespace(time=lambda: state.created_at + 61))
+    assert not list_session_admissions(authority.db, session_id=session_id, pending_only=False)
+    await runner._heartbeat_poll_once(runner._heartbeat_watch)
+    assert any(record.levelname == "WARNING" and key in record.message and "not_found" in record.message
+               for record in caplog.records)
+    assert not list_session_admissions(authority.db, session_id=session_id, pending_only=False)
+    assert HeartbeatManager(session_id).state.fire_count == 0
+
+
+@pytest.mark.asyncio
+async def test_poll_watch_exception_is_warning(poller, monkeypatch, caplog):
+    runner, _, watch, key, _ = poller
+
+    async def fail(*args):
+        raise RuntimeError("poll failed")
+
+    monkeypatch.setattr(runner, "_heartbeat_poll_watch", fail)
+    await runner._heartbeat_poll_once(watch)
+    assert any(record.levelname == "WARNING" and key in record.message and "poll failed" in record.message
+               for record in caplog.records)
 
 
 @pytest.mark.asyncio
