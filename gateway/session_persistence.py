@@ -341,6 +341,17 @@ class SessionPersistenceMixin:
             logger.warning("Skipping invalid routing entry %r: %s", key, e)
         return None
 
+    def _unparsed_durable_rows(self, *, exclude) -> dict[str, str]:
+        """state.db routing rows for this scope that this build cannot parse, minus *exclude*'s keys
+        (a plugin-only platform such as ``cotal`` without its plugin). Read at save time, never
+        cached: a full save deletes each row of its scope that it does not name, so dropping these
+        would lose them. Another process's write is seen here too."""
+        loader = self._routing_db_method("load_gateway_routing_entries")
+        if loader is None:
+            return {}
+        return {key: entry_json for key, entry_json in loader(scope=self._routing_scope()).items()
+                if key not in exclude and self._routing_entry_from_json(key, entry_json) is None}
+
     def _ensure_loaded_locked(self) -> None:
         """Load the routing index (lock held). state.db ``gateway_routing`` is primary;
         sessions.json is the legacy import for keys the DB lacks (persisted on the next _save).
@@ -597,7 +608,11 @@ class SessionPersistenceMixin:
             replacer = self._routing_db_method("replace_gateway_routing_entries")
             if replacer is not None:
                 try:
-                    retired = replacer({k: json.dumps(v) for k, v in data.items()}, scope=self._routing_scope())
+                    # Rows this build cannot parse stay as they are: the rewrite deletes every row of
+                    # the scope that it does not name.
+                    rows = {k: json.dumps(v) for k, v in data.items()}
+                    rows.update(self._unparsed_durable_rows(exclude=data))
+                    retired = replacer(rows, scope=self._routing_scope())
                     db_saved = True
                     # A retired route the save skipped stays out of the mirror too: its fence may
                     # age out (a prune's), and the next start's legacy import would restore it.
