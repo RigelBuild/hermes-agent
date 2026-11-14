@@ -11,6 +11,7 @@ import json
 import time
 
 import hermes_state
+import pytest
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionSource, SessionStore
 
@@ -48,6 +49,53 @@ def _durable(store: SessionStore) -> dict[str, str]:
 def _assert_unknown_platform_is_unparsed():
     assert SessionStore._routing_entry_from_json(UNKNOWN_KEY, UNKNOWN_JSON) is None
 
+
+@pytest.mark.parametrize(
+    ("key", "entry_json", "expected"),
+    [
+        (UNKNOWN_KEY, UNKNOWN_JSON, True),
+        (UNKNOWN_KEY, "{bad json", False),
+        (UNKNOWN_KEY, json.dumps([]), False),
+        (
+            UNKNOWN_KEY,
+            json.dumps({**json.loads(UNKNOWN_JSON), "session_id": "../unsafe"}),
+            False,
+        ),
+        (
+            UNKNOWN_KEY,
+            json.dumps({**json.loads(UNKNOWN_JSON), "session_key": "agent:../unsafe"}),
+            False,
+        ),
+        ("different-key", UNKNOWN_JSON, False),
+        (
+            UNKNOWN_KEY,
+            json.dumps(
+                {
+                    **json.loads(UNKNOWN_JSON),
+                    "origin": {"platform": Platform.LOCAL.value},
+                }
+            ),
+            False,
+        ),
+        (
+            UNKNOWN_KEY,
+            json.dumps({**json.loads(UNKNOWN_JSON), "origin": {"platform": ""}}),
+            False,
+        ),
+    ],
+    ids=(
+        "unknown-platform",
+        "malformed-json",
+        "non-object",
+        "unsafe-session-id",
+        "unsafe-session-key",
+        "key-mismatch",
+        "known-platform",
+        "empty-platform",
+    ),
+)
+def test_preservable_unparsed_row_predicate(key, entry_json, expected):
+    assert SessionStore._is_preservable_unparsed_row(key, entry_json) is expected
 
 
 def test_full_save_keeps_unparseable_row_verbatim(tmp_path, monkeypatch):

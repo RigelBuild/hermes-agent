@@ -7,7 +7,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import json
-import threading
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 from utils import atomic_json_write
@@ -363,7 +363,10 @@ class SessionPersistenceMixin:
         ):
             return False
         origin = data.get("origin")
-        if not isinstance(origin, dict) or not isinstance(origin.get("platform"), str):
+        if not isinstance(origin, dict):
+            return False
+        platform = origin.get("platform")
+        if not isinstance(platform, str) or not re.fullmatch(r"[a-z0-9_-]+", platform):
             return False
         from gateway.config import Platform
 
