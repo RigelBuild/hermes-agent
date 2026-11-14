@@ -77,10 +77,16 @@ def _assert_unknown_platform_is_unparsed():
             ),
             False,
         ),
-        (
-            UNKNOWN_KEY,
-            json.dumps({**json.loads(UNKNOWN_JSON), "origin": {"platform": ""}}),
-            False,
+        *(
+            (
+                UNKNOWN_KEY,
+                json.dumps({
+                    **json.loads(UNKNOWN_JSON),
+                    "origin": {**json.loads(UNKNOWN_JSON)["origin"], "platform": platform},
+                }),
+                False,
+            )
+            for platform in ("", "COTAL", "co tal")
         ),
     ],
     ids=(
@@ -92,6 +98,8 @@ def _assert_unknown_platform_is_unparsed():
         "key-mismatch",
         "known-platform",
         "empty-platform",
+        "uppercase-platform",
+        "spaced-platform",
     ),
 )
 def test_preservable_unparsed_row_predicate(key, entry_json, expected):
