@@ -49,6 +49,7 @@ jobs:
           tests/gateway/test_async_delegation_session_binding.py
           tests/gateway/test_automation_notification_category.py
           tests/gateway/test_discord_prompt_timeout_config.py
+          tests/gateway/test_heartbeat_poller.py
           tests/gateway/test_watch_wake_auto_thread.py
           tests/hermes_cli/test_tools_config.py
           tests/tools/test_browser_vault.py
