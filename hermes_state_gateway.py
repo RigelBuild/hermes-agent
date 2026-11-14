@@ -10,7 +10,7 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from hermes_state_common import (
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract,
@@ -374,22 +374,64 @@ class SessionGatewayMixin:
             {'scope': scope, 'key': session_key, **route_retired_params(session_key, entry_json, time.time())},
         )
 
-    def replace_gateway_routing_entries(self, entries: dict[str, str], *, scope: str = "") -> set[str]:
-        """Atomically replace the routing index for *scope* (keys absent from *entries*
-        are removed); other scopes untouched. Returns the keys skipped as retired routes, which
-        the sessions.json mirror must leave out too."""
-        from hermes_state_mutation_retirement import ROUTE_RETIRED_SQL, route_retired_params
+    def replace_gateway_routing_entries(
+        self,
+        entries: dict[str, str],
+        *,
+        scope: str = "",
+        keep_unparsed: Optional[Callable[[str, str], bool]] = None,
+    ) -> set[str]:
+        """Atomically replace this scope, optionally retaining rows the caller cannot parse."""
+        from hermes_state_mutation_retirement import (
+            ROUTE_RETIRED_SQL,
+            route_retired_params,
+        )
+
         now = time.time()
-        rows = [{'scope': scope, 'key': k, **route_retired_params(k, v, now)} for k, v in entries.items() if k and v]
+        rows = [
+            {"scope": scope, "key": key, **route_retired_params(key, value, now)}
+            for key, value in entries.items()
+            if key and value
+        ]
+        entry_keys_json = json.dumps(list(entries))
+
         def _do(conn):
-            conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
+            preserved = []
+            if keep_unparsed is not None:
+                candidates = conn.execute(
+                    "SELECT session_key, entry_json FROM gateway_routing "
+                    "WHERE scope = ? AND session_key NOT IN "
+                    "(SELECT value FROM json_each(?))",
+                    (scope, entry_keys_json),
+                )
+                for key, entry_json in candidates:
+                    if not keep_unparsed(key, entry_json):
+                        continue
+                    retired = conn.execute(
+                        "SELECT " + ROUTE_RETIRED_SQL,
+                        route_retired_params(key, entry_json, now),
+                    ).fetchone()[0]
+                    if not retired:
+                        preserved.append(key)
+            conn.execute(
+                "DELETE FROM gateway_routing WHERE scope = ? AND session_key NOT IN "
+                "(SELECT value FROM json_each(?))",
+                (scope, json.dumps(preserved)),
+            )
             if rows:
                 conn.executemany(
                     "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
                     "SELECT :scope, :key, :entry, :now WHERE NOT " + ROUTE_RETIRED_SQL,
-                    rows)
-            kept = {r[0] for r in conn.execute("SELECT session_key FROM gateway_routing WHERE scope = ?", (scope,))}
-            return {row['key'] for row in rows} - kept
+                    rows,
+                )
+            kept = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT session_key FROM gateway_routing WHERE scope = ?", (scope,)
+                )
+            }
+            return {row["key"] for row in rows} - kept
+
         return self._execute_write(_do)
 
     def load_gateway_routing_entries(self, *, scope: str = "") -> dict[str, str]:

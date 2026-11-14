@@ -8,6 +8,7 @@ the raw row is still there, byte-identical.
 from __future__ import annotations
 
 import json
+import time
 
 import hermes_state
 from gateway.config import GatewayConfig, Platform
@@ -15,12 +16,16 @@ from gateway.session import SessionSource, SessionStore
 
 
 UNKNOWN_KEY = "agent:main:cotal:dm:peer-1"
-UNKNOWN_JSON = json.dumps({
-    "session_key": UNKNOWN_KEY,
-    "session_id": "sess-cotal-1",
-    "origin": {"platform": "cotal", "chat_id": "peer-1", "chat_type": "dm"},
-    "platform": "cotal",
-})
+UNKNOWN_JSON = json.dumps(
+    {
+        "session_key": UNKNOWN_KEY,
+        "session_id": "sess-cotal-1",
+        "created_at": "2025-01-01T00:00:00+00:00",
+        "updated_at": "2025-01-01T00:00:00+00:00",
+        "origin": {"platform": "cotal", "chat_id": "peer-1", "chat_type": "dm"},
+        "platform": "local",
+    }
+)
 
 
 def _make_store(tmp_path, monkeypatch) -> SessionStore:
@@ -40,12 +45,18 @@ def _durable(store: SessionStore) -> dict[str, str]:
     return store._db.load_gateway_routing_entries(scope=store._routing_scope())
 
 
+def _assert_unknown_platform_is_unparsed():
+    assert SessionStore._routing_entry_from_json(UNKNOWN_KEY, UNKNOWN_JSON) is None
+
+
+
 def test_full_save_keeps_unparseable_row_verbatim(tmp_path, monkeypatch):
+    _assert_unknown_platform_is_unparsed()
     store = _make_store(tmp_path, monkeypatch)
     store._db.save_gateway_routing_entry(UNKNOWN_KEY, UNKNOWN_JSON, scope=store._routing_scope())
     entry = store.get_or_create_session(_source())
 
-    store._save_entries()  # the whole-index rewrite that used to delete the cotal row
+    store._save_entries()
 
     durable = _durable(store)
     assert durable[UNKNOWN_KEY] == UNKNOWN_JSON
@@ -54,6 +65,7 @@ def test_full_save_keeps_unparseable_row_verbatim(tmp_path, monkeypatch):
 
 
 def test_unparseable_row_survives_repeated_saves_and_a_restart(tmp_path, monkeypatch):
+    _assert_unknown_platform_is_unparsed()
     store = _make_store(tmp_path, monkeypatch)
     store._db.save_gateway_routing_entry(UNKNOWN_KEY, UNKNOWN_JSON, scope=store._routing_scope())
     store.get_or_create_session(_source())
@@ -67,3 +79,81 @@ def test_unparseable_row_survives_repeated_saves_and_a_restart(tmp_path, monkeyp
 
     assert _durable(restarted)[UNKNOWN_KEY] == UNKNOWN_JSON
     restarted._db.close()
+
+
+def test_malformed_json_does_not_abort_valid_route_save(tmp_path, monkeypatch):
+    store = _make_store(tmp_path, monkeypatch)
+    store._db._execute_write(
+        lambda conn: conn.execute(
+            "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) VALUES (?, ?, ?, ?)",
+            (store._routing_scope(), "malformed", "{bad json", time.time()),
+        )
+    )
+    entry = store.get_or_create_session(_source())
+
+    store._save_entries()
+
+    durable = _durable(store)
+    assert "malformed" not in durable
+    assert entry.session_key in durable
+    store._db.close()
+
+
+def test_memory_route_replaces_unparsed_durable_copy(tmp_path, monkeypatch):
+    _assert_unknown_platform_is_unparsed()
+    store = _make_store(tmp_path, monkeypatch)
+    store._db.save_gateway_routing_entry(UNKNOWN_KEY, UNKNOWN_JSON, scope=store._routing_scope())
+    entry = store.get_or_create_session(_source())
+    del store._entries[entry.session_key]
+    entry.session_key = UNKNOWN_KEY
+    store._entries[UNKNOWN_KEY] = entry
+
+    store._save_entries()
+
+    durable = _durable(store)
+    assert json.loads(durable[UNKNOWN_KEY])["session_id"] == entry.session_id
+    assert durable[UNKNOWN_KEY] != UNKNOWN_JSON
+    store._db.close()
+
+
+def test_retired_unparsed_route_is_not_preserved(tmp_path, monkeypatch):
+    _assert_unknown_platform_is_unparsed()
+    store = _make_store(tmp_path, monkeypatch)
+    store._db.retire_gateway_routes(["sess-cotal-1"], namespace="main")
+    store._db._execute_write(
+        lambda conn: conn.execute(
+            "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) VALUES (?, ?, ?, ?)",
+            (store._routing_scope(), UNKNOWN_KEY, UNKNOWN_JSON, time.time()),
+        )
+    )
+
+    store._save_entries()
+
+    assert UNKNOWN_KEY not in _durable(store)
+    store._db.close()
+
+
+def test_unparsed_route_update_from_second_db_handle_survives_save(
+    tmp_path, monkeypatch
+):
+    _assert_unknown_platform_is_unparsed()
+    store = _make_store(tmp_path, monkeypatch)
+    peer = hermes_state.SessionDB(db_path=tmp_path / "state.db")
+    store._db.save_gateway_routing_entry(UNKNOWN_KEY, UNKNOWN_JSON, scope=store._routing_scope())
+    store.get_or_create_session(_source())
+    updated = json.loads(UNKNOWN_JSON)
+    updated["display_name"] = "updated by peer"
+    updated_json = json.dumps(updated)
+    replace = store._db.replace_gateway_routing_entries
+
+    def update_then_replace(entries, **kwargs):
+        peer.save_gateway_routing_entry(UNKNOWN_KEY, updated_json, scope=store._routing_scope())
+        return replace(entries, **kwargs)
+
+    monkeypatch.setattr(store._db, "replace_gateway_routing_entries", update_then_replace)
+
+    store._save_entries()
+
+    assert _durable(store)[UNKNOWN_KEY] == updated_json
+    peer.close()
+    store._db.close()

@@ -341,16 +341,44 @@ class SessionPersistenceMixin:
             logger.warning("Skipping invalid routing entry %r: %s", key, e)
         return None
 
-    def _unparsed_durable_rows(self, *, exclude) -> dict[str, str]:
-        """state.db routing rows for this scope that this build cannot parse, minus *exclude*'s keys
-        (a plugin-only platform such as ``cotal`` without its plugin). Read at save time, never
-        cached: a full save deletes each row of its scope that it does not name, so dropping these
-        would lose them. Another process's write is seen here too."""
-        loader = self._routing_db_method("load_gateway_routing_entries")
-        if loader is None:
-            return {}
-        return {key: entry_json for key, entry_json in loader(scope=self._routing_scope()).items()
-                if key not in exclude and self._routing_entry_from_json(key, entry_json) is None}
+    @staticmethod
+    def _is_preservable_unparsed_row(key: str, entry_json: str) -> bool:
+        """Keep only otherwise-valid entries rejected for an unknown origin platform."""
+        from gateway.session import SessionEntry, _is_path_unsafe
+
+        try:
+            data = json.loads(entry_json)
+        except (ValueError, TypeError, RecursionError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        session_id, session_key = data.get("session_id"), data.get("session_key")
+        if (
+            not isinstance(session_id, str)
+            or not session_id
+            or not isinstance(session_key, str)
+            or _is_path_unsafe(session_id)
+            or _is_path_unsafe(session_key, strict=False)
+            or session_key != key
+        ):
+            return False
+        origin = data.get("origin")
+        if not isinstance(origin, dict) or not isinstance(origin.get("platform"), str):
+            return False
+        from gateway.config import Platform
+
+        try:
+            Platform(origin["platform"])
+        except ValueError:
+            candidate = dict(data)
+            candidate["origin"] = {**origin, "platform": Platform.LOCAL.value}
+            try:
+                SessionEntry.from_dict(candidate)
+            except (ValueError, KeyError, TypeError, RecursionError):
+                return False
+            return True
+        return False
+
 
     def _ensure_loaded_locked(self) -> None:
         """Load the routing index (lock held). state.db ``gateway_routing`` is primary;
@@ -608,11 +636,14 @@ class SessionPersistenceMixin:
             replacer = self._routing_db_method("replace_gateway_routing_entries")
             if replacer is not None:
                 try:
-                    # Rows this build cannot parse stay as they are: the rewrite deletes every row of
-                    # the scope that it does not name.
-                    rows = {k: json.dumps(v) for k, v in data.items()}
-                    rows.update(self._unparsed_durable_rows(exclude=data))
-                    retired = replacer(rows, scope=self._routing_scope())
+                    # The DB replacement reads preservable rows in its write transaction, retaining
+                    # their current bytes without overwriting concurrent plugin updates.
+                    rows = {key: json.dumps(value) for key, value in data.items()}
+                    retired = replacer(
+                        rows,
+                        scope=self._routing_scope(),
+                        keep_unparsed=self._is_preservable_unparsed_row,
+                    )
                     db_saved = True
                     # A retired route the save skipped stays out of the mirror too: its fence may
                     # age out (a prune's), and the next start's legacy import would restore it.
