@@ -474,7 +474,9 @@ def snapshot_automation(authority, adapter, event, identity):
     owner = authority.logical_owner(entry.session_id)
     envelope = committed_route_envelope(authority, entry)
     if envelope is None:
-        raise RuntimeStoreError('not_found', field='route_provenance', detail='missing committed native route provenance')
+        raise RuntimeStoreError(
+            'not_found', field='route_provenance', detail='missing committed native route provenance'
+        )
     # Borrow the committed connector proof and recheck its source, without released input media.
     restored = restore_native({'text': event.text, 'native_text_v1': {
         key: value for key, value in envelope.items() if key != 'media'}}, runner)

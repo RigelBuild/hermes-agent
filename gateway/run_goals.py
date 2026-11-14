@@ -146,7 +146,12 @@ class GatewayGoalsMixin:
                 if not repeated:
                     warned[key] = now
                 log = logger.debug if repeated else logger.warning
-                log("heartbeat poll for %s failed: %s%s", quick_key, exc, f" ({detail})" if detail else "")
+                log(
+                    "heartbeat poll for %s failed: %s%s",
+                    quick_key,
+                    exc,
+                    f" ({detail})" if detail else "",
+                )
 
     async def _heartbeat_poll_watch(self, watch, quick_key, source, session_id):
         await self._warm_goals_session_db("heartbeat poll")

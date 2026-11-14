@@ -118,7 +118,9 @@ async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("chat_id", ["1571155392069763142", "1571157949362081882", "1571263020523327488"])
+@pytest.mark.parametrize(
+    "chat_id", ["1571155392069763142", "1571157949362081882", "1571263020523327488"]
+)
 async def test_discord_group_slash_only_heartbeat_reports_missing_provenance(monkeypatch, caplog, chat_id):
     from tests.gateway.test_authority_lane_moves_on import _chat, _gateway
     from hermes_cli import heartbeat
@@ -128,8 +130,11 @@ async def test_discord_group_slash_only_heartbeat_reports_missing_provenance(mon
     runner, adapter, authority, _, sent, _, _ = await _gateway(monkeypatch)
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", user_id)  # _gateway sets its own default
     source = adapter.build_source(
-        chat_id=chat_id, chat_type="group", user_id=user_id,
-        scope_id="1477066497896742955", guild_id="1477066497896742955",
+        chat_id=chat_id,
+        chat_type="group",
+        user_id=user_id,
+        scope_id="1477066497896742955",
+        guild_id="1477066497896742955",
     )
     key = runner._session_key_for_source(source)
     assert key == f"agent:main:discord:group:{chat_id}:{user_id}"
@@ -143,7 +148,9 @@ async def test_discord_group_slash_only_heartbeat_reports_missing_provenance(mon
     caplog.set_level("DEBUG", logger="gateway.run")
     await runner._heartbeat_poll_once(runner._heartbeat_watch)
     await runner._heartbeat_poll_once(runner._heartbeat_watch)
-    records = [record for record in caplog.records if key in record.message and "route provenance" in record.message]
+    records = [
+        record for record in caplog.records if key in record.message and "route provenance" in record.message
+    ]
     assert [record.levelname for record in records] == ["WARNING", "DEBUG"]
     assert all("not_found" in record.message for record in records)
     assert not list_session_admissions(authority.db, session_id=session_id, pending_only=False)
@@ -159,13 +166,15 @@ async def test_poll_watch_exception_is_warning(poller, monkeypatch, caplog):
 
     monkeypatch.setattr(runner, "_heartbeat_poll_watch", fail)
     await runner._heartbeat_poll_once(watch)
-    assert any(record.levelname == "WARNING" and key in record.message and "poll failed" in record.message
-               for record in caplog.records)
+    assert any(
+        record.levelname == "WARNING" and key in record.message and "poll failed" in record.message
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
 async def test_poll_warning_window_is_per_route_and_reason(poller, monkeypatch, caplog):
-    import gateway.run_goals as run_goals
+    from gateway import run_goals
 
     runner, _, watch, key, _ = poller
     clock = SimpleNamespace(now=0.0, reason="first")
@@ -185,7 +194,11 @@ async def test_poll_warning_window_is_per_route_and_reason(poller, monkeypatch, 
     clock.now = 3600.0
     await runner._heartbeat_poll_once(watch)
     assert [record.levelname for record in caplog.records if "heartbeat poll for" in record.message] == [
-        "WARNING", "DEBUG", "WARNING", "WARNING", "WARNING",
+        "WARNING",
+        "DEBUG",
+        "WARNING",
+        "WARNING",
+        "WARNING",
     ]
 
 
