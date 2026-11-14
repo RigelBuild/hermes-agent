@@ -133,7 +133,20 @@ class GatewayGoalsMixin:
                 with self._profile_scope_for_source(source):
                     await self._heartbeat_poll_watch(watch, quick_key, source, session_id)
             except Exception as exc:
-                logger.warning("heartbeat poll for %s failed: %s", quick_key, exc)
+                detail = getattr(exc, "detail", None)
+                reason = (type(exc), str(exc), getattr(exc, "field", None), detail)
+                now = time.monotonic()
+                warned = getattr(self, "_heartbeat_poll_warned", None)
+                if warned is None:
+                    warned = self._heartbeat_poll_warned = {}
+                for key in [key for key, at in warned.items() if now - at >= 3600]:
+                    del warned[key]
+                key = (quick_key, reason)
+                repeated = key in warned
+                if not repeated:
+                    warned[key] = now
+                log = logger.debug if repeated else logger.warning
+                log("heartbeat poll for %s failed: %s%s", quick_key, exc, f" ({detail})" if detail else "")
 
     async def _heartbeat_poll_watch(self, watch, quick_key, source, session_id):
         await self._warm_goals_session_db("heartbeat poll")

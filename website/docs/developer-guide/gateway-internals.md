@@ -141,9 +141,12 @@ clients discover the multiplexer through the default home's descriptor
 (`served_profiles`) and attach to its control socket with their own `profile_id`
 ([Local control socket](#local-control-socket-public-client-contract)).
 
-Heartbeat poll failures log the affected session route and error at WARNING. A failed
-admission leaves the tick due; a messaging session with no committed native input
-cannot yet provide the connector provenance required for heartbeat automation.
+## Heartbeat polling
+
+Heartbeat poll failures log the affected session route and error at WARNING once per
+route and reason per hour; repeats log at DEBUG. A failed admission leaves the tick
+due. A messaging session with no committed native input cannot yet provide the
+connector provenance required for heartbeat automation.
 
 ## Shared authority local slash commands
 
