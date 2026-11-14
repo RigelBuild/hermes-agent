@@ -7,7 +7,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import json
-import threading
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 from utils import atomic_json_write
@@ -341,6 +341,48 @@ class SessionPersistenceMixin:
             logger.warning("Skipping invalid routing entry %r: %s", key, e)
         return None
 
+    @staticmethod
+    def _is_preservable_unparsed_row(key: str, entry_json: str) -> bool:
+        """Keep only otherwise-valid entries rejected for an unknown origin platform."""
+        from gateway.session import SessionEntry, _is_path_unsafe
+
+        try:
+            data = json.loads(entry_json)
+        except (ValueError, TypeError, RecursionError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        session_id, session_key = data.get("session_id"), data.get("session_key")
+        if (
+            not isinstance(session_id, str)
+            or not session_id
+            or not isinstance(session_key, str)
+            or _is_path_unsafe(session_id)
+            or _is_path_unsafe(session_key, strict=False)
+            or session_key != key
+        ):
+            return False
+        origin = data.get("origin")
+        if not isinstance(origin, dict):
+            return False
+        platform = origin.get("platform")
+        if not isinstance(platform, str) or not re.fullmatch(r"[a-z0-9_-]+", platform):
+            return False
+        from gateway.config import Platform
+
+        try:
+            Platform(origin["platform"])
+        except ValueError:
+            candidate = dict(data)
+            candidate["origin"] = {**origin, "platform": Platform.LOCAL.value}
+            try:
+                SessionEntry.from_dict(candidate)
+            except (ValueError, KeyError, TypeError, RecursionError):
+                return False
+            return True
+        return False
+
+
     def _ensure_loaded_locked(self) -> None:
         """Load the routing index (lock held). state.db ``gateway_routing`` is primary;
         sessions.json is the legacy import for keys the DB lacks (persisted on the next _save).
@@ -597,7 +639,14 @@ class SessionPersistenceMixin:
             replacer = self._routing_db_method("replace_gateway_routing_entries")
             if replacer is not None:
                 try:
-                    retired = replacer({k: json.dumps(v) for k, v in data.items()}, scope=self._routing_scope())
+                    # The DB replacement reads preservable rows in its write transaction, retaining
+                    # their current bytes without overwriting concurrent plugin updates.
+                    rows = {key: json.dumps(value) for key, value in data.items()}
+                    retired = replacer(
+                        rows,
+                        scope=self._routing_scope(),
+                        keep_unparsed=self._is_preservable_unparsed_row,
+                    )
                     db_saved = True
                     # A retired route the save skipped stays out of the mirror too: its fence may
                     # age out (a prune's), and the next start's legacy import would restore it.
