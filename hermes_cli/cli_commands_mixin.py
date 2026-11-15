@@ -1633,7 +1633,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             self._heartbeat_set(mgr, arg)
 
     def _heartbeat_set(self, mgr, arg: str) -> None:
-        """Set a recurring heartbeat, optionally with ``--steer <prompt>``."""
+        """Set a recurring heartbeat, optionally choosing idle or steer delivery."""
         from hermes_cli.heartbeat import parse_heartbeat_set, format_interval
         interval, prompt, delivery_mode = parse_heartbeat_set(arg)
         if interval is None:

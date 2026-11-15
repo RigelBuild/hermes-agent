@@ -210,7 +210,7 @@ async def test_clearing_route_heartbeat_stops_future_fires(poller):
 async def test_due_heartbeat_steers_an_active_turn_instead_of_waiting_for_idle(poller):
     runner, adapter, watch, key, clock = poller
     active = asyncio.Event()
-    HeartbeatManager("heartbeat-session").set("check status", 60, delivery_mode="steer")
+    HeartbeatManager("heartbeat-session").set("check status", 60)
     steered = []
 
     class RunningAgent:

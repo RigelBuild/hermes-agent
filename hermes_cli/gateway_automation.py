@@ -232,7 +232,7 @@ class GatewayHeartbeatManager(_Remote):
     status_line = _Local.status_line
     del _Local
 
-    def set(self, prompt, interval_seconds, *, delivery_mode="idle"):
+    def set(self, prompt, interval_seconds, *, delivery_mode="steer"):
         return self._rpc("set", prompt, int(interval_seconds), delivery_mode=delivery_mode)
 
     def pause(self):

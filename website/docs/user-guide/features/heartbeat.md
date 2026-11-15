@@ -12,7 +12,7 @@ description: "A recurring prompt for a conversation route — /heartbeat every 1
 /heartbeat every 10m Check the deployment and report meaningful changes
 ```
 
-By default, heartbeats run between turns. In a gateway session, add `--steer` before the prompt to deliver a due heartbeat during a running turn after the next tool result. The classic CLI remains idle-only, even in steer mode.
+Gateway heartbeats reach busy sessions by default, after the next tool result. Use `--idle` to wait until the session is idle. The classic CLI remains idle-only.
 
 ## Heartbeat vs cron: which one do I want?
 
@@ -31,7 +31,7 @@ Rule of thumb: if the recurring prompt needs the conversation's context, use `/h
 
 | Command | What it does |
 |---|---|
-| `/heartbeat every <interval> [--steer] <prompt>` | Set (or replace) the route's heartbeat. Intervals: `90s`, `10m`, `2h`, `1d` (minimum 60s). `--steer` opts gateway sessions into busy-turn delivery. |
+| `/heartbeat every <interval> [--idle|--steer] <prompt>` | Set (or replace) the route's heartbeat. Intervals: `90s`, `10m`, `2h`, `1d` (minimum 60s). Gateway delivery steers by default; `--idle` waits for idle. |
 | `/heartbeat` or `/heartbeat status` | Show the heartbeat, its delivery mode, interval, and time to next fire. |
 | `/heartbeat pause` | Stop firing without clearing. |
 | `/heartbeat resume` | Resume (re-anchors the timer — no instant stale fire). |
@@ -44,8 +44,8 @@ On messaging platforms, send a normal message in the chat before setting or resu
 
 ## Behavior details
 
-- **Idle by default.** If the agent is busy when a tick comes due, it fires at the next idle poll. An idle watched gateway route wakes proactively.
-- **Opt-in steering.** `--steer` sends a due gateway heartbeat to the parent agent, not its delegated subagents. The agent sees it after the next tool result. At most one heartbeat steer is accepted per running turn; an unread steer is returned to the heartbeat schedule. The classic CLI still waits for idle.
+- **Busy delivery by default.** A due gateway heartbeat reaches the parent agent after the next tool result, not its delegated subagents. At most one heartbeat steer is accepted per running turn; an unread steer is returned to the heartbeat schedule. The classic CLI waits for idle.
+- **Idle mode.** `--idle` waits until the session is idle. An idle watched gateway route wakes proactively.
 - **Missed ticks coalesce.** If several intervals pass, the next fire represents one tick, not a backlog. The timer re-anchors on every fire.
 - **User messages win by default.** In idle mode, a queued user message takes priority and the heartbeat waits for the queue to drain.
 - **Owned by the route.** A messaging heartbeat replies into its chat or thread even while that conversation is open in the TUI / Desktop app; the viewer never claims the tick.

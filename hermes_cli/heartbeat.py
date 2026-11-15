@@ -39,7 +39,7 @@ _UNIT_SECONDS = {
 _STATE_FIELDS = {
     "prompt": (str, ""), "interval_seconds": (int, 0), "status": (str, "active"),
     "created_at": (float, 0.0), "last_fired_at": (float, 0.0), "fire_count": (int, 0),
-    "delivery_mode": (str, "idle"),
+    "delivery_mode": (str, "steer"),
     "last_error": (str, ""),
 }
 
@@ -57,14 +57,14 @@ def parse_interval(text: str) -> Optional[int]:
 
 
 def parse_heartbeat_set(text: str) -> tuple[Optional[int], str, str]:
-    """Parse the interval and optional leading steer flag without rewriting prompt text."""
+    """Parse the interval and optional leading delivery flag without rewriting prompt text."""
     match = re.match(r"^\s*(?:every\s+)?(\S+)(?:\s+(.*))?$", text, re.IGNORECASE | re.DOTALL)
     if not match:
-        return None, "", "idle"
+        return None, "", "steer"
     interval = parse_interval(match.group(1))
     prompt = match.group(2) or ""
-    flag = re.match(r"^--steer(?:\s+|$)", prompt)
-    return interval, prompt[flag.end():] if flag else prompt, "steer" if flag else "idle"
+    flag = re.match(r"^--(idle|steer)(?:\s+|$)", prompt)
+    return interval, prompt[flag.end():] if flag else prompt, flag.group(1) if flag else "steer"
 
 
 def format_interval(seconds: int) -> str:
@@ -84,7 +84,7 @@ class HeartbeatState:
     created_at: float = 0.0
     last_fired_at: float = 0.0
     fire_count: int = 0
-    delivery_mode: str = "idle"  # idle | steer
+    delivery_mode: str = "steer"  # idle | steer
     last_error: str = ""
 
     def to_json(self) -> str:
@@ -388,7 +388,7 @@ class HeartbeatManager:
         icon = "⏸ " if s.status == "paused" else ""
         return f"{icon}Heartbeat ({s.status}, every {every}{fired}, mode {mode}): {s.prompt}"
 
-    def set(self, prompt: str, interval_seconds: int, *, delivery_mode: str = "idle") -> HeartbeatState:
+    def set(self, prompt: str, interval_seconds: int, *, delivery_mode: str = "steer") -> HeartbeatState:
         prompt = (prompt or "").strip()
         if not prompt:
             raise ValueError("heartbeat prompt is empty")
