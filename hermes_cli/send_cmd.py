@@ -74,6 +74,8 @@ def _emit_result(result_json: str, *, json_mode: bool, quiet: bool) -> int:
             print(f"hermes send: {payload['error']}", file=sys.stderr)
         elif payload.get("success"):
             print(payload.get("note") or "sent")
+            for warning in payload.get("warnings", []):
+                print(f"hermes send: {warning}", file=sys.stderr)
         else:
             print(json.dumps(payload, indent=2))  # unknown shape — dump it, drop nothing
     if not payload.get("error") and (payload.get("skipped") or payload.get("success")):

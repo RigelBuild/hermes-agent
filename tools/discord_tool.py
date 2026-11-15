@@ -898,12 +898,18 @@ def _create_forum_post(
     _require_forum_post_text(name, content)
     _require_post_scope(token, channel_id, allow_thread_parent=False)
     chunks = _message_chunks(content)
+    if start_session and len(chunks) != 1:
+        raise DiscordAPIError(400, "start_session requires content to fit in one Discord message")
     body = _forum_post_body(name, chunks[0], applied_tags)
     thread = _discord_request("POST", f"/channels/{channel_id}/threads", token, body=body)
+    warnings = []
     if start_session:
-        from gateway.discord_self_start import record_created_thread
+        try:
+            from gateway.discord_self_start import record_created_thread
 
-        record_created_thread(str(thread["id"]), str(channel_id))
+            record_created_thread(str(thread["id"]), str(channel_id))
+        except Exception:
+            warnings.append("Post created, but session registration failed; no session will start.")
     starter = thread.get("message") or {}
     try:
         message_ids = (
@@ -918,10 +924,13 @@ def _create_forum_post(
             f"Partial forum post created: thread_id={thread['id']}, "
             f"starter_message_id={starter.get('id')}. {detail}",
         ) from exc
-    return json.dumps({
+    result = {
         "success": True, "thread_id": thread["id"], "name": thread.get("name"),
         "starter_message_id": starter.get("id"), "additional_message_ids": message_ids,
-    })
+    }
+    if warnings:
+        result["warnings"] = warnings
+    return json.dumps(result)
 
 
 
@@ -1323,6 +1332,14 @@ def _run_discord_action(action: str, valid_actions: dict[str, Any], tool_label: 
     missing = [p for p in _REQUIRED_PARAMS.get(action, []) if not kwargs.get(p)]
     if missing:
         return tool_error(f"Missing required parameters for '{action}': {', '.join(missing)}")
+    if action == "create_forum_post" and kwargs.get("start_session"):
+        from gateway.session_context import get_session_env
+        from tools.approval_context import _is_peer_mesh_approval_context, is_plugin_origin_turn
+
+        platform = get_session_env("HERMES_SESSION_PLATFORM", "") or "local"
+        if (_in_cron_session() or is_plugin_origin_turn() or _is_peer_mesh_approval_context()
+                or str(platform).lower() not in {"discord", "local"}):
+            return tool_error("start_session is not allowed in this session context")
     try:
         replay = _require_cron_scope(token, action, kwargs.get("channel_id") or "")
         _require_mesh_scope(

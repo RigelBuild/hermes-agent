@@ -87,6 +87,7 @@ class SessionSource:
     parent_chat_id: Optional[str] = None  # parent channel when chat_id is a thread
     message_id: Optional[str] = None  # triggering message (pin/reply/react)
     role_authorized: bool = False  # adapter granted access via role, not user ID
+    self_start_token: Optional[str] = field(default=None, repr=False, compare=False)
     # Multiplex profile this message routes to (None => active/default); namespaces the key.
     profile: Optional[str] = None
     # Transport-local fail-closed signal: explicit profile route whose target is not served.

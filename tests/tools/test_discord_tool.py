@@ -946,6 +946,36 @@ class TestDiscordForumActions:
             discord_core(action="create_forum_post", channel_id="forum", name="tomorrow", content="hello")
         record.assert_not_called()
 
+    @pytest.mark.parametrize("context", ["cron", "plugin", "mesh", "platform"])
+    def test_start_session_rejects_restricted_context(self, monkeypatch, context):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        self._allow_actions(monkeypatch)
+        monkeypatch.setattr("tools.discord_tool._in_cron_session", lambda: context == "cron")
+        monkeypatch.setattr("tools.approval_context.is_plugin_origin_turn", lambda: context == "plugin")
+        monkeypatch.setattr("tools.approval_context._is_peer_mesh_approval_context", lambda: context == "mesh")
+        monkeypatch.setattr("gateway.session_context.get_session_env", lambda *_args: "telegram" if context == "platform" else "discord")
+        with patch("tools.discord_tool._discord_request") as request:
+            result = json.loads(discord_core(action="create_forum_post", channel_id="forum", name="n", content="x", start_session=True))
+        assert "not allowed" in result["error"]
+        request.assert_not_called()
+
+    def test_session_registration_failure_reports_created_post(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        self._allow_actions(monkeypatch)
+        with patch("tools.discord_tool._discord_request", return_value={"id": "thread-1", "message": {"id": "thread-1"}}), \
+             patch("gateway.discord_self_start.record_created_thread", side_effect=OSError("failed")):
+            result = json.loads(discord_core(action="create_forum_post", channel_id="forum", name="n", content="x", start_session=True))
+        assert result["success"] and result["thread_id"] == "thread-1"
+        assert "registration failed" in result["warnings"][0]
+
+    def test_start_session_rejects_long_post_before_creation(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        self._allow_actions(monkeypatch)
+        with patch("tools.discord_tool._discord_request") as request:
+            result = json.loads(discord_core(action="create_forum_post", channel_id="forum", name="n", content="x" * 2001, start_session=True))
+        assert "one Discord message" in result["error"]
+        request.assert_not_called()
+
     def test_message_chunks_keep_code_fences_balanced(self):
         from tools.discord_tool import _message_chunks
 

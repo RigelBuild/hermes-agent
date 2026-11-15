@@ -49,7 +49,6 @@ hermes send --list
 
 # Filter by platform
 hermes send --list telegram
-
 ```
 
 ### Start a session from a Discord forum post

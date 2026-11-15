@@ -1,214 +1,188 @@
-"""A Discord bot's own forum opener may start one opt-in session (RIG-10198)."""
+"""Discord forum opener admission uses one adapter-minted capability."""
 
-from __future__ import annotations
-
+import asyncio
 import time
+from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import discord
+import pytest
 
-from gateway.platforms.helpers import MessageDeduplicator
-from gateway.config import PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.discord_self_start import record_created_thread
+from gateway.platforms.base import MessageEvent
+from gateway.run import GatewayRunner
+from gateway.session_authority import initialize_session_authority
+from gateway.session_ingress_context import native_callback, register_transport_home
+from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 from plugins.platforms.discord.adapter import DiscordAdapter
 
-BOT_ID = 99
-THREAD_ID = 700
-PARENT_ID = 42
+BOT = 123456789012345678
+THREAD = 123456789012345679
+PARENT = 123456789012345680
 
 
-def _thread():
+def message():
     channel = Mock(spec=discord.Thread)
-    channel.id = THREAD_ID
-    channel.parent_id = PARENT_ID
-    return channel
-
-
-def _message(channel=None):
+    channel.id = THREAD
+    channel.parent_id = PARENT
+    bot = SimpleNamespace(id=BOT, bot=True, name="bot", display_name="bot")
     return SimpleNamespace(
-        id=THREAD_ID,
-        author=SimpleNamespace(id=BOT_ID, bot=True),
-        channel=channel or _thread(),
+        id=THREAD,
+        author=bot,
+        channel=channel,
         content="start this task",
         mentions=[],
         type=discord.MessageType.default,
         guild=SimpleNamespace(id=1),
+        attachments=[],
+        reference=None,
+        created_at=datetime.now(UTC),
     )
 
 
-def _adapter(forums=(str(PARENT_ID),)):
-    adapter = object.__new__(DiscordAdapter)
-    adapter.platform = SimpleNamespace(value="discord")
-    adapter.config = SimpleNamespace(extra={"self_start_forums": list(forums)})
-    adapter._client = SimpleNamespace(user=SimpleNamespace(id=BOT_ID, bot=True))
-    adapter._dedup = MessageDeduplicator()
-    adapter._get_parent_channel_id = Mock(return_value=str(PARENT_ID))
-    adapter._discord_free_response_channels = Mock(return_value=set())
-    adapter._discord_channel_keys = Mock(return_value={str(THREAD_ID)})
-    adapter._discord_thread_require_mention = Mock(return_value=False)
-    adapter._threads = set()
-    return adapter
+def adapter():
+    result = DiscordAdapter(
+        PlatformConfig(
+            enabled=True, token="fake", extra={"self_start_forums": [str(PARENT)]}
+        )
+    )
+    result._client = SimpleNamespace(user=message().author)
+    result._ready_event.set()
+    result._text_batch_delay_seconds = 0
+    result._discord_history_backfill = lambda: False
+    return result
 
 
-def test_configured_gateway_created_opener_is_admitted_once(tmp_path, monkeypatch):
-    from gateway.discord_self_start import record_created_thread
+@pytest.mark.asyncio
+async def test_opener_commits_native_admission_and_unrecorded_is_denied(
+    tmp_path, monkeypatch
+):
+    from gateway import discord_self_start
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    record_created_thread(str(THREAD_ID), str(PARENT_ID), home=tmp_path)
-    adapter = _adapter()
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "42")
+    monkeypatch.setattr(
+        discord_self_start, "_path", lambda _home=None: tmp_path / "registry.json"
+    )
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+    discord_adapter = adapter()
+    discord_adapter.gateway_runner, runner.adapters = (
+        runner,
+        {Platform.DISCORD: discord_adapter},
+    )
+    authority = await initialize_session_authority(
+        runner, profile_id="default", instance_id="self-start"
+    )
+    authority._schedule = lambda _ref: None
+    runner._wire_adapter_handlers(discord_adapter)
+    register_transport_home(runner, None, tmp_path)
+    receipts = []
 
-    assert adapter._discord_message_admission(_message(), claim=False) == (True, True)
-    assert adapter._discord_message_admission(_message(), claim=False) == (False, False)
+    async def handler(event):
+        with native_callback(runner, event, tmp_path):
+            receipts.append(await authority.admit_native(event))
+
+    discord_adapter.handle_message = handler
+    try:
+        record_created_thread(str(THREAD), str(PARENT))
+        assert await discord_adapter._dispatch_discord_message(message())
+        (receipt,) = receipts
+        (row,) = list_session_admissions(
+            authority.db, session_id=receipt.ref.session_id, pending_only=False
+        )
+        assert row["payload"]["text"] == "start this task"
+        assert row["payload"]["native_text_v1"]["provenance"]["self_start"]
+        from gateway.session_envelope import check_native_route
+
+        restored, _ = await check_native_route(
+            runner,
+            row["payload"],
+            receipt.ref.session_id,
+            discord_adapter.build_source(
+                chat_id=str(THREAD),
+                thread_id=str(THREAD),
+                parent_chat_id=str(PARENT),
+                chat_type="thread",
+                user_id="42",
+                message_id="later",
+            ),
+            discord_adapter,
+        )
+        assert restored.self_start_token
+        source = discord_adapter.build_source(
+            chat_id=str(THREAD),
+            thread_id=str(THREAD),
+            parent_chat_id=str(PARENT),
+            chat_type="thread",
+            user_id=str(BOT),
+            message_id=str(THREAD),
+            is_bot=True,
+        )
+        unrecorded = MessageEvent(
+            text="unrecorded", source=source, message_id=str(THREAD)
+        )
+        with (
+            native_callback(runner, unrecorded, tmp_path),
+            pytest.raises(RuntimeStoreError),
+        ):
+            await authority.admit_native(unrecorded)
+        source.self_start_token = "forged"
+        event = MessageEvent(text="forged", source=source, message_id=str(THREAD))
+        with native_callback(runner, event, tmp_path), pytest.raises(RuntimeStoreError):
+            await authority.admit_native(event)
+        assert not await discord_adapter._dispatch_discord_message(message())
+    finally:
+        authority.db.close()
 
 
-def test_registered_opener_reaches_gateway_handler(tmp_path, monkeypatch):
-    import asyncio
-    from datetime import UTC, datetime
-    from unittest.mock import AsyncMock
-
+@pytest.mark.asyncio
+async def test_delayed_write_and_five_second_miss(tmp_path, monkeypatch):
     from gateway import discord_self_start
+    from plugins.platforms.discord import adapter as module
 
-    monkeypatch.setattr(discord_self_start, "_path", lambda _home=None: tmp_path / "registry.json")
-    discord_self_start.record_created_thread(str(THREAD_ID), str(PARENT_ID))
-    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fake", extra={"self_start_forums": [str(PARENT_ID)]}))
-    bot = SimpleNamespace(id=BOT_ID, bot=True, name="bot", display_name="bot")
-    message = _message()
-    message.author = bot
-    message.attachments = []
-    message.reference = None
-    message.created_at = datetime.now(UTC)
-    adapter._client = SimpleNamespace(user=bot)
-    adapter._ready_event.set()
-    adapter._text_batch_delay_seconds = 0
-    adapter._discord_history_backfill = lambda: False
-    adapter.handle_message = AsyncMock()
-    assert asyncio.run(adapter._dispatch_discord_message(message)) is True
-    adapter.handle_message.assert_awaited_once()
-    event = adapter.handle_message.await_args.args[0]
-    assert event.text == "start this task"
-    assert event.source.role_authorized is True
-    assert event.source.thread_id == str(THREAD_ID)
-
-
-def test_later_bot_message_cannot_consume_starter_grant(tmp_path, monkeypatch):
-    from gateway import discord_self_start
-
-    monkeypatch.setattr(discord_self_start, "_path", lambda _home=None: tmp_path / "registry.json")
-    discord_self_start.record_created_thread(str(THREAD_ID), str(PARENT_ID))
-    adapter = _adapter()
-    later = _message()
-    later.id = THREAD_ID + 1
-    assert adapter._discord_message_admission(later, claim=False) == (False, False)
-    assert adapter._discord_message_admission(_message(), claim=False) == (True, True)
-
-
-def test_registry_written_after_event_is_admitted_once(tmp_path, monkeypatch):
-    import asyncio
-
-    from gateway import discord_self_start
-    from plugins.platforms.discord import adapter as discord_adapter
-
-    monkeypatch.setattr(discord_self_start, "_path", lambda _home=None: tmp_path / "registry.json")
+    monkeypatch.setattr(
+        discord_self_start, "_path", lambda _home=None: tmp_path / "registry.json"
+    )
     sleeps = []
 
     async def sleep(delay):
         sleeps.append(delay)
         if sum(sleeps) == 1:
-            discord_self_start.record_created_thread(str(THREAD_ID), str(PARENT_ID))
+            record_created_thread(str(THREAD), str(PARENT))
 
-    monkeypatch.setattr(discord_adapter.asyncio, "sleep", sleep)
-    adapter = _adapter()
-    message = _message()
-    assert adapter._discord_message_admission(message, claim=False) == (False, False)
-    assert asyncio.run(adapter._await_gateway_created_opener(message)) == (True, True)
+    monkeypatch.setattr(module.asyncio, "sleep", sleep)
+    instance = adapter()
+    assert await instance._admit_gateway_created_opener(message())
     assert sleeps == [0.5, 0.5]
-    assert adapter._discord_message_admission(message, claim=False) == (False, False)
+    sleeps.clear()
 
-
-def test_registry_miss_times_out_after_five_seconds(tmp_path, monkeypatch):
-    import asyncio
-
-    from gateway import discord_self_start
-    from plugins.platforms.discord import adapter as discord_adapter
-
-    monkeypatch.setattr(discord_self_start, "_path", lambda _home=None: tmp_path / "registry.json")
-    sleeps = []
-
-    async def sleep(delay):
+    async def miss(delay):
         sleeps.append(delay)
 
-    monkeypatch.setattr(discord_adapter.asyncio, "sleep", sleep)
-    assert asyncio.run(_adapter()._await_gateway_created_opener(_message())) == (False, False)
+    monkeypatch.setattr(module.asyncio, "sleep", miss)
+    assert await instance._admit_gateway_created_opener(message()) is None
     assert sleeps == [0.5] * 10
 
 
-def test_unconfigured_parent_does_not_admit_created_opener(tmp_path, monkeypatch):
-    from gateway.discord_self_start import record_created_thread
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    record_created_thread(str(THREAD_ID), str(PARENT_ID), home=tmp_path)
-    adapter = _adapter(forums=("999",))
-
-    assert adapter._discord_message_admission(_message(), claim=False) == (False, False)
-
-
-def test_unrecorded_thread_is_not_admitted(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_wrong_channel_later_bot_and_expired_are_dropped(tmp_path, monkeypatch):
     from gateway import discord_self_start
 
-    monkeypatch.setattr(discord_self_start, "_path", lambda _home=None: tmp_path / "state" / "registry.json")
-    adapter = _adapter()
-    assert adapter._discord_message_admission(_message(), claim=False) == (False, False)
-
-
-def test_unrecorded_opener_has_no_gateway_auth_grant(tmp_path, monkeypatch):
-    import asyncio
-
-    from gateway import discord_self_start
-    from gateway.platforms.base import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session import Platform, SessionSource
-
-    monkeypatch.setattr(discord_self_start, "_path", lambda _home=None: tmp_path / "state" / "registry.json")
-    adapter = _adapter()
-    admitted, role_authorized = adapter._discord_message_admission(_message(), claim=False)
-    assert (admitted, role_authorized) == (False, False)
-
-    runner = object.__new__(GatewayRunner)
-    runner._scale_to_zero_note_real_inbound = lambda: None
-    runner._hm_pre_gateway_dispatch_hook = lambda event, _source: asyncio.sleep(0, result=event)
-    runner._is_user_authorized_for_source = lambda source, **_kwargs: source.role_authorized is True
-    runner._admit_bot_message_for_source = lambda _source: True
-    runner._admit_bot_chain = lambda _event: True
-    source = SessionSource(
-        platform=Platform.DISCORD, chat_id=str(THREAD_ID), chat_type="thread", user_id=str(BOT_ID),
-        thread_id=str(THREAD_ID), parent_chat_id=str(PARENT_ID), is_bot=True,
-        role_authorized=role_authorized,
+    monkeypatch.setattr(
+        discord_self_start, "_path", lambda _home=None: tmp_path / "registry.json"
     )
-    event = MessageEvent(text="start this task", message_id="800", source=source)
-    assert asyncio.run(runner._hm_admit_event(event)) is None
-
-
-def test_expired_created_thread_is_not_admitted(tmp_path, monkeypatch):
-    from gateway import discord_self_start
-    from gateway.discord_self_start import record_created_thread
-
-    monkeypatch.setattr(discord_self_start, "_path", lambda _home=None: tmp_path / "state" / "registry.json")
-    record_created_thread(str(THREAD_ID), str(PARENT_ID), created_at=time.time() - 700)
-    adapter = _adapter()
-    assert adapter._discord_message_admission(_message(), claim=False) == (False, False)
-
-
-def test_opener_and_later_human_reply_share_thread_session_key():
-    from gateway.config import Platform
-    from gateway.session import SessionSource, build_session_key
-
-    opener = SessionSource(
-        platform=Platform.DISCORD, chat_id=str(THREAD_ID), chat_type="thread", user_id=str(BOT_ID),
-        thread_id=str(THREAD_ID), parent_chat_id=str(PARENT_ID), is_bot=True,
-    )
-    reply = SessionSource(
-        platform=Platform.DISCORD, chat_id=str(THREAD_ID), chat_type="thread", user_id="123",
-        thread_id=str(THREAD_ID), parent_chat_id=str(PARENT_ID),
-    )
-
-    assert build_session_key(opener) == build_session_key(reply)
+    instance = adapter()
+    original = message()
+    record_created_thread(str(THREAD), str(PARENT))
+    later = message()
+    later.id += 1
+    assert await instance._admit_gateway_created_opener(later) is None
+    wrong = message()
+    wrong.channel.parent_id += 1
+    assert await instance._admit_gateway_created_opener(wrong) is None
+    assert await instance._admit_gateway_created_opener(original)
+    record_created_thread(str(THREAD), str(PARENT), created_at=time.time() - 700)
+    monkeypatch.setattr("plugins.platforms.discord.adapter.asyncio.sleep", AsyncMock())
+    assert await instance._admit_gateway_created_opener(original) is None
