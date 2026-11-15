@@ -9,7 +9,7 @@ from urllib.error import HTTPError
 
 import pytest
 
-from scripts.releases.nix_release_cache import assemble, fetch_upstream_narinfo, write_pin
+from scripts.releases.nix_release_cache import assemble, fetch_upstream_narinfo, parse_narinfo, write_pin
 
 
 SHARED_HASH = "1b9p3x1z5r7c2m8k4w6v0q9s3d5f7h1j"
@@ -29,6 +29,20 @@ def _narinfo(store_hash: str, nar_name: str, *, nar_hash: str, nar_size: int = 1
         f"Deriver: {store_hash}-hermes-agent.drv\n"
         "Sig: cache-release-1:OURS\n"
     )
+
+
+def test_narinfo_without_references_parses_empty_tuple() -> None:
+    data = _narinfo(SHARED_HASH, "nar.xz", nar_hash="sha256:empty").replace("References: \n", "").encode()
+
+    assert parse_narinfo(data).references == ()
+
+
+def test_narinfo_rejects_duplicate_references_fields() -> None:
+    data = _narinfo(SHARED_HASH, "nar.xz", nar_hash="sha256:empty")
+    data = data.replace("References: \n", "References: \nReferences: \n").encode()
+
+    with pytest.raises(ValueError, match="expected one References field, found 2"):
+        parse_narinfo(data)
 
 
 def _platform(

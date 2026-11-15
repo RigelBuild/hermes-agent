@@ -59,7 +59,10 @@ def parse_narinfo(data: bytes, *, source: str = "narinfo") -> Narinfo:
         raise ValueError(f"{source}: invalid Nix store path {store_path!r}")
     nar_hash = one("NarHash")
     nar_size = one("NarSize")
-    references = tuple(sorted(one("References").split()))
+    reference_fields = fields.get("References", [])
+    if len(reference_fields) > 1:
+        raise ValueError(f"{source}: expected one References field, found {len(reference_fields)}")
+    references = tuple(sorted(reference_fields[0].split())) if reference_fields else ()
     return Narinfo(
         store_path=store_path,
         nar_hash=nar_hash,
