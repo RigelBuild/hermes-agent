@@ -493,7 +493,7 @@ def control_snapshot(authority, ref):
     states = []
     for kind, cls in [('goal', GoalState), ('loop', LoopState), ('heartbeat', HeartbeatState)]:
         raw = authority.db.get_meta('heartbeat:route:' + route) if kind == 'heartbeat' and route else None
-        if raw is None and (kind != 'heartbeat' or not live.route):
+        if not raw and (kind != 'heartbeat' or route or not live.route):
             raw = authority.db.get_meta(kind + ':' + target)
         try:
             states.append(cls.from_json(raw) if raw else None)

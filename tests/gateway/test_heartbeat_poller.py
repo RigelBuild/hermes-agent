@@ -107,8 +107,10 @@ def test_legacy_manager_does_not_match_other_routing_scope(poller):
     now = datetime.now()
     entry = SessionEntry(other_key, "other-scope-session", now, now, platform=Platform.TELEGRAM)
     db.save_gateway_routing_entry(other_key, json.dumps(entry.to_dict()), scope=other_scope)
-    with pytest.raises(RuntimeError, match="route lookup failed"):
-        HeartbeatManager("other-scope-session", routing_db=db, routing_scope=runner.session_store._routing_scope())
+    manager = HeartbeatManager("other-scope-session", routing_db=db, routing_scope=runner.session_store._routing_scope())
+    assert manager.state is None
+    assert "No heartbeat" in manager.status_line()
+    assert manager.set("standalone", 60).prompt == "standalone"
     assert load_route_heartbeat(other_key, db) is None
 
 
@@ -122,6 +124,7 @@ def test_route_lookup_failure_is_not_reported_as_success(poller, monkeypatch):
     def fail(*args, **kwargs):
         raise OSError("routing unavailable")
     monkeypatch.setattr(db, "_read_all", fail)
+    assert HeartbeatManager("heartbeat-session", routing_db=db, routing_scope=runner.session_store._routing_scope()).state is None
     for operation in (lambda: manager.set("x", 60), manager.pause, manager.resume):
         with pytest.raises(RuntimeError, match="route lookup failed"):
             operation()

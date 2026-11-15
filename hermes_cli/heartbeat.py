@@ -190,7 +190,7 @@ def _legacy_route(
             (scope, route),
         )
         if not entries:
-            raise RuntimeError("heartbeat route lookup returned no entry")
+            return None, False
         data = json.loads(entries[0]["entry_json"])
         if not isinstance(data, dict) or data.get("session_key") != route or not data.get("session_id"):
             raise RuntimeError("heartbeat routing entry is invalid")
@@ -340,12 +340,16 @@ class HeartbeatManager:
             routing_db, routing_scope = _default_routing_context()
         self.routing_db = routing_db
         self.routing_scope = routing_scope
-        if not self.route_key:
-            route, archived = self._storage()
-            if route and not archived:
-                db = self.db if self.db is not None else _get_session_db()
-                if db is not None and db.get_meta(_META_PREFIX + self.session_id) is not None:
-                    migrate_heartbeat_to_route(self.session_id, route, db=db)
+        self._lookup_logged = False
+        try:
+            if not self.route_key:
+                route, archived = self._storage()
+                if route and not archived:
+                    db = self.db if self.db is not None else _get_session_db()
+                    if db is not None and db.get_meta(_META_PREFIX + self.session_id) is not None:
+                        migrate_heartbeat_to_route(self.session_id, route, db=db)
+        except RuntimeError as exc:
+            self._log_lookup_failure(exc)
         self._state: Optional[HeartbeatState] = self._load()
         self._last_claim: Optional[tuple[float, int]] = None
 
@@ -355,8 +359,17 @@ class HeartbeatManager:
         db = self.db if self.db is not None else _get_session_db()
         return _legacy_route(self.session_id, db, self.routing_db, self.routing_scope)
 
+    def _log_lookup_failure(self, exc: RuntimeError) -> None:
+        if not self._lookup_logged:
+            logger.debug("HeartbeatManager: route lookup failed: %s", exc)
+            self._lookup_logged = True
+
     def _load(self) -> Optional[HeartbeatState]:
-        route, archived = self._storage()
+        try:
+            route, archived = self._storage()
+        except RuntimeError as exc:
+            self._log_lookup_failure(exc)
+            return None
         if archived:
             return None
         return load_route_heartbeat(route, self.db) if route else load_heartbeat(self.session_id)
@@ -410,6 +423,7 @@ class HeartbeatManager:
 
     def _set_status(self, status: str, *, reanchor: bool = False) -> Optional[HeartbeatState]:
         with _CLAIM_LOCK:
+            self._storage()  # Mutations must report routing failures, even after a failed read.
             self._state = self._load()
             if not self._state:
                 return None

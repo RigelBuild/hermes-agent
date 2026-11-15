@@ -55,6 +55,8 @@ async def test_control_snapshot_reads_only_current_route_heartbeat(owner):
     owner.db.set_meta('heartbeat:' + owner.target, legacy.to_json())
     owner.db.set_meta('heartbeat:route:' + live.route, routed.to_json())
     assert control_snapshot(owner.authority, owner.ref)['heartbeat']['prompt'] == 'route'
+    owner.db.set_meta('heartbeat:route:' + live.route, '')
+    assert control_snapshot(owner.authority, owner.ref)['heartbeat']['prompt'] == 'legacy'
     store = owner.authority.runner.session_store
     with store._lock:
         store._entries[live.route].session_id = 'replacement'

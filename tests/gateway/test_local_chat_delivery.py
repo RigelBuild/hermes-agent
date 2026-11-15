@@ -41,6 +41,23 @@ def _overdue_heartbeat(session_id):
         save_heartbeat(session_id, state)
 
 
+@pytest.mark.asyncio
+async def test_legacy_local_heartbeat_migrates_and_fires(tmp_path, monkeypatch):
+    from gateway.run_heartbeat_restore import restore_heartbeat_watches
+    from hermes_cli.heartbeat import HeartbeatState, save_heartbeat
+
+    runner, authority, ref, _ = await _local(tmp_path, monkeypatch)
+    route = authority.sessions[ref.session_id].route
+    save_heartbeat(ref.session_id, HeartbeatState(prompt='legacy tick', interval_seconds=60,
+                                                  created_at=time.time() - 120))
+    await restore_heartbeat_watches(runner)
+    assert authority.db.get_meta('heartbeat:' + ref.session_id) is None
+    assert authority.db.get_meta('heartbeat:route:' + route) is not None
+    assert route in runner._heartbeat_watch
+    await runner._heartbeat_poll_once(runner._heartbeat_watch)
+    assert _heartbeat_admissions(authority, ref)
+
+
 def _heartbeat_admissions(authority, ref):
     from hermes_state_runtime import list_session_admissions
     rows = list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)
