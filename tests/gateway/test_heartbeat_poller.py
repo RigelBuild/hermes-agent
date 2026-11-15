@@ -508,13 +508,13 @@ async def test_discord_group_heartbeat_without_admission_reports_missing_provena
     assert key == f"agent:main:discord:group:{chat_id}:{user_id}"
     session_entry = await runner.async_session_store.get_or_create_session(source)
     session_id = session_entry.session_id
-    HeartbeatManager(session_id).set("check status", 60)
+    created_at = HeartbeatManager(session_id).set("check status", 60).created_at
     monkeypatch.setattr(runner, "_start_heartbeat_poller", lambda: None)
     monkeypatch.setattr(
         heartbeat,
         "time",
         SimpleNamespace(
-            time=lambda: HeartbeatManager(session_id).state.created_at + 61
+            time=lambda: created_at + 61
         ),
     )
     assert not list_session_admissions(
