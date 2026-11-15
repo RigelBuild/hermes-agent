@@ -38,7 +38,7 @@ async def test_inflight_heartbeat_on_the_logical_owner_blocks_another(tmp_path, 
         async def admit_automation(adapter, event, identity):
             admitted.append(identity)
         authority.admit_automation = admit_automation
-        runner = SimpleNamespace(session_authority=authority)
+        runner = SimpleNamespace(session_authority=authority, _is_session_running=lambda route: False)
         source = SessionSource(platform=Platform.TELEGRAM, chat_id='1', user_id='1')
         await admit_heartbeat(runner, object(), source, 'tip', 'route')
         assert admitted == []
