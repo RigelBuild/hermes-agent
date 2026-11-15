@@ -85,3 +85,40 @@ async def test_heartbeat_remains_on_route_through_reset_and_fresh_runner_restore
     finally:
         runner.session_store.close_all_db_handles()
 
+
+@pytest.mark.asyncio
+async def test_restore_migrates_archived_session_heartbeat_to_current_route(tmp_path, monkeypatch):
+    from gateway.run import GatewayRunner
+    from gateway.run_heartbeat_restore import restore_heartbeat_watches
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="archive", user_id="owner")
+    config = GatewayConfig()
+    store = SessionStore(tmp_path / "sessions", config)
+    entry = store.get_or_create_session(source)
+    old_id, key = entry.session_id, entry.session_key
+    replacement = store.reset_session(key)
+    db = store._db_for_key(key)
+    db.set_meta("heartbeat:" + old_id, HeartbeatState(
+        prompt="check archived", interval_seconds=60, created_at=1,
+    ).to_json())
+    store.close_all_db_handles()
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = config
+    runner.session_store = SessionStore(tmp_path / "sessions", config)
+    runner._heartbeat_watch = {}
+    runner._start_heartbeat_poller = lambda: None
+    runner._profile_name_for_source = lambda source, adapter_profile=None: source.profile
+    runner._delivery_adapter_for = lambda source: object()
+    runner._run_in_executor_with_context = asyncio.to_thread
+    try:
+        await restore_heartbeat_watches(runner)
+        assert runner._heartbeat_watch == {key: (source, replacement.session_id)}
+        db = runner.session_store._db_for_key(key)
+        assert HeartbeatManager(replacement.session_id, route_key=key, db=db).due_prompt(now=120)
+        assert HeartbeatManager(old_id).clear()
+        assert not HeartbeatManager(replacement.session_id, route_key=key, db=db).has_heartbeat()
+    finally:
+        runner.session_store.close_all_db_handles()
+

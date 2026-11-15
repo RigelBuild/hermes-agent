@@ -1,6 +1,7 @@
 """Recover heartbeat watches from the gateway's canonical persisted routing index."""
 from __future__ import annotations
 
+import json
 import logging
 
 logger = logging.getLogger("gateway.run")
@@ -14,6 +15,7 @@ async def restore_heartbeat_watches(runner) -> None:
     Run all storage work off-loop so a cold profile DB cannot block adapters.
     """
     from gateway.run import _profile_runtime_scope
+    from gateway.session import SessionSource
     from hermes_cli.heartbeat import HeartbeatManager, migrate_heartbeat_to_route
     from hermes_constants import get_hermes_home
 
@@ -41,10 +43,29 @@ async def restore_heartbeat_watches(runner) -> None:
             for group in by_scope.values():
                 try:
                     with runner._profile_scope_for_source(group[0][1]):
+                        db = store._db_for_key(group[0][0].session_key)
+                        # Current owners take precedence over older rows for the same route.
+                        for entry, _source in group:
+                            migrate_heartbeat_to_route(entry.session_id, entry.session_key, db=db)
+                        for meta_key, _raw in db.list_meta_prefix("heartbeat:"):
+                            if meta_key.startswith("heartbeat:route:"):
+                                continue
+                            session_id = meta_key[len("heartbeat:"):]
+                            row = db.get_session(session_id)
+                            if not row:
+                                continue
+                            route = row.get("session_key")
+                            if not route and row.get("origin_json"):
+                                try:
+                                    origin = SessionSource.from_dict(json.loads(row["origin_json"]))
+                                    route = runner._session_key_for_source(origin)
+                                except (ValueError, TypeError, KeyError):
+                                    continue
+                            if route:
+                                migrate_heartbeat_to_route(session_id, route, db=db)
                         for entry, source in group:
                             try:
                                 db = store._db_for_key(entry.session_key)
-                                migrate_heartbeat_to_route(entry.session_id, entry.session_key, db=db)
                                 if HeartbeatManager(entry.session_id, route_key=entry.session_key, db=db).has_heartbeat():
                                     restored.append((entry.session_key, source, entry.session_id))
                             except Exception:

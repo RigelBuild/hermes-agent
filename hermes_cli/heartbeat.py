@@ -316,7 +316,25 @@ class HeartbeatManager:
         return self._set_status("active", reanchor=True)
 
     def clear(self) -> bool:
-        cleared = self._set_status("cleared") is not None
+        if self.route_key:
+            cleared = self._set_status("cleared") is not None
+        else:
+            cleared = False
+            db = self.db if self.db is not None else _get_session_db()
+            with _CLAIM_LOCK:
+                if db is not None:
+                    row = db.get_session(self.session_id)
+                    route_key = row.get("session_key") if row else None
+                    if route_key:
+                        state = load_route_heartbeat(route_key, db)
+                        if state is not None:
+                            state.status = "cleared"
+                            cleared = save_route_heartbeat(route_key, state, db)
+                    legacy = load_heartbeat(self.session_id)
+                    if legacy is not None:
+                        legacy.status = "cleared"
+                        save_heartbeat(self.session_id, legacy)
+                        cleared = True
         self._state = None
         return cleared
 
