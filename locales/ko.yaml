@@ -911,6 +911,7 @@ gateway:
     unavailable: "하트비트를 사용할 수 없어요 (세션 없음)."
     paused: "⏸ 하트비트 일시 중지됨: {prompt}"
     none_set: "설정된 하트비트가 없어요."
+    needs_admission: "먼저 이 채널에 일반 메시지를 보낸 다음 하트비트를 설정하거나 재개하세요."
     no_resume: "재개할 하트비트가 없어요."
     resumed: "▶ 하트비트 재개됨 ({interval}마다): {prompt}"
     cleared: "✓ 하트비트를 지웠어요."

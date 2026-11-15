@@ -925,6 +925,7 @@ gateway:
     unavailable: "A szívverés nem érhető el (nincs munkamenet)."
     paused: "⏸ Szívverés szüneteltetve: {prompt}"
     none_set: "Nincs szívverés beállítva."
+    needs_admission: "Először küldjön egy normál üzenetet ebben a csatornában, majd állítsa be vagy folytassa a szívverést."
     no_resume: "Nincs folytatható szívverés."
     resumed: "▶ Szívverés folytatva ({interval} időközönként): {prompt}"
     cleared: "✓ Szívverés törölve."

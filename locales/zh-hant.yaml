@@ -911,6 +911,7 @@ gateway:
     unavailable: "心跳無法使用（沒有工作階段）。"
     paused: "⏸ 心跳已暫停：{prompt}"
     none_set: "尚未設定心跳。"
+    needs_admission: "請先在此頻道傳送一則一般訊息，然後再設定或恢復心跳。"
     no_resume: "沒有可恢復的心跳。"
     resumed: "▶ 心跳已恢復（每 {interval}）：{prompt}"
     cleared: "✓ 心跳已清除。"

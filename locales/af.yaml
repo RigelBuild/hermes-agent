@@ -911,6 +911,7 @@ gateway:
     unavailable: "Hartklop onbeskikbaar (geen sessie nie)."
     paused: "⏸ Hartklop gepouseer: {prompt}"
     none_set: "Geen hartklop gestel nie."
+    needs_admission: "Stuur eers 'n gewone boodskap in hierdie kanaal, en stel of hervat dan die hartklop."
     no_resume: "Geen hartklop om te hervat nie."
     resumed: "▶ Hartklop hervat (elke {interval}): {prompt}"
     cleared: "✓ Hartklop verwyder."
