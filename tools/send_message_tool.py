@@ -275,9 +275,11 @@ def _handle_send(args):
         mentions = args.get("mentions")
         if mentions and entry is not None and entry.standalone_send is not None and entry.standalone_send.mentions:
             handler_args["mentions"] = [mentions] if isinstance(mentions, str) else list(mentions)
-        result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
-                                              media_files=media_files, force_document=force_document_attachments,
-                                              **handler_args))
+        sender_options = {"start_session": True} if args.get("start_session") else {}
+        result = _run_async(_send_to_platform(
+            platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
+            media_files=media_files, force_document=force_document_attachments,
+            **sender_options, **handler_args))
         if isinstance(result, dict) and result.get("success"):
             if used_home_channel:
                 result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
@@ -640,7 +642,7 @@ def _standalone_send_policy(platform_name):
 
 
 async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files, *, thread_id,
-                                  max_len, force_document, mentions=None):
+                                  max_len, force_document, mentions=None, start_session=False):
     """Chunked send through a plugin's standalone_sender_fn; one captionable file + short text
     rides as the media caption. WhatsApp re-pings recipients on every message that carries
     ``mentions``, so only the first payload of a logical send gets them."""
@@ -651,6 +653,8 @@ async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chun
         return err
     extra = {"force_document": force_document} if policy.forward_force_document else {}
     first_only = {"mentions": mentions} if mentions else {}
+    if start_session:
+        first_only["start_session"] = True
     empty_media = [] if policy.empty_list_between_chunks else None
     if policy.captionable:
         # Cap on the platform's own message limit so the caption is deliverable.
@@ -686,7 +690,7 @@ _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, feishu, what
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
-                            force_document=False, mentions=None, args=None, notify=None):
+                            force_document=False, mentions=None, args=None, notify=None, start_session=False):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
@@ -708,7 +712,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if policy is not None and (policy.all_sends or (policy.mentions and mentions) or (media_files and policy.media)):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
                                              thread_id=thread_id, max_len=max_len, force_document=force_document,
-                                             mentions=mentions)
+                                             mentions=mentions, start_session=start_session)
     route = _CHUNKED_ROUTES.get(platform_name)
     if route is not None and (media_files or not route[0]):
         _, empty_media, sender = route

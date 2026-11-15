@@ -892,7 +892,7 @@ def _forum_post_body(name: str, starter: str, applied_tags: Optional[list[str]])
 
 def _create_forum_post(
     token: str, channel_id: str, name: str, content: str,
-    applied_tags: Optional[list[str]] = None, **_kwargs: Any,
+    applied_tags: Optional[list[str]] = None, start_session: bool = False, **_kwargs: Any,
 ) -> str:
     """Create a tagged forum thread with a starter message, then append long content."""
     _require_forum_post_text(name, content)
@@ -900,6 +900,10 @@ def _create_forum_post(
     chunks = _message_chunks(content)
     body = _forum_post_body(name, chunks[0], applied_tags)
     thread = _discord_request("POST", f"/channels/{channel_id}/threads", token, body=body)
+    if start_session:
+        from gateway.discord_self_start import record_created_thread
+
+        record_created_thread(str(thread["id"]), str(channel_id))
     starter = thread.get("message") or {}
     try:
         message_ids = (
@@ -1055,6 +1059,10 @@ _SCHEMA_PROPERTIES: dict[str, Any] = {
     "name": {"type": "string", "description": "New thread/forum post name (maximum 100 characters for create_forum_post)."},
     "content": {"type": "string", "description": "Message text (create_forum_post or post_message); longer text is split into 2000-character messages."},
     "applied_tags": {"type": "array", "items": {"type": "string"}, "maxItems": 5, "description": "Optional forum tag IDs (create_forum_post); required when the forum channel enforces REQUIRE_TAG."},
+    "start_session": {
+        "type": "boolean",
+        "description": "For create_forum_post only: allow this forum post opener to start one Hermes session.",
+    },
     "limit": {
         "type": "integer",
         "minimum": 1,
@@ -1292,7 +1300,8 @@ def _run_replay_read(
 
 _HANDLER_DEFAULTS = {
     "guild_id": "", "channel_id": "", "user_id": "", "role_id": "", "message_id": "", "query": "",
-    "name": "", "content": "", "applied_tags": None, "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
+    "name": "", "content": "", "applied_tags": None, "start_session": False,
+    "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
 
 
 def _run_discord_action(action: str, valid_actions: dict[str, Any], tool_label: str, **params: Any) -> str:

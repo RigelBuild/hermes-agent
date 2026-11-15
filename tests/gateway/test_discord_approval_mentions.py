@@ -89,6 +89,11 @@ def test_yaml_config_bridges_approval_mentions_target():
     seeded = _apply_yaml_config({}, {"approval_mentions_target": "index"})
     assert seeded == {"approval_mentions_target": "index"}
 
+def test_yaml_config_seeds_self_start_forums():
+    assert _apply_yaml_config({}, {"self_start_forums": ["42", "43"]}) == {
+        "self_start_forums": ["42", "43"],
+    }
+
 def test_yaml_config_seeds_websocket_health_with_primary_precedence(monkeypatch):
     for key in (
         "HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS",
