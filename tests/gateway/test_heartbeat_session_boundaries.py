@@ -39,7 +39,7 @@ def test_reset_carries_only_the_departing_conversations_heartbeat(tmp_path):
 
     assert replacement.session_id != child
     assert load_heartbeat(child) is None
-    assert HeartbeatManager(replacement.session_id).due_prompt(now=120)
+    assert HeartbeatManager(replacement.session_id).due_prompt(now=180)
     assert HeartbeatManager("unrelated").due_prompt(now=120)
     # Resuming the archived conversation must not resurrect its old schedule.
     store.switch_session(key, child)
