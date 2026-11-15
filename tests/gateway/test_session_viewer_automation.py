@@ -58,7 +58,7 @@ async def test_control_snapshot_reads_only_current_route_heartbeat(owner):
     store = owner.authority.runner.session_store
     with store._lock:
         store._entries[live.route].session_id = 'replacement'
-    assert control_snapshot(owner.authority, owner.ref)['heartbeat']['prompt'] == 'legacy'
+    assert control_snapshot(owner.authority, owner.ref)['heartbeat'] is None
 
 
 @pytest.mark.asyncio

@@ -172,7 +172,8 @@ class GatewayGoalsMixin:
         db_for_key = getattr(store, "_db_for_key", None)
         if callable(db_for_key):
             db = db_for_key(quick_key)
-            migrate_heartbeat_to_route(session_id, quick_key, db=db)
+            if db is not None and db.get_meta("heartbeat:" + session_id) is not None:
+                migrate_heartbeat_to_route(session_id, quick_key, db=db)
             mgr = HeartbeatManager(session_id, route_key=quick_key, db=db)
         else:
             mgr = HeartbeatManager(session_id)

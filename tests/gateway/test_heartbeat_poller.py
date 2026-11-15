@@ -107,10 +107,36 @@ def test_legacy_manager_does_not_match_other_routing_scope(poller):
     now = datetime.now()
     entry = SessionEntry(other_key, "other-scope-session", now, now, platform=Platform.TELEGRAM)
     db.save_gateway_routing_entry(other_key, json.dumps(entry.to_dict()), scope=other_scope)
-    manager = HeartbeatManager("other-scope-session", routing_db=db, routing_scope=runner.session_store._routing_scope())
-    assert manager.state is None
-    assert not manager.clear()
+    with pytest.raises(RuntimeError, match="route lookup failed"):
+        HeartbeatManager("other-scope-session", routing_db=db, routing_scope=runner.session_store._routing_scope())
     assert load_route_heartbeat(other_key, db) is None
+
+
+def test_route_lookup_failure_is_not_reported_as_success(poller, monkeypatch):
+    from hermes_cli import goals
+
+    runner, _, _, _, _ = poller
+    db = goals._get_session_db()
+    def fail(*args, **kwargs):
+        raise OSError("routing unavailable")
+    monkeypatch.setattr(db, "_read_all", fail)
+    with pytest.raises(RuntimeError, match="route lookup failed"):
+        HeartbeatManager("heartbeat-session", routing_db=db, routing_scope=runner.session_store._routing_scope()).set("x", 60)
+
+
+def test_heartbeat_list_reports_route_and_error(poller, capsys):
+    from hermes_cli.subcommands.heartbeat import _list_heartbeats
+
+    _, _, _, key, _ = poller
+    manager = HeartbeatManager("heartbeat-session")
+    manager.record_error("failed")
+    _list_heartbeats(None)
+    output = capsys.readouterr().out
+    assert f"Route: {key}" in output
+    assert "Interval: 1m" in output
+    assert "Last fired: never" in output
+    assert "Fire count: 0" in output
+    assert "Last error: failed" in output
 
 
 

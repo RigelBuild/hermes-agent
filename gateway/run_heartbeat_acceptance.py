@@ -47,6 +47,8 @@ def settle_heartbeat_attempt(event, manager, task=None):
         error = task.exception()
         if error is not None:
             manager.record_error(str(error))
+        elif getattr(event, "_heartbeat_execution_started", False):
+            manager.record_error("")
 
 
 async def heartbeat_route_deliverable(runner, adapter, source, entry, *, check_envelope=True):

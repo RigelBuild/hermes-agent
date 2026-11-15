@@ -244,16 +244,18 @@ async def test_restore_enters_each_profile_scope_once_per_scan(tmp_path, monkeyp
         runner._adapter_for_source = lambda source: object()
         runner._run_in_executor_with_context = asyncio.to_thread
         entered = []
-        real = GatewayRunner._profile_scope_for_source
+        from gateway import run
+        real = run._profile_runtime_scope
 
-        def counting(self, source):
-            entered.append(source.profile)
-            return real(self, source)
+        def counting(profile_home, *args, **kwargs):
+            entered.append(profile_home)
+            return real(profile_home, *args, **kwargs)
 
-        monkeypatch.setattr(GatewayRunner, '_profile_scope_for_source', counting)
+        monkeypatch.setattr(run, '_profile_runtime_scope', counting)
+        monkeypatch.setattr(run_heartbeat_restore, '_profile_runtime_scope', counting, raising=False)
         await restore_heartbeat_watches(runner)
         assert runner._heartbeat_watch == expected
-        assert sorted(entered, key=str) == [None, 'work']
+        assert sorted(map(str, entered)) == sorted(map(str, [home, named]))
     finally:
         store.close_all_db_handles()
         if 'runner' in locals():

@@ -39,7 +39,7 @@ _UNIT_SECONDS = {
 _STATE_FIELDS = {
     "prompt": (str, ""), "interval_seconds": (int, 0), "status": (str, "active"),
     "created_at": (float, 0.0), "last_fired_at": (float, 0.0), "fire_count": (int, 0),
-    "delivery_mode": (str, "steer"),
+    "delivery_mode": (str, "idle"),
     "last_error": (str, ""),
 }
 
@@ -163,6 +163,10 @@ def _default_routing_context() -> tuple[Any, Optional[str]]:
         return None, None
 
 
+def _route_scope(route: str, routing_scope: str) -> str:
+    return "" if ":local:" in route else routing_scope
+
+
 def _legacy_route(
     session_id: str,
     db: Any,
@@ -180,24 +184,22 @@ def _legacy_route(
         if not route:
             return None, False
         if routing_scope is None:
-            return None, True
-        scope = "" if ":local:" in route else routing_scope
+            raise RuntimeError("heartbeat routing scope unavailable")
+        scope = _route_scope(route, routing_scope)
         entries = routing_db._read_all(
             "SELECT entry_json FROM gateway_routing WHERE scope = ? AND session_key = ?",
             (scope, route),
         )
-        for entry in entries:
-            try:
-                data = json.loads(entry["entry_json"])
-            except (ValueError, TypeError, RecursionError):
-                continue
-            if (isinstance(data, dict) and data.get("session_key") == route
-                    and data.get("session_id") == session_id and not data.get("suspended")):
-                return route, False
+        if not entries:
+            raise RuntimeError("heartbeat route lookup returned no entry")
+        data = json.loads(entries[0]["entry_json"])
+        if not isinstance(data, dict) or data.get("session_key") != route or not data.get("session_id"):
+            raise RuntimeError("heartbeat routing entry is invalid")
+        if data["session_id"] == session_id and not data.get("suspended"):
+            return route, False
         return None, True
     except Exception as exc:
-        logger.debug("HeartbeatManager: route lookup failed: %s", exc)
-        return None, True
+        raise RuntimeError("heartbeat route lookup failed") from exc
 
 def load_heartbeat(session_id: str) -> Optional[HeartbeatState]:
     db = _get_session_db() if session_id else None
@@ -339,7 +341,9 @@ class HeartbeatManager:
         if not self.route_key:
             route, archived = self._storage()
             if route and not archived:
-                migrate_heartbeat_to_route(self.session_id, route, db=self.db)
+                db = self.db if self.db is not None else _get_session_db()
+                if db is not None and db.get_meta(_META_PREFIX + self.session_id) is not None:
+                    migrate_heartbeat_to_route(self.session_id, route, db=db)
         self._state: Optional[HeartbeatState] = self._load()
         self._last_claim: Optional[tuple[float, int]] = None
 
@@ -358,7 +362,7 @@ class HeartbeatManager:
     def _save(self, state: HeartbeatState) -> None:
         route, archived = self._storage()
         if archived:
-            return
+            raise RuntimeError("heartbeat session is no longer the route owner")
         if route:
             save_route_heartbeat(route, state, self.db)
         else:
