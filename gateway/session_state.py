@@ -37,6 +37,8 @@ class TurnState:
     # Agents taken out of the cache while this turn still ran them (a one-turn ``model_override``
     # agent): ``_release_running_agent_state`` releases them once the slot clears.
     retired_agents: list[Any] = field(default_factory=list)
+    heartbeat_steered: bool = False  # one heartbeat-originated steer per running turn
+    heartbeat_claim: Any = None  # (agent, ticket, manager) awaiting turn settlement
 
     def running_event(self) -> Any:
         """The event whose input the worker is running now: a drained queued follow-up, else the
@@ -47,17 +49,24 @@ class TurnState:
     def running_follow_up(self, event: Any) -> Iterator[None]:
         """Run *event* (a queued follow-up) as the slot's running turn; restore the outer one on
         exit unless the slot was cleared or rebound meanwhile."""
+        from gateway.run_heartbeat_acceptance import settle_busy_heartbeat
+        settle_busy_heartbeat(self)
+        self.heartbeat_steered = False
         previous, self.follow_up_event = self.follow_up_event, event
         try:
             yield
         finally:
             if self.follow_up_event is event:
+                settle_busy_heartbeat(self)
+                self.heartbeat_steered = False
                 self.follow_up_event = previous
 
     def clear(self) -> None:
         """Reset the per-turn slot.  The caller pops ``lease`` first to release it."""
         self.agent = self.lease = self.event = self.ctx = self.follow_up_event = None
         self.started_ts = self.busy_ack_ts = 0.0
+        self.heartbeat_steered = False
+        self.heartbeat_claim = None
 
 
 @dataclass

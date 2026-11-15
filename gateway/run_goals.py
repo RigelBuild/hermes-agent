@@ -170,26 +170,26 @@ class GatewayGoalsMixin:
         ):
             return
         from gateway.session_local import LocalSessionAdapter
-        local = isinstance(adapter, LocalSessionAdapter)
         from gateway.session_viewer_automation import viewer_driven
-        if local and viewer_driven(adapter.authority, source.chat_id, "viewer_heartbeat"):
+        if isinstance(adapter, LocalSessionAdapter) and viewer_driven(adapter.authority, source.chat_id, "viewer_heartbeat"):
             return  # the classic CLI's watchdog fires it: that CLI paints only the turns it submits
         if getattr(self, 'session_authority', None) is not None:
             from gateway.run_heartbeat_acceptance import admit_heartbeat
             await admit_heartbeat(self, adapter, source, session_id, quick_key)
             return
+        from gateway.run_heartbeat_acceptance import steer_busy_heartbeat
         if (
             self._is_session_running(quick_key)
             or quick_key in adapter._active_sessions
             or self._queue_depth(quick_key, adapter=adapter) > 0
         ):
-            return  # keep missed intervals due until user work has drained
+            if self._is_user_authorized_for_source(source, allow_adapter_delegation=False):
+                steer_busy_heartbeat(self, source, session_id, quick_key)  # idle mode leaves the tick due
+            return
         from agent.estop import check_paused
-
-        if check_paused("heartbeat", logger):
-            return  # `hermes pause`: leave the tick unclaimed so it fires after `hermes resume`
+        if check_paused("heartbeat", logger):  # keep the tick due until resume
+            return
         from hermes_cli.heartbeat import HeartbeatManager
-
         mgr = HeartbeatManager(session_id=session_id)
         if not mgr.has_heartbeat():
             watch.pop(quick_key, None)

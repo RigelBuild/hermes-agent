@@ -12,7 +12,7 @@ description: "A recurring prompt that re-enters your current session whenever it
 /heartbeat every 10m Check the deployment and report meaningful changes
 ```
 
-Inspired by Prime-Agent's `/heartbeat`. The Hermes adaptation keeps the strict message-flow invariants: the heartbeat is injected only between turns (never mid-run), as a plain user-role message.
+By default, heartbeats run between turns. In a gateway session, add `--steer` before the prompt to deliver a due heartbeat during a running turn after the next tool result. The classic CLI remains idle-only, even in steer mode.
 
 ## Heartbeat vs cron: which one do I want?
 
@@ -31,8 +31,8 @@ Rule of thumb: if the recurring prompt needs the conversation's context, use `/h
 
 | Command | What it does |
 |---|---|
-| `/heartbeat every <interval> <prompt>` | Set (or replace) the session's heartbeat. Intervals: `90s`, `10m`, `2h`, `1d` (minimum 60s). |
-| `/heartbeat` or `/heartbeat status` | Show the heartbeat, its interval, and time to next fire. |
+| `/heartbeat every <interval> [--steer] <prompt>` | Set (or replace) the session's heartbeat. Intervals: `90s`, `10m`, `2h`, `1d` (minimum 60s). `--steer` opts gateway sessions into busy-turn delivery. |
+| `/heartbeat` or `/heartbeat status` | Show the heartbeat, its delivery mode, interval, and time to next fire. |
 | `/heartbeat pause` | Stop firing without clearing. |
 | `/heartbeat resume` | Resume (re-anchors the timer — no instant stale fire). |
 | `/heartbeat clear` | Remove the heartbeat. |
@@ -43,9 +43,10 @@ On messaging platforms, send a normal message in the chat before setting or resu
 
 ## Behavior details
 
-- **Idle-only.** A heartbeat never interrupts a running turn. If the agent is busy when the tick comes due, it fires at the next idle poll. In the gateway, an idle watched session wakes proactively; no new inbound message is needed.
-- **Missed ticks coalesce.** If the session was busy (or the process wasn't running) through several intervals, you get **one** heartbeat turn, not a backlog. The timer re-anchors on every fire.
-- **User messages win.** A queued user message always takes priority; the heartbeat waits for the input queue to drain.
+- **Idle by default.** If the agent is busy when a tick comes due, it fires at the next idle poll. An idle watched gateway session wakes proactively.
+- **Opt-in steering.** `--steer` sends a due gateway heartbeat to the parent agent, not its delegated subagents. The agent sees it after the next tool result. At most one heartbeat steer is accepted per running turn; an unread steer is returned to the heartbeat schedule. The classic CLI still waits for idle.
+- **Missed ticks coalesce.** If several intervals pass, the next fire represents one tick, not a backlog. The timer re-anchors on every fire.
+- **User messages win by default.** In idle mode, a queued user message takes priority and the heartbeat waits for the queue to drain.
 - **Owned by the surface that set it.** A heartbeat set from a messaging chat fires from the gateway and replies into that chat even while the same session is open in the TUI / Desktop app; the viewer never claims the tick.
 - **Cache-safe.** The injected prompt is an ordinary user message. No system-prompt mutation, no toolset change.
 - **Gateway recovery.** Startup restores active heartbeats using the current persisted conversation and thread routing, in the owning profile. Each poll retries recovery after temporary storage failures or adapter downtime; paused and cleared heartbeats and suspended conversations do not restart. No new chat message is required.

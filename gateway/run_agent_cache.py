@@ -316,11 +316,12 @@ class GatewayAgentCacheMixin:
             return False
         state = self._peek_session_state(session_key)
         if state is not None:
+            from gateway.run_heartbeat_acceptance import settle_busy_heartbeat
+            settle_busy_heartbeat(state.turn)
             if state.turn.lease is not None:
                 from gateway.active_lease_io import release_soon
                 release_soon(state.turn.lease)
-            # One structured reset instead of a drifting pop-list. Turn-lease tokens are deliberately NOT
-            # cleared here — _release_turn_lease owns them.
+            # Lease tokens belong to _release_turn_lease, not this reset.
             state.turn.clear()
             retired, state.turn.retired_agents = state.turn.retired_agents, []
             for agent in retired:
@@ -328,8 +329,7 @@ class GatewayAgentCacheMixin:
                 self._spawn_release_thread(self._release_evicted_agent_soft, (agent,),
                                            f"agent-retire-{str(session_key)[:24]}", inline_fallback=True,
                                            session_key=session_key)
-        # Turn boundary: a running-agent slot was just released; persist the new (lower) in-flight count
-        # so the dashboard readout stays current. Preserves gateway_state (see _persist_active_agents).
+        # Persist the lower in-flight count without changing gateway_state.
         self._persist_active_agents()
         return True
 

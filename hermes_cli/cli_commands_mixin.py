@@ -1633,30 +1633,23 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             self._heartbeat_set(mgr, arg)
 
     def _heartbeat_set(self, mgr, arg: str) -> None:
-        """Set: ``/heartbeat every 10m <prompt>`` (also accepts ``10m <prompt>``)."""
-        from hermes_cli.heartbeat import parse_interval, format_interval
-        tokens = arg.split(None, 2)
-        interval = None
-        prompt = ""
-        if tokens and tokens[0].lower() == "every" and len(tokens) >= 2:
-            interval = parse_interval(f"every {tokens[1]}")
-            prompt = tokens[2] if len(tokens) > 2 else ""
-        elif tokens:
-            interval = parse_interval(tokens[0])
-            prompt = arg[len(tokens[0]):].strip() if interval and interval > 0 else ""
+        """Set a recurring heartbeat, optionally with ``--steer <prompt>``."""
+        from hermes_cli.heartbeat import parse_heartbeat_set, format_interval
+        interval, prompt, delivery_mode = parse_heartbeat_set(arg)
         if interval is None:
-            return _cp(f"  {_t('heartbeat.usage')}", _dim_line(_t("heartbeat.usage_also")))
+            return _cp(f"  {_t('heartbeat.usage')}", _dim_line(_t('heartbeat.usage_also')))
         if interval < 0:
             from hermes_cli.heartbeat import MIN_INTERVAL_SECONDS
             return _cp(f"  {_t('heartbeat.interval_too_small', min_seconds=MIN_INTERVAL_SECONDS)}")
         if not prompt.strip():
             return _cp(f"  {_t('heartbeat.prompt_required')}")
-        state = _attempt(_t("heartbeat.invalid_label"), ValueError, mgr.set, prompt, interval)
+        state = _attempt(_t("heartbeat.invalid_label"), ValueError, mgr.set, prompt, interval,
+                         delivery_mode=delivery_mode)
         if state is _FAILED:
             return
         self._start_heartbeat_watchdog()
         _cp(f"  {_t('heartbeat.set', interval=format_interval(state.interval_seconds), prompt=state.prompt)}",
-            _dim_line(_t("heartbeat.set_note")))
+            _dim_line(_t('heartbeat.set_note')))
 
     def _handle_refine_command(self, cmd: str) -> None:
         """Dispatch /refine — run the memory/skill review fork on demand (same machinery as the

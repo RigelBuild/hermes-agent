@@ -1,9 +1,8 @@
 """Session heartbeats — recurring re-entry prompts for the current session.
 
 Session-scoped and in-process (CLI or gateway must be running); durable cross-process scheduling stays
-``hermes cron``. Invariants (mirrors goals.py): injection is a plain user message — no system-prompt
-mutation or toolset swap, so prompt caching stays intact — and a real user message always wins:
-heartbeats only fire into an idle session with an empty input queue."""
+``hermes cron``. Injection is a plain user message with no system-prompt mutation or toolset swap.
+Heartbeats default to idle-only; gateway sessions may opt into busy-turn steering."""
 
 from __future__ import annotations
 
@@ -40,6 +39,7 @@ _UNIT_SECONDS = {
 _STATE_FIELDS = {
     "prompt": (str, ""), "interval_seconds": (int, 0), "status": (str, "active"),
     "created_at": (float, 0.0), "last_fired_at": (float, 0.0), "fire_count": (int, 0),
+    "delivery_mode": (str, "idle"),
 }
 
 
@@ -53,6 +53,17 @@ def parse_interval(text: str) -> Optional[int]:
         return None
     seconds = int(float(m.group(1)) * _UNIT_SECONDS[m.group(2).lower()])
     return -1 if seconds < MIN_INTERVAL_SECONDS else seconds
+
+
+def parse_heartbeat_set(text: str) -> tuple[Optional[int], str, str]:
+    """Parse the interval and optional leading steer flag without rewriting prompt text."""
+    match = re.match(r"^\s*(?:every\s+)?(\S+)(?:\s+(.*))?$", text, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return None, "", "idle"
+    interval = parse_interval(match.group(1))
+    prompt = match.group(2) or ""
+    flag = re.match(r"^--steer(?:\s+|$)", prompt)
+    return interval, prompt[flag.end():] if flag else prompt, "steer" if flag else "idle"
 
 
 def format_interval(seconds: int) -> str:
@@ -72,6 +83,7 @@ class HeartbeatState:
     created_at: float = 0.0
     last_fired_at: float = 0.0
     fire_count: int = 0
+    delivery_mode: str = "idle"  # idle | steer
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -175,22 +187,25 @@ class HeartbeatManager:
         if s is None:
             return "No heartbeat. Set one with /heartbeat every <interval> <prompt>."
         every = format_interval(s.interval_seconds)
+        mode = "steer (gateway only)" if s.delivery_mode == "steer" else s.delivery_mode
         fired = f", fired {s.fire_count}×" if s.fire_count else ""
         if s.status == "active":
             next_in = max(0, int((s.last_fired_at or s.created_at) + s.interval_seconds - time.time()))
-            return f"♥ Heartbeat (every {every}, next in ~{next_in}s{fired}): {s.prompt}"
+            return f"♥ Heartbeat (every {every}, next in ~{next_in}s{fired}, mode {mode}): {s.prompt}"
         icon = "⏸ " if s.status == "paused" else ""
-        return f"{icon}Heartbeat ({s.status}, every {every}{fired}): {s.prompt}"
+        return f"{icon}Heartbeat ({s.status}, every {every}{fired}, mode {mode}): {s.prompt}"
 
-    def set(self, prompt: str, interval_seconds: int) -> HeartbeatState:
+    def set(self, prompt: str, interval_seconds: int, *, delivery_mode: str = "idle") -> HeartbeatState:
         prompt = (prompt or "").strip()
         if not prompt:
             raise ValueError("heartbeat prompt is empty")
         interval_seconds = int(interval_seconds)
         if interval_seconds < MIN_INTERVAL_SECONDS:
             raise ValueError(f"interval must be at least {MIN_INTERVAL_SECONDS}s")
+        if delivery_mode not in {"idle", "steer"}:
+            raise ValueError("delivery mode must be idle or steer")
         self._state = HeartbeatState(prompt=prompt, interval_seconds=interval_seconds, status="active",
-                                     created_at=time.time())
+                                     created_at=time.time(), delivery_mode=delivery_mode)
         save_heartbeat(self.session_id, self._state)
         return self._state
 
