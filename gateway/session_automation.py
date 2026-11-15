@@ -496,9 +496,7 @@ def snapshot_automation(authority, adapter, event, identity):
         return snapshot_local_automation(authority, adapter, event, identity, entry)
     owner = authority.logical_owner(entry.session_id)
     envelope = validated_committed_route_envelope(authority, adapter, event.source, entry)
-    from gateway.session_envelope import restore_native
-    restore_native({'text': event.text, 'native_text_v1': {
-        key: value for key, value in envelope.items() if key != 'media'}}, runner)
+    # Route validation above already restored the committed native source and checked routing identity.
     provenance = deepcopy(envelope['provenance'])
     source = deepcopy(envelope['source'])
     # Never anchor the wake to the stale human message; ``to_dict`` already omits a null anchor.
