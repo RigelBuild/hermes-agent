@@ -16,7 +16,7 @@ async def restore_heartbeat_watches(runner) -> None:
     """
     from gateway.run import _profile_runtime_scope
     from gateway.session import SessionSource
-    from hermes_cli.heartbeat import HeartbeatManager, migrate_heartbeat_to_route
+    from hermes_cli.heartbeat import HeartbeatManager, HeartbeatState, migrate_heartbeat_to_route
     from hermes_constants import get_hermes_home
 
     store = runner.session_store
@@ -47,7 +47,8 @@ async def restore_heartbeat_watches(runner) -> None:
                         # Current owners take precedence over older rows for the same route.
                         for entry, _source in group:
                             migrate_heartbeat_to_route(entry.session_id, entry.session_key, db=db)
-                        for meta_key, _raw in db.list_meta_prefix("heartbeat:"):
+                        legacy = []
+                        for meta_key, raw in db.list_meta_prefix("heartbeat:"):
                             if meta_key.startswith("heartbeat:route:"):
                                 continue
                             session_id = meta_key[len("heartbeat:"):]
@@ -62,7 +63,18 @@ async def restore_heartbeat_watches(runner) -> None:
                                 except (ValueError, TypeError, KeyError):
                                     continue
                             if route:
-                                migrate_heartbeat_to_route(session_id, route, db=db)
+                                try:
+                                    data = json.loads(raw)
+                                    if not isinstance(data, dict) or data.get("status") not in {"active", "paused"}:
+                                        continue
+                                    state = HeartbeatState.from_json(raw)
+                                    if not state.prompt.strip() or state.interval_seconds < 60:
+                                        continue
+                                    legacy.append((state.created_at, session_id, route))
+                                except (ValueError, TypeError, AttributeError):
+                                    continue
+                        for _created_at, session_id, route in sorted(legacy, reverse=True):
+                            migrate_heartbeat_to_route(session_id, route, db=db)
                         for entry, source in group:
                             try:
                                 db = store._db_for_key(entry.session_key)
