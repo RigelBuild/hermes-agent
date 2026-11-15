@@ -117,12 +117,14 @@ def test_route_lookup_failure_is_not_reported_as_success(poller, monkeypatch):
 
     runner, _, _, _, _ = poller
     db = goals._get_session_db()
+    manager = HeartbeatManager("heartbeat-session", routing_db=db, routing_scope=runner.session_store._routing_scope())
 
     def fail(*args, **kwargs):
         raise OSError("routing unavailable")
     monkeypatch.setattr(db, "_read_all", fail)
-    with pytest.raises(RuntimeError, match="route lookup failed"):
-        HeartbeatManager("heartbeat-session", routing_db=db, routing_scope=runner.session_store._routing_scope()).set("x", 60)
+    for operation in (lambda: manager.set("x", 60), manager.pause, manager.resume):
+        with pytest.raises(RuntimeError, match="route lookup failed"):
+            operation()
 
 
 def test_heartbeat_list_reports_route_and_error(poller, capsys):
