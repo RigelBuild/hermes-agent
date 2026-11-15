@@ -163,7 +163,7 @@ def test_run_injects_the_field_and_redacts_it_in_every_common_form(unlocked):
     assert base64.b64encode(_AGE.encode()).decode() not in res["output"]
 
 def _fake_sops(unlocked, monkeypatch):
-    vst, tmp = unlocked
+    _vst, tmp = unlocked
     binary_dir = tmp / "bin"
     binary_dir.mkdir()
     binary = binary_dir / "sops"
