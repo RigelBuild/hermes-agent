@@ -1,6 +1,7 @@
 """Heartbeat polls wake idle adapters, never accumulate deferred ticks."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -35,11 +36,13 @@ def poller(monkeypatch):
     from hermes_cli import goals, heartbeat
 
     goals._DB_CACHE.clear()
-    goals._get_session_db()
+    db = goals._get_session_db()
     clock = SimpleNamespace(now=1000.0)
     monkeypatch.setattr(heartbeat, "time", SimpleNamespace(time=lambda: clock.now))
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", user_id="42", chat_type="dm", message_id="watch-cmd")
     key = build_session_key(source)
+    db.create_session("heartbeat-session", "telegram", session_key=key)
+    db.save_gateway_routing_entry(key, json.dumps({"session_id": "heartbeat-session", "session_key": key}))
     adapter = _HeartbeatAdapter(PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM)
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
@@ -49,6 +52,28 @@ def poller(monkeypatch):
     HeartbeatManager("heartbeat-session").set("check status", 60)
     yield runner, adapter, watch, key, clock
     goals._DB_CACHE.clear()
+
+
+def test_legacy_manager_uses_current_route_without_session_duplicate(poller):
+    from hermes_cli import goals
+    from hermes_cli.heartbeat import load_route_heartbeat
+
+    _, _, _, key, clock = poller
+    db = goals._get_session_db()
+    manager = HeartbeatManager('heartbeat-session')
+    assert db.get_meta('heartbeat:heartbeat-session') is None
+    assert manager.pause().status == 'paused'
+    assert load_route_heartbeat(key, db).status == 'paused'
+    manager.resume()
+    clock.now += 60
+    assert manager.due_prompt() is not None
+    assert load_route_heartbeat(key, db).fire_count == 1
+    assert manager.abandon_fire()
+    manager.record_error('failure')
+    assert load_route_heartbeat(key, db).last_error == 'failure'
+    assert manager.clear()
+    assert load_route_heartbeat(key, db) is None
+    assert db.get_meta('heartbeat:heartbeat-session') is None
 
 
 @pytest.mark.asyncio

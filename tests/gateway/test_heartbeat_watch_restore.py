@@ -15,6 +15,40 @@ from hermes_state import SessionDB
 
 
 @pytest.mark.asyncio
+async def test_restore_scans_served_profile_without_routes(tmp_path, monkeypatch, caplog):
+    from gateway.run_heartbeat_restore import restore_heartbeat_watches
+
+    home = tmp_path / '.hermes'
+    named = home / 'profiles' / 'work'
+    named.mkdir(parents=True)
+    (named / 'config.yaml').write_text('{}')
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    dbs = {str(p): SessionDB(db_path=p / 'state.db') for p in (home, named)}
+    monkeypatch.setattr(goals, '_DB_CACHE', dbs)
+    dbs[str(named)].create_session('orphan', 'telegram')
+    raw = HeartbeatState(prompt='check', interval_seconds=60).to_json()
+    dbs[str(named)].set_meta('heartbeat:orphan', raw)
+    config = GatewayConfig(multiplex_profiles=True)
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = config
+    runner.session_store = SessionStore(home / 'sessions', config)
+    runner._heartbeat_watch = {}
+    runner._run_in_executor_with_context = asyncio.to_thread
+    try:
+        await restore_heartbeat_watches(runner)
+        await restore_heartbeat_watches(runner)
+        assert dbs[str(named)].get_meta('heartbeat:orphan') == raw
+        assert runner._heartbeat_watch == {}
+        assert sum('heartbeat legacy session orphan has no resolvable route' in r.message
+                   for r in caplog.records) == 1
+    finally:
+        runner.session_store.close_all_db_handles()
+        for db in dbs.values():
+            db.close()
+
+
+@pytest.mark.asyncio
 async def test_restore_retries_persisted_routes_in_their_own_profiles(tmp_path, monkeypatch):
     from gateway.run_heartbeat_restore import restore_heartbeat_watches
 

@@ -122,6 +122,29 @@ _ROUTE_PREFIX = _META_PREFIX + "route:"
 _CLAIM_LOCK = threading.Lock()  # every driver of a session's heartbeat runs in its owning gateway process
 
 
+def _legacy_route(session_id: str, db: Any) -> tuple[Optional[str], bool]:
+    """Return the current route, or mark a replaced keyed session as archived."""
+    if not session_id or db is None:
+        return None, False
+    try:
+        row = db.get_session(session_id)
+        route = row.get("session_key") if row else None
+        if not route:
+            return None, False
+        entries = db._read_all("SELECT entry_json FROM gateway_routing WHERE session_key = ?", (route,))
+        for entry in entries:
+            try:
+                data = json.loads(entry["entry_json"])
+                if isinstance(data, dict) and data.get("session_id") == session_id:
+                    return route, False
+            except (ValueError, TypeError, RecursionError):
+                continue
+        return None, bool(entries)
+    except Exception as exc:
+        logger.debug("HeartbeatManager: route lookup failed: %s", exc)
+        return None, True
+
+
 def load_heartbeat(session_id: str) -> Optional[HeartbeatState]:
     db = _get_session_db() if session_id else None
     if db is None:
@@ -250,12 +273,24 @@ class HeartbeatManager:
         self._state: Optional[HeartbeatState] = self._load()
         self._last_claim: Optional[tuple[float, int]] = None
 
+    def _storage(self) -> tuple[Optional[str], bool]:
+        if self.route_key:
+            return self.route_key, False
+        db = self.db if self.db is not None else _get_session_db()
+        return _legacy_route(self.session_id, db)
+
     def _load(self) -> Optional[HeartbeatState]:
-        return load_route_heartbeat(self.route_key, self.db) if self.route_key else load_heartbeat(self.session_id)
+        route, archived = self._storage()
+        if archived:
+            return None
+        return load_route_heartbeat(route, self.db) if route else load_heartbeat(self.session_id)
 
     def _save(self, state: HeartbeatState) -> None:
-        if self.route_key:
-            save_route_heartbeat(self.route_key, state, self.db)
+        route, archived = self._storage()
+        if archived:
+            return
+        if route:
+            save_route_heartbeat(route, state, self.db)
         else:
             save_heartbeat(self.session_id, state)
 
@@ -316,25 +351,7 @@ class HeartbeatManager:
         return self._set_status("active", reanchor=True)
 
     def clear(self) -> bool:
-        if self.route_key:
-            cleared = self._set_status("cleared") is not None
-        else:
-            cleared = False
-            db = self.db if self.db is not None else _get_session_db()
-            with _CLAIM_LOCK:
-                if db is not None:
-                    row = db.get_session(self.session_id)
-                    route_key = row.get("session_key") if row else None
-                    if route_key:
-                        state = load_route_heartbeat(route_key, db)
-                        if state is not None:
-                            state.status = "cleared"
-                            cleared = save_route_heartbeat(route_key, state, db)
-                    legacy = load_heartbeat(self.session_id)
-                    if legacy is not None:
-                        legacy.status = "cleared"
-                        save_heartbeat(self.session_id, legacy)
-                        cleared = True
+        cleared = self._set_status("cleared") is not None
         self._state = None
         return cleared
 

@@ -17,6 +17,8 @@ async def restore_heartbeat_watches(runner) -> None:
     from gateway.run import _profile_runtime_scope
     from gateway.session import SessionSource
     from hermes_cli.heartbeat import HeartbeatManager, HeartbeatState, migrate_heartbeat_to_route
+    from hermes_cli.goals import _get_session_db
+    from hermes_cli.profiles import profiles_to_serve
     from hermes_constants import get_hermes_home
 
     store = runner.session_store
@@ -40,10 +42,21 @@ async def restore_heartbeat_watches(runner) -> None:
                     by_scope.setdefault(runner._profile_scope_key_for_source(source), []).append((entry, source))
                 except Exception:
                     logger.debug("heartbeat restore for %s failed", entry.session_key, exc_info=True)
-            for group in by_scope.values():
+            multiplex = bool(getattr(getattr(runner, "config", None), "multiplex_profiles", False))
+            if multiplex:
+                for _name, profile_home in profiles_to_serve(multiplex=True):
+                    by_scope.setdefault(profile_home, [])
+            else:
+                by_scope.setdefault(None, [])
+            warned = getattr(runner, "_heartbeat_unresolved_legacy", None)
+            if warned is None:
+                warned = runner._heartbeat_unresolved_legacy = set()
+            for scope, group in by_scope.items():
                 try:
-                    with runner._profile_scope_for_source(group[0][1]):
-                        db = store._db_for_key(group[0][0].session_key)
+                    with _profile_runtime_scope(scope or home):
+                        db = _get_session_db()
+                        if db is None:
+                            continue
                         # Current owners take precedence over older rows for the same route.
                         for entry, _source in group:
                             migrate_heartbeat_to_route(entry.session_id, entry.session_key, db=db)
@@ -54,6 +67,9 @@ async def restore_heartbeat_watches(runner) -> None:
                             session_id = meta_key[len("heartbeat:"):]
                             row = db.get_session(session_id)
                             if not row:
+                                if (str(scope or home), session_id) not in warned:
+                                    warned.add((str(scope or home), session_id))
+                                    logger.warning("heartbeat legacy session %s has no resolvable route", session_id)
                                 continue
                             route = row.get("session_key")
                             if not route and row.get("origin_json"):
@@ -61,7 +77,12 @@ async def restore_heartbeat_watches(runner) -> None:
                                     origin = SessionSource.from_dict(json.loads(row["origin_json"]))
                                     route = runner._session_key_for_source(origin)
                                 except (ValueError, TypeError, KeyError):
-                                    continue
+                                    pass
+                            if not route:
+                                if (str(scope or home), session_id) not in warned:
+                                    warned.add((str(scope or home), session_id))
+                                    logger.warning("heartbeat legacy session %s has no resolvable route", session_id)
+                                continue
                             if route:
                                 try:
                                     data = json.loads(raw)
@@ -83,7 +104,7 @@ async def restore_heartbeat_watches(runner) -> None:
                             except Exception:
                                 logger.debug("heartbeat restore for %s failed", entry.session_key, exc_info=True)
                 except Exception:
-                    logger.debug("heartbeat restore scope for %s failed", group[0][0].session_key, exc_info=True)
+                    logger.debug("heartbeat restore scope for %s failed", scope or home, exc_info=True)
         return restored
 
     try:
