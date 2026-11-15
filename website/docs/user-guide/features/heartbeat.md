@@ -31,7 +31,7 @@ Rule of thumb: if the recurring prompt needs the conversation's context, use `/h
 
 | Command | What it does |
 |---|---|
-| `/heartbeat every <interval> [--idle|--steer] <prompt>` | Set (or replace) the route's heartbeat. Intervals: `90s`, `10m`, `2h`, `1d` (minimum 60s). Gateway delivery steers by default; `--idle` waits for idle. |
+| `/heartbeat every <interval> [--idle or --steer] <prompt>` | Set (or replace) the route's heartbeat. Intervals: `90s`, `10m`, `2h`, `1d` (minimum 60s). Gateway delivery steers by default; `--idle` waits for idle. |
 | `/heartbeat` or `/heartbeat status` | Show the heartbeat, its delivery mode, interval, and time to next fire. |
 | `/heartbeat pause` | Stop firing without clearing. |
 | `/heartbeat resume` | Resume (re-anchors the timer — no instant stale fire). |
