@@ -1614,6 +1614,35 @@ def check_terminal_requirements() -> bool:
 
 from tools.registry import registry
 
+def _terminal_timeout_description(timeout: int) -> str:
+    return (
+        f"Max seconds (default {timeout}, foreground max {FOREGROUND_MAX_TIMEOUT}). "
+        "Finishing early returns at once, so set it generously. "
+        f"Above {FOREGROUND_MAX_TIMEOUT}s the command runs as a tracked background process "
+        "with notify_on_complete=true (the result says so; do not re-run it)."
+    )
+
+
+def _terminal_schema_overrides() -> dict:
+    from hermes_constants import get_hermes_home_override
+    from tools.terminal_scope import get_terminal_scope
+
+    # A routed home must supply its terminal policy as a scope. Without one,
+    # keep the static schema instead of describing the launch profile's env.
+    if get_hermes_home_override() is not None and get_terminal_scope() is None:
+        return {}
+    _ensure_terminal_env_bridged()
+    timeout = _parse_env_var("TERMINAL_TIMEOUT", "180")
+    parameters = {**TERMINAL_SCHEMA["parameters"]}
+    properties = dict(parameters["properties"])
+    properties["timeout"] = {
+        **properties["timeout"],
+        "description": _terminal_timeout_description(timeout),
+    }
+    parameters["properties"] = properties
+    return {"parameters": parameters}
+
+
 TERMINAL_SCHEMA = {
     "name": "terminal",
     "description": TERMINAL_TOOL_DESCRIPTION,
@@ -1631,7 +1660,8 @@ TERMINAL_SCHEMA = {
             },
             "timeout": {
                 "type": "integer",
-                "description": f"Max seconds (default 180, foreground max {FOREGROUND_MAX_TIMEOUT}). Finishing early returns at once, so set it generously. Above {FOREGROUND_MAX_TIMEOUT}s the command runs as a tracked background process with notify_on_complete=true (the result says so; do not re-run it).",
+                # Registry falls back to this static default if the callback cannot resolve scope.
+                "description": _terminal_timeout_description(180),
                 "minimum": 1
             },
             "workdir": {
@@ -1755,4 +1785,5 @@ registry.register(
     check_fn=check_terminal_requirements,
     emoji="💻",
     max_result_size_chars=100_000,
+    dynamic_schema_overrides=_terminal_schema_overrides,
 )
