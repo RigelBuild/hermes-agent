@@ -203,6 +203,11 @@ def _handle_react(args, remove=False):
 
 
 def _handle_send(args):
+    if args.get("start_session"):
+        from tools.approval_context import _is_cron_approval_context, _is_peer_mesh_approval_context, is_plugin_origin_turn
+
+        if _is_cron_approval_context() or is_plugin_origin_turn() or _is_peer_mesh_approval_context():
+            return tool_error("start_session is not allowed in this session context")
     target, message = args.get("target", ""), args.get("message", "")
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")

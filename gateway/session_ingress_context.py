@@ -217,7 +217,9 @@ def capture_provenance(runner, event):
     if event.source.self_start_token:
         if not getattr(adapter, "redeem_self_start", lambda _source: False)(event.source):
             raise RuntimeStoreError('permission_denied')
-        provenance['self_start'] = event.source.self_start_token
+        thread = str(event.source.thread_id)
+        provenance['self_start'] = {'thread': thread, 'message': thread}
+        event.source.self_start_token = None
     return provenance
 
 
@@ -228,13 +230,13 @@ def restore_provenance(runner, source, provenance):
     candidate = copy(source)
     candidate.delivered_via_upstream_relay = 'relay' in provenance
     adapter, home, runtime_home, expected = _binding(runner, candidate, provenance.get('transport_profile'))
-    token = provenance.get('self_start')
+    marker = provenance.get('self_start')
     if {key: value for key, value in provenance.items() if key != 'self_start'} != expected:
         raise RuntimeStoreError('profile_mismatch')
-    if token:
-        source.self_start_token = token
-        if not getattr(adapter, 'redeem_self_start', lambda _source: False)(source):
-            raise RuntimeStoreError('permission_denied')
+    if marker is not None and not getattr(adapter, 'valid_self_start', lambda *_: False)(source, marker):
+        raise RuntimeStoreError('permission_denied')
+    if marker is not None:
+        source._self_start_marker = marker
     source.delivered_via_upstream_relay = candidate.delivered_via_upstream_relay
     source._transport_adapter_ref = weakref.ref(adapter)
     # Re-pin the identity ingress resolved: the drained turn's route records the receiving bot from it
@@ -247,9 +249,7 @@ def restore_provenance(runner, source, provenance):
 
 async def reauthorize_roles(runner, source, provenance):
     """A role flag requests a connector check; it never supplies permission."""
-    if source.self_start_token:
-        if not provenance or provenance.get('self_start') != source.self_start_token:
-            raise RuntimeStoreError('permission_denied')
+    if provenance and 'self_start' in provenance:
         restore_provenance(runner, source, provenance)
         return True
     if not source.role_authorized:

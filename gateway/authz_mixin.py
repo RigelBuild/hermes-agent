@@ -778,7 +778,12 @@ class GatewayAuthorizationMixin:
             return True
         if allow_adapter_delegation and getattr(source, "self_start_token", None):
             adapter = self._adapter_for_source(source)
-            if getattr(adapter, "redeem_self_start", lambda _source: False)(source):
+            if getattr(adapter, "has_self_start", lambda _source: False)(source):
+                return True
+        marker = getattr(source, "_self_start_marker", None)
+        if allow_adapter_delegation and marker:
+            adapter = self._adapter_for_source(source)
+            if getattr(adapter, "valid_self_start", lambda *_: False)(source, marker):
                 return True
         # Pairing store: a first-class grant created only by an operator approving a code. Honored as
         # a UNION with the allowlist (approval also mirrors into it).

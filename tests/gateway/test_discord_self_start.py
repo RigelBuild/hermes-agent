@@ -78,19 +78,28 @@ async def test_opener_commits_native_admission_and_unrecorded_is_denied(
     authority._schedule = lambda _ref: None
     runner._wire_adapter_handlers(discord_adapter)
     register_transport_home(runner, None, tmp_path)
-    receipts = []
 
     async def handler(event):
         with native_callback(runner, event, tmp_path):
-            receipts.append(await authority.admit_native(event))
+            await runner._handle_message(event)
 
     discord_adapter.handle_message = handler
     try:
         record_created_thread(str(THREAD), str(PARENT))
-        assert await discord_adapter._dispatch_discord_message(message())
-        (receipt,) = receipts
+        task = asyncio.create_task(discord_adapter._dispatch_discord_message(message()))
+        from tests.waiting import async_wait_until
+
+        await async_wait_until(lambda: bool(authority.sessions))
+        sid = next(iter(authority.sessions))
+        await async_wait_until(
+            lambda: bool(
+                list_session_admissions(
+                    authority.db, session_id=sid, pending_only=False
+                )
+            )
+        )
         (row,) = list_session_admissions(
-            authority.db, session_id=receipt.ref.session_id, pending_only=False
+            authority.db, session_id=sid, pending_only=False
         )
         assert row["payload"]["text"] == "start this task"
         assert row["payload"]["native_text_v1"]["provenance"]["self_start"]
@@ -99,7 +108,7 @@ async def test_opener_commits_native_admission_and_unrecorded_is_denied(
         restored, _ = await check_native_route(
             runner,
             row["payload"],
-            receipt.ref.session_id,
+            sid,
             discord_adapter.build_source(
                 chat_id=str(THREAD),
                 thread_id=str(THREAD),
@@ -110,7 +119,49 @@ async def test_opener_commits_native_admission_and_unrecorded_is_denied(
             ),
             discord_adapter,
         )
-        assert restored.self_start_token
+        assert restored.self_start_token is None
+        assert restored._self_start_marker == {
+            "thread": str(THREAD),
+            "message": str(THREAD),
+        }
+
+        from gateway.session_envelope import restore_native
+        from hermes_state_runtime import get_session_admission
+        from plugins.platforms.discord import adapter as discord_module
+
+        clock = time.monotonic()
+        monkeypatch.setattr(discord_module.time, "monotonic", lambda: clock + 700)
+        wake = MessageEvent(
+            text="delegate completed",
+            source=restored,
+            internal=True,
+            metadata={
+                "gateway_session_key": runner.session_store._generate_session_key(
+                    restored
+                ),
+                "gateway_session_id": sid,
+            },
+        )
+        wake_receipt = await authority.admit_automation(
+            discord_adapter, wake, "completion-1"
+        )
+        wake_row = get_session_admission(
+            authority.db, admission_id=wake_receipt.admission_id
+        )
+        assert restore_native(wake_row["payload"], runner).text == "delegate completed"
+        replacement = adapter()
+        replacement.gateway_runner = runner
+        runner.adapters = {Platform.DISCORD: replacement}
+        bindings = [(sid, restored, replacement)]
+        assert (await authority.recover_native_sessions(bindings))[sid] == "ready"
+        forged_payload = __import__("copy").deepcopy(row["payload"])
+        forged_payload["native_text_v1"]["source"]["user_id"] = "42"
+        with pytest.raises(RuntimeStoreError):
+            restore_native(forged_payload, runner)
+        replacement.config.extra["self_start_forums"] = []
+        with pytest.raises(RuntimeStoreError):
+            restore_native(row["payload"], runner)
+        runner.adapters = {Platform.DISCORD: discord_adapter}
         source = discord_adapter.build_source(
             chat_id=str(THREAD),
             thread_id=str(THREAD),
@@ -133,6 +184,9 @@ async def test_opener_commits_native_admission_and_unrecorded_is_denied(
         with native_callback(runner, event, tmp_path), pytest.raises(RuntimeStoreError):
             await authority.admit_native(event)
         assert not await discord_adapter._dispatch_discord_message(message())
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
     finally:
         authority.db.close()
 
@@ -186,3 +240,43 @@ async def test_wrong_channel_later_bot_and_expired_are_dropped(tmp_path, monkeyp
     record_created_thread(str(THREAD), str(PARENT), created_at=time.time() - 700)
     monkeypatch.setattr("plugins.platforms.discord.adapter.asyncio.sleep", AsyncMock())
     assert await instance._admit_gateway_created_opener(original) is None
+
+
+@pytest.mark.parametrize("failure", ["human", "message", "parent", "expired"])
+def test_nonce_redeem_checks_source_and_expiry(failure):
+    instance = adapter()
+    source = instance.build_source(
+        chat_id=str(THREAD),
+        thread_id=str(THREAD),
+        parent_chat_id=str(PARENT),
+        chat_type="thread",
+        user_id=str(BOT),
+        message_id=str(THREAD),
+    )
+    source.self_start_token = "nonce"
+    instance._self_start_tokens[(str(THREAD), "nonce")] = time.monotonic() + 60
+    if failure == "human":
+        source.user_id = "42"
+    elif failure == "message":
+        source.message_id = "other"
+    elif failure == "parent":
+        source.parent_chat_id = "other"
+    else:
+        instance._self_start_tokens[(str(THREAD), "nonce")] = time.monotonic() - 1
+    assert not instance.redeem_self_start(source)
+
+
+def test_nonce_redeems_once():
+    instance = adapter()
+    source = instance.build_source(
+        chat_id=str(THREAD),
+        thread_id=str(THREAD),
+        parent_chat_id=str(PARENT),
+        chat_type="thread",
+        user_id=str(BOT),
+        message_id=str(THREAD),
+    )
+    source.self_start_token = "nonce"
+    instance._self_start_tokens[(str(THREAD), "nonce")] = time.monotonic() + 60
+    assert instance.redeem_self_start(source)
+    assert not instance.redeem_self_start(source)

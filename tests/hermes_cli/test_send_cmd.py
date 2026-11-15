@@ -27,6 +27,15 @@ def _parse(argv):
     return parser.parse_args(["send", *argv])
 
 
+def test_start_session_rejected_from_cron(fake_tool, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    with pytest.raises(SystemExit) as result:
+        send_cmd.cmd_send(_parse(["--to", "discord:42", "--start-session", "task"]))
+    assert result.value.code == 2
+    assert "not allowed" in capsys.readouterr().err
+    assert fake_tool.calls == []
+
+
 def test_start_session_cli_records_created_forum_thread(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock

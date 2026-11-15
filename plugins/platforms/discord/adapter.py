@@ -1753,15 +1753,16 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             if consumed:
                 token = secrets.token_urlsafe(32)
                 now = time.monotonic()
-                self._self_start_tokens = {key: expiry for key, expiry in self._self_start_tokens.items() if expiry > now}
+                self._self_start_tokens = {
+                    key: expiry for key, expiry in self._self_start_tokens.items() if expiry > now
+                }
                 self._self_start_tokens[(str(message.channel.id), token)] = now + 600
                 return token
             if attempt < 10:
                 await asyncio.sleep(0.5)
         return None
 
-    def redeem_self_start(self, source: Any) -> bool:
-        token = getattr(source, "self_start_token", None)
+    def valid_self_start(self, source: Any, marker: Any) -> bool:
         thread = str(getattr(source, "thread_id", "") or "")
         user = getattr(getattr(self, "_client", None), "user", None)
         forums = self.config.extra.get("self_start_forums", [])
@@ -1769,11 +1770,27 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             forums = forums.split(",")
         if not isinstance(forums, (list, tuple, set, frozenset)):
             return False
-        return bool(token and user and str(source.user_id) == str(user.id)
-                    and thread and str(source.chat_id) == thread and str(source.message_id) == thread
-                    and str(source.parent_chat_id) in {str(value).strip() for value in forums}
-                    and self._self_start_tokens.get((thread, token), 0) > time.monotonic())
+        return bool(
+            isinstance(marker, dict) and marker == {"thread": thread, "message": thread}
+            and user and str(source.user_id) == str(user.id) and thread
+            and str(source.chat_id) == thread
+            and str(source.parent_chat_id) in {str(value).strip() for value in forums}
+        )
 
+    def has_self_start(self, source: Any) -> bool:
+        token = getattr(source, "self_start_token", None)
+        thread = str(getattr(source, "thread_id", "") or "")
+        return bool(
+            token and str(source.message_id) == thread
+            and self.valid_self_start(source, {"thread": thread, "message": thread})
+            and self._self_start_tokens.get((thread, token), 0) > time.monotonic()
+        )
+
+    def redeem_self_start(self, source: Any) -> bool:
+        if not self.has_self_start(source):
+            return False
+        self._self_start_tokens.pop((str(source.thread_id), source.self_start_token), None)
+        return True
 
     async def _dispatch_discord_message(self, message: Any) -> bool:
         """Apply Discord ingress policy and dispatch one live event."""
@@ -1792,7 +1809,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         if not admitted:
             return False
         self._record_bot_tag_debounce(message)
-        return await self._handle_message(message, role_authorized=role_authorized, self_start_token=self_start_token)
+        return await self._handle_message(
+            message, role_authorized=role_authorized, self_start_token=self_start_token
+        )
 
     # --- gateway_platform_event fire-sites ---
 

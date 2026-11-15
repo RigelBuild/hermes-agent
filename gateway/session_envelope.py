@@ -164,7 +164,7 @@ def _validate_native(runner, event, provenance=None, fresh_roles=False):
         # re-check denied what the inbound filter had just accepted (#139199).
         delegated = runner._adapter_flag(
             source.platform, "authorization_is_upstream", runner._adapter_profile_for_source(source))
-    if not (fresh_roles and source.self_start_token) and not runner._is_user_authorized_for_source(
+    if not (fresh_roles and provenance and 'self_start' in provenance) and not runner._is_user_authorized_for_source(
         source, allow_adapter_delegation=delegated
     ):
         _refuse(event, 'permission_denied', 'user_not_authorized')
@@ -298,7 +298,6 @@ def restore_native_source(payload, runner=None):
     source.is_bot = envelope['source']['is_bot']
     # Private descriptor requests a fresh check, never supplies the verdict.
     source.role_authorized = envelope.get('reauthorize') == 'roles'
-    source.self_start_token = envelope.get('provenance', {}).get('self_start')
     if 'provenance' in envelope:
         from gateway.session_ingress_context import callback_runner, restore_provenance
         runner = runner or callback_runner()

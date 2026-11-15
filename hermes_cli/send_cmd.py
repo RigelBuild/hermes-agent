@@ -240,6 +240,10 @@ def cmd_send(args: argparse.Namespace) -> None:
     if mentions:
         tool_args["mentions"] = mentions
     if getattr(args, "start_session", False):
+        from tools.approval_context import _is_cron_approval_context, _is_peer_mesh_approval_context
+
+        if _is_cron_approval_context() or _is_peer_mesh_approval_context():
+            _fail("hermes send: --start-session is not allowed in this session context.", _USAGE_EXIT)
         if target.split(":", 1)[0].strip().lower() != "discord":
             _fail("hermes send: --start-session is only supported for Discord forum posts.", _USAGE_EXIT)
         tool_args["start_session"] = True
