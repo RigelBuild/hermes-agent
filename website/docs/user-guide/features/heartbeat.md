@@ -37,6 +37,8 @@ Rule of thumb: if the recurring prompt needs the conversation's context, use `/h
 | `/heartbeat resume` | Resume (re-anchors the timer — no instant stale fire). |
 | `/heartbeat clear` | Remove the heartbeat. |
 
+On messaging platforms, send a normal message in the chat before setting or resuming a heartbeat. Local CLI, TUI, and Desktop sessions do not need this step.
+
 `/hb` is an alias. Works on the CLI, the TUI / Desktop app, and gateway platforms (on Slack, use `/hermes heartbeat …`).
 
 ## Behavior details

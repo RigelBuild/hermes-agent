@@ -6,6 +6,8 @@ The done callback retains the watch's profile ContextVars and manager claim.
 """
 import logging
 
+from hermes_state_runtime import RuntimeStoreError
+
 logger = logging.getLogger("gateway.run")
 
 
@@ -42,6 +44,30 @@ def settle_heartbeat_attempt(event, manager):
             manager.abandon_fire()
         except Exception:
             logger.warning("Failed to refund unexecuted heartbeat", exc_info=True)
+
+
+async def heartbeat_route_deliverable(runner, adapter, source, entry):
+    """Whether a heartbeat can use this local, legacy, or committed messaging route."""
+    from gateway.session_local import LocalSessionAdapter
+
+    if adapter is None:
+        return False
+    local = isinstance(adapter, LocalSessionAdapter)
+    if not (getattr(adapter, "_message_handler", None) or local):
+        return False
+    if local or getattr(runner, "session_authority", None) is None:
+        return True
+    from gateway.session_authorities import active_authority
+    from gateway.session_automation import validated_committed_route_envelope
+
+    authority = active_authority(runner)
+    if authority is None or entry is None:
+        return False
+
+    await runner._run_in_executor_with_context(
+        validated_committed_route_envelope, authority, adapter, source, entry
+    )
+    return True
 
 
 async def admit_heartbeat(runner, adapter, source, session_id, route):

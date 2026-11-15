@@ -127,8 +127,9 @@ async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
 async def test_discord_group_slash_only_heartbeat_is_refused(
     monkeypatch, chat_id, command
 ):
-    from tests.gateway.test_authority_lane_moves_on import _chat, _gateway
+    from agent.i18n import t
     from hermes_state_runtime import list_session_admissions
+    from tests.gateway.test_authority_lane_moves_on import _chat, _gateway
 
     user_id = "1385361904591044669"
     runner, adapter, authority, _, sent, _, _ = await _gateway(monkeypatch)
@@ -137,10 +138,10 @@ async def test_discord_group_slash_only_heartbeat_is_refused(
         chat_id=chat_id,
         chat_type="group",
         user_id=user_id,
-        scope_id="1477066497896742955",
         guild_id="1477066497896742955",
     )
     key = runner._session_key_for_source(source)
+    assert key == f"agent:main:discord:group:{chat_id}:{user_id}"
     if command == "/heartbeat resume":
         session_entry = await runner.async_session_store.get_or_create_session(source)
         seeded_manager = HeartbeatManager(session_entry.session_id)
@@ -164,9 +165,28 @@ async def test_discord_group_slash_only_heartbeat_is_refused(
     assert not list_session_admissions(
         authority.db, session_id=session_id, pending_only=False
     )
-    from agent.i18n import t
-
     assert sent[-1] == t("gateway.heartbeat.needs_admission")
+
+
+@pytest.mark.asyncio
+async def test_discord_group_heartbeat_resume_without_paused_state_reports_no_resume(
+    monkeypatch
+):
+    from agent.i18n import t
+    from tests.gateway.test_authority_lane_moves_on import _chat, _gateway
+
+    _runner, adapter, _, _, sent, _, _ = await _gateway(monkeypatch)
+    user_id = "1385361904591044669"
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", user_id)
+    source = adapter.build_source(
+        chat_id="1571155392069763142",
+        chat_type="group",
+        user_id=user_id,
+        guild_id="1477066497896742955",
+    )
+    await _chat(adapter, source, sent, "/heartbeat resume")
+
+    assert sent[-1] == t("gateway.heartbeat.no_resume")
 
 
 @pytest.mark.asyncio
@@ -188,9 +208,10 @@ async def test_discord_group_heartbeat_is_allowed_after_native_message(
         chat_id=chat_id,
         chat_type="group",
         user_id=user_id,
-        scope_id="1477066497896742955",
         guild_id="1477066497896742955",
     )
+    key = runner._session_key_for_source(source)
+    assert key == f"agent:main:discord:group:{chat_id}:{user_id}"
     await _chat(adapter, source, sent, "check status")
 
     if command == "/heartbeat resume":
@@ -213,6 +234,66 @@ async def test_discord_group_heartbeat_is_allowed_after_native_message(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/heartbeat every 1m x", "/heartbeat resume"])
+async def test_legacy_heartbeat_commands_remain_available(monkeypatch, command):
+    from agent.i18n import t
+    from gateway.platforms.event import MessageEvent
+    from gateway.session import SessionSource
+    from gateway.slash_commands_goals import GatewayGoalCommandsMixin
+
+    class LegacyRunner(GatewayGoalCommandsMixin):
+        session_authority = None
+
+        def __init__(self, adapter):
+            self.adapter = adapter
+
+        async def _get_heartbeat_manager_for_event(self, event):
+            return HeartbeatManager("legacy-heartbeat"), SimpleNamespace(session_id="legacy-heartbeat")
+
+        def _session_key_for_source(self, source):
+            return "legacy-route"
+
+        def _delivery_adapter_for(self, source):
+            return self.adapter
+
+        def _register_heartbeat_watch(self, *args):
+            pass
+
+    adapter = _HeartbeatAdapter(PlatformConfig(enabled=True), Platform.TELEGRAM)
+    adapter.set_message_handler(lambda event: None)
+    runner = LegacyRunner(adapter)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="legacy", user_id="legacy")
+    if command == "/heartbeat resume":
+        HeartbeatManager("legacy-heartbeat").set("x", 60)
+        HeartbeatManager("legacy-heartbeat").pause()
+    result = await runner._handle_heartbeat_command(MessageEvent(text=command, source=source))
+    assert result != t("gateway.heartbeat.needs_admission")
+    assert HeartbeatManager("legacy-heartbeat").state.status == "active"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/heartbeat every 1m x", "/heartbeat resume"])
+async def test_local_heartbeat_commands_remain_available(tmp_path, monkeypatch, command):
+    from agent.i18n import t
+    from gateway.platforms.event import MessageEvent
+    from hermes_cli.heartbeat import HeartbeatManager
+    from tests.gateway.test_session_end_delegations import _local
+
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    source = authority.sessions[ref.session_id].source
+    monkeypatch.setattr(runner, "_register_heartbeat_watch", lambda *args: None)
+    if command == "/heartbeat resume":
+        manager = HeartbeatManager(ref.session_id)
+        manager.set("x", 60)
+        manager.pause()
+
+    result = await runner._handle_heartbeat_command(MessageEvent(text=command, source=source))
+
+    assert result != t("gateway.heartbeat.needs_admission")
+    assert HeartbeatManager(ref.session_id).state.status == "active"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "chat_id", ["1571155392069763142", "1571157949362081882", "1571263020523327488"]
 )
@@ -230,10 +311,10 @@ async def test_discord_group_heartbeat_without_admission_reports_missing_provena
         chat_id=chat_id,
         chat_type="group",
         user_id=user_id,
-        scope_id="1477066497896742955",
         guild_id="1477066497896742955",
     )
     key = runner._session_key_for_source(source)
+    assert key == f"agent:main:discord:group:{chat_id}:{user_id}"
     session_entry = await runner.async_session_store.get_or_create_session(source)
     session_id = session_entry.session_id
     HeartbeatManager(session_id).set("check status", 60)

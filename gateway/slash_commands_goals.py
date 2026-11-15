@@ -106,23 +106,15 @@ class GatewayGoalCommandsMixin:
         except Exception as exc:
             logger.debug("goal %s failed: %s", label, exc)
 
-    def _heartbeat_route_has_admission(self, event: MessageEvent, entry) -> bool:
-        """Match the poller's delivery requirements for local, legacy, and admitted routes."""
-        from gateway.session_local import LocalSessionAdapter
-
+    async def _heartbeat_route_has_admission(self, event: MessageEvent, entry) -> bool:
+        """Use the poller's shared delivery eligibility check for this route."""
         adapter = self._delivery_adapter_for(event.source) if event.source is not None else None
-        if adapter is None:
+        from gateway.run_heartbeat_acceptance import heartbeat_route_deliverable
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            return await heartbeat_route_deliverable(self, adapter, event.source, entry)
+        except RuntimeStoreError:
             return False
-        local = isinstance(adapter, LocalSessionAdapter)
-        if not (getattr(adapter, "_message_handler", None) or local):
-            return False
-        if local or getattr(self, "session_authority", None) is None:
-            return True
-        from gateway.session_authorities import active_authority
-        from gateway.session_automation import committed_route_envelope
-
-        authority = active_authority(self)
-        return entry is not None and authority is not None and committed_route_envelope(authority, entry) is not None
 
     async def _handle_heartbeat_command(self, event: MessageEvent) -> str:
         """Handle /heartbeat (mirror of the CLI handler): the session's one recurring re-entry
@@ -146,7 +138,9 @@ class GatewayGoalCommandsMixin:
             state = mgr.pause()
             return t("gateway.heartbeat.paused", prompt=state.prompt) if state else t("gateway.heartbeat.none_set")
         if lower == "resume":
-            if not self._heartbeat_route_has_admission(event, session_entry):
+            if mgr.state is None or mgr.state.status != "paused":
+                return t("gateway.heartbeat.no_resume")
+            if not await self._heartbeat_route_has_admission(event, session_entry):
                 return t("gateway.heartbeat.needs_admission")
             state = mgr.resume()
             if state is None:
@@ -174,7 +168,7 @@ class GatewayGoalCommandsMixin:
             return t("gateway.heartbeat.interval_too_small", min_seconds=MIN_INTERVAL_SECONDS)
         if not prompt.strip():
             return t("gateway.heartbeat.prompt_required")
-        if not self._heartbeat_route_has_admission(event, session_entry):
+        if not await self._heartbeat_route_has_admission(event, session_entry):
             return t("gateway.heartbeat.needs_admission")
         state, err = _mgr_call(t("gateway.heartbeat.invalid_prefix"), mgr.set, prompt, interval, errors=(ValueError,))
         if err:

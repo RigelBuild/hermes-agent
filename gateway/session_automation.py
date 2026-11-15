@@ -457,6 +457,30 @@ def committed_route_envelope(authority, entry):
     return envelope if envelope is not None and 'provenance' in envelope else None
 
 
+def validated_committed_route_envelope(authority, adapter, source, entry):
+    """Return committed native provenance only while it still resolves to this live route."""
+    from gateway.session_envelope import restore_native
+    runner = authority.runner
+    envelope = committed_route_envelope(authority, entry)
+    if envelope is None:
+        raise RuntimeStoreError(
+            'not_found', field='route_provenance', detail='missing committed native route provenance'
+        )
+    # Borrow the committed connector proof and recheck its source, without released input media.
+    restored = restore_native({'text': '', 'native_text_v1': {
+        key: value for key, value in envelope.items() if key != 'media'}}, runner)
+    # Session keys omit parent/scope context; those routing fields must still match the commit.
+    route_fields = ('platform', 'chat_id', 'chat_type', 'thread_id', 'chat_id_alt', 'scope_id',
+                    'guild_id', 'parent_chat_id', 'prospective_thread_id')
+    if any(getattr(restored.source, key, None) != getattr(source, key, None) for key in route_fields):
+        raise RuntimeStoreError('admission_conflict')
+    # The committed source must still resolve to this route; non-routing labels and profile hints may drift.
+    if (runner.session_store._generate_session_key(restored.source) != entry.session_key
+            or runner._adapter_for_source(restored.source) is not adapter):
+        raise RuntimeStoreError('admission_conflict')
+    return envelope
+
+
 def snapshot_automation(authority, adapter, event, identity):
     runner = authority.runner
     if (not event.internal or event.message_type != MessageType.TEXT or event.is_command()
@@ -470,25 +494,11 @@ def snapshot_automation(authority, adapter, event, identity):
     from gateway.session_detached import detached_route_of
     if event.source.platform == Platform.LOCAL or detached_route_of(event.source):
         return snapshot_local_automation(authority, adapter, event, identity, entry)
-    from gateway.session_envelope import restore_native
     owner = authority.logical_owner(entry.session_id)
-    envelope = committed_route_envelope(authority, entry)
-    if envelope is None:
-        raise RuntimeStoreError(
-            'not_found', field='route_provenance', detail='missing committed native route provenance'
-        )
-    # Borrow the committed connector proof and recheck its source, without released input media.
-    restored = restore_native({'text': event.text, 'native_text_v1': {
+    envelope = validated_committed_route_envelope(authority, adapter, event.source, entry)
+    from gateway.session_envelope import restore_native
+    restore_native({'text': event.text, 'native_text_v1': {
         key: value for key, value in envelope.items() if key != 'media'}}, runner)
-    # Session keys omit parent/scope context; those routing fields must still match the commit.
-    route_fields = ('platform', 'chat_id', 'chat_type', 'thread_id', 'chat_id_alt', 'scope_id',
-                    'guild_id', 'parent_chat_id', 'prospective_thread_id')
-    if any(getattr(restored.source, key, None) != getattr(event.source, key, None) for key in route_fields):
-        raise RuntimeStoreError('admission_conflict')
-    # The committed source must still resolve to this route; non-routing labels and profile hints may drift.
-    if (runner.session_store._generate_session_key(restored.source) != entry.session_key
-            or runner._adapter_for_source(restored.source) is not adapter):
-        raise RuntimeStoreError('admission_conflict')
     provenance = deepcopy(envelope['provenance'])
     source = deepcopy(envelope['source'])
     # Never anchor the wake to the stale human message; ``to_dict`` already omits a null anchor.

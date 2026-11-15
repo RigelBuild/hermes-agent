@@ -911,7 +911,7 @@ gateway:
     unavailable: "Heartbeat недоступний (немає сеансу)."
     paused: "⏸ Heartbeat призупинено: {prompt}"
     none_set: "Heartbeat не задано."
-    needs_admission: "send a normal message in this channel first, then set the heartbeat"
+    needs_admission: "Спочатку надішліть звичайне повідомлення в цей канал, а потім налаштуйте або відновіть heartbeat."
     no_resume: "Немає heartbeat для відновлення."
     resumed: "▶ Heartbeat відновлено (кожні {interval}): {prompt}"
     cleared: "✓ Heartbeat очищено."

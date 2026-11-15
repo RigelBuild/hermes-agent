@@ -911,7 +911,7 @@ gateway:
     unavailable: "Heartbeat kullanılamıyor (oturum yok)."
     paused: "⏸ Heartbeat duraklatıldı: {prompt}"
     none_set: "Ayarlı heartbeat yok."
-    needs_admission: "send a normal message in this channel first, then set the heartbeat"
+    needs_admission: "Önce bu kanalda normal bir mesaj gönderin, ardından heartbeat ayarlayın veya sürdürün."
     no_resume: "Sürdürülecek heartbeat yok."
     resumed: "▶ Heartbeat sürdürüldü (her {interval}): {prompt}"
     cleared: "✓ Heartbeat temizlendi."
