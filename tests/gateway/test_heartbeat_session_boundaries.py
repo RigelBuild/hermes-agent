@@ -60,6 +60,7 @@ async def test_heartbeat_remains_on_route_through_reset_and_fresh_runner_restore
     entry = store.get_or_create_session(source)
     manager = HeartbeatManager(entry.session_id)
     state = manager.set("check deploy", 60)
+    due_at = state.created_at + 60
     state.created_at = 1
     save_heartbeat(entry.session_id, state)
 
@@ -82,8 +83,8 @@ async def test_heartbeat_remains_on_route_through_reset_and_fresh_runner_restore
         assert runner._heartbeat_watch == {
             replacement.session_key: (source, replacement.session_id),
         }
-        assert HeartbeatManager(replacement.session_id).due_prompt(now=120)
-        assert HeartbeatManager(entry.session_id).due_prompt(now=120) is None
+        assert HeartbeatManager(replacement.session_id).due_prompt(now=due_at)
+        assert HeartbeatManager(entry.session_id).due_prompt(now=due_at) is None
     finally:
         runner.session_store.close_all_db_handles()
 
