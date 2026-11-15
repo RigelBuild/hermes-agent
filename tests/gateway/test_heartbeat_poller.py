@@ -2,16 +2,17 @@
 
 import asyncio
 import json
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND, display_kind_for_event
 from gateway.run import GatewayRunner
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key
 from hermes_cli.heartbeat import HeartbeatManager
 
 
@@ -41,10 +42,16 @@ def poller(monkeypatch):
     monkeypatch.setattr(heartbeat, "time", SimpleNamespace(time=lambda: clock.now))
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", user_id="42", chat_type="dm", message_id="watch-cmd")
     key = build_session_key(source)
-    db.create_session("heartbeat-session", "telegram", session_key=key)
-    db.save_gateway_routing_entry(key, json.dumps({"session_id": "heartbeat-session", "session_key": key}))
-    adapter = _HeartbeatAdapter(PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM)
+    config = GatewayConfig()
     runner = object.__new__(GatewayRunner)
+    runner.session_store = SessionStore(config.sessions_dir, config)
+    db.create_session("heartbeat-session", "telegram", session_key=key)
+    now = datetime.now()
+    entry = SessionEntry(key, "heartbeat-session", now, now, origin=source, platform=source.platform)
+    db.save_gateway_routing_entry(
+        key, json.dumps(entry.to_dict()), scope=runner.session_store._routing_scope(),
+    )
+    adapter = _HeartbeatAdapter(PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM)
     runner._running_agents = {}
     runner._delivery_adapter_for = lambda source: adapter
     runner._run_in_executor_with_context = asyncio.to_thread
@@ -74,6 +81,38 @@ def test_legacy_manager_uses_current_route_without_session_duplicate(poller):
     assert manager.clear()
     assert load_route_heartbeat(key, db) is None
     assert db.get_meta('heartbeat:heartbeat-session') is None
+
+def test_legacy_manager_uses_only_scoped_routing_index(poller):
+    from hermes_cli import goals
+    from hermes_cli.heartbeat import load_route_heartbeat
+
+    runner, _, _, key, _ = poller
+    db = goals._get_session_db()
+    scope = runner.session_store._routing_scope()
+    manager = HeartbeatManager("heartbeat-session", routing_db=db, routing_scope=scope)
+    assert manager.state is not None
+    assert manager.pause().status == "paused"
+    assert load_route_heartbeat(key, db).status == "paused"
+
+
+def test_legacy_manager_does_not_match_other_routing_scope(poller):
+    from hermes_cli import goals
+    from hermes_cli.heartbeat import load_route_heartbeat
+
+    runner, _, _, key, _ = poller
+    db = goals._get_session_db()
+    other_key = key + ":other-scope"
+    db.create_session("other-scope-session", "telegram", session_key=other_key)
+    other_scope = str(db.db_path.parent / "other-sessions")
+    now = datetime.now()
+    entry = SessionEntry(other_key, "other-scope-session", now, now, platform=Platform.TELEGRAM)
+    db.save_gateway_routing_entry(other_key, json.dumps(entry.to_dict()), scope=other_scope)
+    manager = HeartbeatManager("other-scope-session", routing_db=db, routing_scope=runner.session_store._routing_scope())
+    assert manager.state is None
+    assert not manager.clear()
+    assert load_route_heartbeat(other_key, db) is None
+
+
 
 
 @pytest.mark.asyncio
@@ -164,17 +203,18 @@ async def test_clearing_route_heartbeat_stops_future_fires(poller):
     assert state is None
     assert not adapter._background_tasks
     assert not adapter._pending_messages
-    assert not runner._heartbeat_watch
+    assert not watch
 
 
 @pytest.mark.asyncio
 async def test_due_heartbeat_steers_an_active_turn_instead_of_waiting_for_idle(poller):
     runner, adapter, watch, key, clock = poller
     active = asyncio.Event()
+    HeartbeatManager("heartbeat-session").set("check status", 60, delivery_mode="steer")
     steered = []
 
     class RunningAgent:
-        def steer(self, text):
+        def steer(self, text, *, ticket=None):
             steered.append(text)
             active.set()
             return True
@@ -182,16 +222,15 @@ async def test_due_heartbeat_steers_an_active_turn_instead_of_waiting_for_idle(p
     adapter.set_message_handler(lambda _event: None)
     adapter._active_sessions[key] = asyncio.Event()
     runner._busy_input_mode = "steer"
-    runner._is_user_authorized_for_source = lambda source: True
+    runner._is_user_authorized_for_source = lambda source, allow_adapter_delegation=True: True
     runner._admit_bot_message_for_source = lambda source: True
     runner._admit_bot_chain = lambda event: True
     runner._effective_busy_input_mode = lambda source: "steer"
     runner._route_plaintext_approval_while_busy = lambda *args: asyncio.sleep(0, result=False)
     runner._busy_skill_turn = lambda *args: asyncio.sleep(0, result=(False, None))
     runner._effective_busy_text_mode = lambda source: "steer"
-    runner._peek_session_state = lambda session_key: SimpleNamespace(
-        turn=SimpleNamespace(agent=RunningAgent()),
-    )
+    turn = SimpleNamespace(agent=RunningAgent(), heartbeat_steered=False, heartbeat_claim=None)
+    runner._peek_session_state = lambda session_key: SimpleNamespace(turn=turn)
     runner._resolve_busy_steer_or_redirect = lambda *args: asyncio.sleep(
         0, result=SimpleNamespace(
             effective_mode="steer", steered=True, redirected=False,

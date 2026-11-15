@@ -140,7 +140,10 @@ async def admit_heartbeat(runner, adapter, source, session_id, route):
     authority = active_authority(runner)
     if authority is None:
         return
-    manager = HeartbeatManager(session_id, route_key=route, db=runner.session_store._db_for_key(route))
+    store = getattr(runner, 'session_store', None)
+    db_for_key = getattr(store, '_db_for_key', None)
+    manager = (HeartbeatManager(session_id, route_key=route, db=db_for_key(route))
+               if callable(db_for_key) else HeartbeatManager(session_id))
     if manager.state and manager.state.delivery_mode == "steer" and runner._is_session_running(route):
         from gateway.run import _AGENT_PENDING_SENTINEL
         turn = runner._peek_session_state(route).turn

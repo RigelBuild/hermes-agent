@@ -164,13 +164,18 @@ class GatewayGoalsMixin:
         if store is not None:
             current = store.peek_session_id(quick_key)
             if not current:
+                watch.pop(quick_key, None)
                 return
             session_id = current
             watch[quick_key] = (source, session_id)
         from hermes_cli.heartbeat import HeartbeatManager, migrate_heartbeat_to_route
-        db = store._db_for_key(quick_key) if store is not None else None
-        migrate_heartbeat_to_route(session_id, quick_key, db=db)
-        mgr = HeartbeatManager(session_id, route_key=quick_key, db=db)
+        db_for_key = getattr(store, "_db_for_key", None)
+        if callable(db_for_key):
+            db = db_for_key(quick_key)
+            migrate_heartbeat_to_route(session_id, quick_key, db=db)
+            mgr = HeartbeatManager(session_id, route_key=quick_key, db=db)
+        else:
+            mgr = HeartbeatManager(session_id)
         if not mgr.has_heartbeat():
             watch.pop(quick_key, None)
             return

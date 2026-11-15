@@ -45,6 +45,23 @@ async def owner(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_control_snapshot_reads_only_current_route_heartbeat(owner):
+    from gateway.session_ancillary import control_snapshot
+    from hermes_cli.heartbeat import HeartbeatState
+
+    live = owner.authority.sessions[owner.ref.session_id]
+    legacy = HeartbeatState(prompt='legacy', interval_seconds=60)
+    routed = HeartbeatState(prompt='route', interval_seconds=60)
+    owner.db.set_meta('heartbeat:' + owner.target, legacy.to_json())
+    owner.db.set_meta('heartbeat:route:' + live.route, routed.to_json())
+    assert control_snapshot(owner.authority, owner.ref)['heartbeat']['prompt'] == 'route'
+    store = owner.authority.runner.session_store
+    with store._lock:
+        store._entries[live.route].session_id = 'replacement'
+    assert control_snapshot(owner.authority, owner.ref)['heartbeat']['prompt'] == 'legacy'
+
+
+@pytest.mark.asyncio
 async def test_goal_mutations_land_in_the_owners_row(owner):
     reply = await owner.call('goal', 'set', 'ship it', max_turns=5)
     state = json.loads(reply['state'])
@@ -96,7 +113,8 @@ async def test_loop_and_heartbeat_ticks_are_claimed_on_the_owner(owner):
     reply = await owner.call('heartbeat', 'set', 'pulse', 60)
     assert json.loads(reply['state'])['interval_seconds'] == 60
     assert (await owner.call('heartbeat', 'clear'))['value'] is True
-    assert json.loads(owner.db.get_meta('heartbeat:' + owner.target))['status'] == 'cleared'
+    route = owner.authority.sessions[owner.ref.session_id].route
+    assert json.loads(owner.db.get_meta('heartbeat:route:' + route))['status'] == 'cleared'
 
 
 @pytest.mark.asyncio

@@ -122,28 +122,82 @@ _ROUTE_PREFIX = _META_PREFIX + "route:"
 _CLAIM_LOCK = threading.Lock()  # every driver of a session's heartbeat runs in its owning gateway process
 
 
-def _legacy_route(session_id: str, db: Any) -> tuple[Optional[str], bool]:
-    """Return the current route, or mark a replaced keyed session as archived."""
-    if not session_id or db is None:
+_ROUTING_SCOPE_CACHE: dict[str, str] = {}
+_ROUTING_SCOPE_LOCK = threading.Lock()
+
+
+
+def _default_routing_context() -> tuple[Any, Optional[str]]:
+    """Return the root routing DB and its active scope, or no routing context."""
+    try:
+        from hermes_constants import (
+            get_routing_process_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        home = get_routing_process_hermes_home()
+        home_key = str(home.resolve())
+        with _ROUTING_SCOPE_LOCK:
+            scope = _ROUTING_SCOPE_CACHE.get(home_key)
+        token = set_hermes_home_override(str(home))
+        try:
+            from hermes_cli.goals import _get_session_db
+
+            if scope is None:
+                from gateway.config import load_gateway_config
+                from gateway.session import SessionStore
+
+                config = load_gateway_config()
+                store = object.__new__(SessionStore)
+                store.sessions_dir = config.sessions_dir
+                scope = store._routing_scope()
+                with _ROUTING_SCOPE_LOCK:
+                    _ROUTING_SCOPE_CACHE[home_key] = scope
+            db = _get_session_db()
+            return (db, scope) if db is not None else (None, None)
+        finally:
+            reset_hermes_home_override(token)
+    except Exception as exc:
+        logger.debug("HeartbeatManager: routing context unavailable: %s", exc)
+        return None, None
+
+
+def _legacy_route(
+    session_id: str,
+    db: Any,
+    routing_db: Any = None,
+    routing_scope: Optional[str] = None,
+) -> tuple[Optional[str], bool]:
+    """Resolve a session only when the scoped routing index confirms its current owner."""
+    if not session_id:
+        return None, False
+    if routing_db is None:
         return None, False
     try:
-        row = db.get_session(session_id)
+        row = db.get_session(session_id) if db is not None else None
         route = row.get("session_key") if row else None
         if not route:
             return None, False
-        entries = db._read_all("SELECT entry_json FROM gateway_routing WHERE session_key = ?", (route,))
+        if routing_scope is None:
+            return None, True
+        scope = "" if ":local:" in route else routing_scope
+        entries = routing_db._read_all(
+            "SELECT entry_json FROM gateway_routing WHERE scope = ? AND session_key = ?",
+            (scope, route),
+        )
         for entry in entries:
             try:
                 data = json.loads(entry["entry_json"])
-                if isinstance(data, dict) and data.get("session_id") == session_id:
-                    return route, False
             except (ValueError, TypeError, RecursionError):
                 continue
-        return None, bool(entries)
+            if (isinstance(data, dict) and data.get("session_key") == route
+                    and data.get("session_id") == session_id and not data.get("suspended")):
+                return route, False
+        return None, True
     except Exception as exc:
         logger.debug("HeartbeatManager: route lookup failed: %s", exc)
         return None, True
-
 
 def load_heartbeat(session_id: str) -> Optional[HeartbeatState]:
     db = _get_session_db() if session_id else None
@@ -160,6 +214,7 @@ def load_heartbeat(session_id: str) -> Optional[HeartbeatState]:
         logger.warning("HeartbeatManager: could not parse stored heartbeat for %s: %s", session_id, exc)
         return None
     return None if state is None or state.status == "cleared" else state
+
 
 
 def store_has_active_heartbeat(db: Any) -> bool:
@@ -235,25 +290,25 @@ def migrate_heartbeat_to_route(session_id: str, route_key: str, db: Any = None) 
         return False
     with _CLAIM_LOCK:
         try:
-            # A route tombstone or malformed route row must also block migration.
-            if db.get_meta(_ROUTE_PREFIX + route_key) is not None:
-                return False
-            raw = db.get_meta(_META_PREFIX + session_id)
-            if not raw:
-                return False
-            data = json.loads(raw)
-            if not isinstance(data, dict) or data.get("status") not in {"active", "paused"}:
-                return False
-            if not isinstance(data.get("prompt"), str) or not data["prompt"].strip():
-                return False
-            state = HeartbeatState.from_json(raw)
-            if state.interval_seconds < MIN_INTERVAL_SECONDS:
-                return False
-            if not save_route_heartbeat(route_key, state, db):
-                return False
-            state.status = "cleared"
-            db.set_meta(_META_PREFIX + session_id, state.to_json())
-            return True
+            def migrate(conn):
+                legacy_key = _META_PREFIX + session_id
+                route_meta = _ROUTE_PREFIX + route_key
+                legacy = conn.execute("SELECT value FROM state_meta WHERE key = ?", (legacy_key,)).fetchone()
+                if not legacy:
+                    return False
+                data = json.loads(legacy[0])
+                if not isinstance(data, dict) or data.get("status") not in {"active", "paused"}:
+                    return False
+                if not isinstance(data.get("prompt"), str) or not data["prompt"].strip():
+                    return False
+                if HeartbeatState.from_json(legacy[0]).interval_seconds < MIN_INTERVAL_SECONDS:
+                    return False
+                existing = conn.execute("SELECT 1 FROM state_meta WHERE key = ?", (route_meta,)).fetchone()
+                if existing is None:
+                    conn.execute("INSERT INTO state_meta(key, value) VALUES (?, ?)", (route_meta, legacy[0]))
+                conn.execute("DELETE FROM state_meta WHERE key = ?", (legacy_key,))
+                return existing is None
+            return bool(db._execute_write(migrate))
         except Exception as exc:
             logger.debug("HeartbeatManager: route migration failed: %s", exc)
             return False
@@ -266,10 +321,26 @@ class HeartbeatManager:
     idle; a non-None return is the user-role message to inject.
     """
 
-    def __init__(self, session_id: str, *, route_key: Optional[str] = None, db: Any = None):
+    def __init__(
+        self,
+        session_id: str,
+        *,
+        route_key: Optional[str] = None,
+        db: Any = None,
+        routing_db: Any = None,
+        routing_scope: Optional[str] = None,
+    ):
         self.session_id = session_id
         self.route_key = route_key
         self.db = db
+        if not route_key and routing_db is None and routing_scope is None:
+            routing_db, routing_scope = _default_routing_context()
+        self.routing_db = routing_db
+        self.routing_scope = routing_scope
+        if not self.route_key:
+            route, archived = self._storage()
+            if route and not archived:
+                migrate_heartbeat_to_route(self.session_id, route, db=self.db)
         self._state: Optional[HeartbeatState] = self._load()
         self._last_claim: Optional[tuple[float, int]] = None
 
@@ -277,7 +348,7 @@ class HeartbeatManager:
         if self.route_key:
             return self.route_key, False
         db = self.db if self.db is not None else _get_session_db()
-        return _legacy_route(self.session_id, db)
+        return _legacy_route(self.session_id, db, self.routing_db, self.routing_scope)
 
     def _load(self) -> Optional[HeartbeatState]:
         route, archived = self._storage()
@@ -370,8 +441,7 @@ class HeartbeatManager:
             # their own manager over it, and only one may take the tick. A row cleared or paused since is lost too.
             stored = self._load()
             if stored is None or stored.status != "active" or (
-                    stored.created_at, stored.prompt, stored.interval_seconds, stored.last_fired_at, stored.fire_count
-            ) != (s.created_at, s.prompt, s.interval_seconds, s.last_fired_at, s.fire_count):
+                    stored.last_fired_at, stored.fire_count) != (s.last_fired_at, s.fire_count):
                 self._state = stored
                 return None
             self._last_claim = (s.last_fired_at, s.fire_count)

@@ -481,12 +481,20 @@ def control_snapshot(authority, ref):
         _safe_goal_snapshot, _safe_loop_snapshot, _safe_heartbeat_snapshot,
         _snapshot_revision, _snapshot_updated_at,
     )
-    # Compression carries goal/loop/heartbeat to the continuation: read the current segment.
+    # Goal and loop state follow the physical segment. A heartbeat belongs to the
+    # route only while this session is its current owner.
     target = physical_target(authority, ref)
     target = authority.db.get_compression_tip(target) or target
+    live = authority.sessions[ref.session_id]
+    store = authority.runner.session_store
+    with store._lock:
+        entry = store._entries.get(live.route)
+        route = live.route if entry is not None and entry.session_id == target and not entry.suspended else None
     states = []
     for kind, cls in [('goal', GoalState), ('loop', LoopState), ('heartbeat', HeartbeatState)]:
-        raw = authority.db.get_meta(kind + ':' + target)
+        raw = authority.db.get_meta('heartbeat:route:' + route) if kind == 'heartbeat' and route else None
+        if raw is None:
+            raw = authority.db.get_meta(kind + ':' + target)
         try:
             states.append(cls.from_json(raw) if raw else None)
         except (ValueError, TypeError, AttributeError) as exc:
