@@ -20,6 +20,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import struct
 import subprocess
 import tempfile
@@ -1208,6 +1209,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None
+        self._self_start_tokens: dict[tuple[str, str], float] = {}
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
         self._username_resolved_ids: set = set()  # IDs resolved from username entries (gateway authz union)
@@ -1640,7 +1642,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         elif self._dedup.contains(message_id):
             return False, False
         if message.author == self._client.user:
-            return self._admit_gateway_created_opener(message)
+            return False, False
         if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
             return False, False
         role_authorized = False
@@ -1736,27 +1738,59 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             return None
         return parent_id
 
-    def _admit_gateway_created_opener(self, message: Any) -> tuple[bool, bool]:
-        """Admit only an explicitly recorded opener from a configured forum."""
+    async def _admit_gateway_created_opener(self, message: Any) -> str | None:
+        """Consume the registry off-loop and mint a short-lived adapter capability."""
         parent_id = self._self_start_parent(message)
         if not parent_id:
-            return False, False
+            return None
         from gateway.discord_self_start import consume_created_thread
 
-        if not consume_created_thread(str(message.channel.id), parent_id):
-            return False, False
-        return True, True
+        for attempt in range(11):
+            try:
+                consumed = await asyncio.to_thread(consume_created_thread, str(message.channel.id), parent_id)
+            except TimeoutError:
+                consumed = False
+            if consumed:
+                token = secrets.token_urlsafe(32)
+                now = time.monotonic()
+                self._self_start_tokens = {
+                    key: expiry for key, expiry in self._self_start_tokens.items() if expiry > now
+                }
+                self._self_start_tokens[(str(message.channel.id), token)] = now + 600
+                return token
+            if attempt < 10:
+                await asyncio.sleep(0.5)
+        return None
 
-    async def _await_gateway_created_opener(self, message: Any) -> tuple[bool, bool]:
-        if not self._self_start_parent(message):
-            return False, False
-        for _ in range(10):
-            await asyncio.sleep(0.5)
-            admitted = self._admit_gateway_created_opener(message)
-            if admitted[0]:
-                return admitted
-        return False, False
+    def valid_self_start(self, source: Any, marker: Any) -> bool:
+        thread = str(getattr(source, "thread_id", "") or "")
+        user = getattr(getattr(self, "_client", None), "user", None)
+        forums = self.config.extra.get("self_start_forums", [])
+        if isinstance(forums, str):
+            forums = forums.split(",")
+        if not isinstance(forums, (list, tuple, set, frozenset)):
+            return False
+        return bool(
+            isinstance(marker, dict) and marker == {"thread": thread, "message": thread}
+            and user and str(source.user_id) == str(user.id) and thread
+            and str(source.chat_id) == thread
+            and str(source.parent_chat_id) in {str(value).strip() for value in forums}
+        )
 
+    def has_self_start(self, source: Any) -> bool:
+        token = getattr(source, "self_start_token", None)
+        thread = str(getattr(source, "thread_id", "") or "")
+        return bool(
+            token and str(source.message_id) == thread
+            and self.valid_self_start(source, {"thread": thread, "message": thread})
+            and self._self_start_tokens.get((thread, token), 0) > time.monotonic()
+        )
+
+    def redeem_self_start(self, source: Any) -> bool:
+        if not self.has_self_start(source):
+            return False
+        self._self_start_tokens.pop((str(source.thread_id), source.self_start_token), None)
+        return True
 
     async def _dispatch_discord_message(self, message: Any) -> bool:
         """Apply Discord ingress policy and dispatch one live event."""
@@ -1767,13 +1801,17 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 pass
         if self._dedup.contains(str(getattr(message, "id", ""))):
             return False
+        self_start_token = None
         admitted, role_authorized = self._discord_message_admission(message, claim=True)
         if not admitted and message.author == self._client.user:
-            admitted, role_authorized = await self._await_gateway_created_opener(message)
+            self_start_token = await self._admit_gateway_created_opener(message)
+            admitted = bool(self_start_token)
         if not admitted:
             return False
         self._record_bot_tag_debounce(message)
-        return await self._handle_message(message, role_authorized=role_authorized)
+        return await self._handle_message(
+            message, role_authorized=role_authorized, self_start_token=self_start_token
+        )
 
     # --- gateway_platform_event fire-sites ---
 
@@ -6200,6 +6238,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     async def _handle_message(
         self, message: DiscordMessage, role_authorized: bool = False, *, recovered: bool = False,
+        self_start_token: str | None = None,
     ) -> bool:
         """Handle one Discord message and report whether it reached dispatch."""
         # Server channels (not DMs) require @mention unless free-response or an already-joined thread.
@@ -6266,7 +6305,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             )
             in_bot_thread = self._in_bot_thread(message)
             if require_mention and not is_free_channel and not in_bot_thread and not (
-                role_authorized and message.author == self._client.user
+                self_start_token and message.author == self._client.user
             ):
                 if (
                     not self._self_is_explicitly_mentioned(message)
@@ -6361,6 +6400,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 or self._derive_auto_thread_name(message.content or "")
             ) if auto_threaded_channel is not None else None,
         )
+        source.self_start_token = self_start_token
         media_urls, media_types, media_text_inlined, pending_text_injection = await self._collect_attachment_media(
             all_attachments)
         event_text = normalized_content
@@ -7230,9 +7270,12 @@ async def _standalone_send(
                 thread_id_created = data.get("id")
                 starter_msg_id = (data.get("message") or {}).get("id", thread_id_created)
                 if start_session and thread_id_created:
-                    from gateway.discord_self_start import record_created_thread
+                    try:
+                        from gateway.discord_self_start import record_created_thread
 
-                    record_created_thread(str(thread_id_created), str(chat_id))
+                        record_created_thread(str(thread_id_created), str(chat_id))
+                    except Exception:
+                        warnings.append("Post created, but session registration failed; no session will start.")
                 result = {
                     "success": True, "platform": "discord", "chat_id": chat_id,
                     "thread_id": thread_id_created, "message_id": starter_msg_id,
@@ -7241,6 +7284,8 @@ async def _standalone_send(
                     result["warnings"] = warnings
                 return result
             url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
+        if start_session:
+            warnings.append("No session started: the target is not a new forum post.")
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             if message.strip() or not media_files:
                 async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:

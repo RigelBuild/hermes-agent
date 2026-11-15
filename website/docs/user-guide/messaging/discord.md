@@ -398,10 +398,10 @@ discord:
   post_channels: []               # Where the discord tool's post actions may post (empty = anywhere)
   self_start_forums: []           # Forum IDs where explicitly opted-in Hermes posts may start sessions
 
-
 # Session isolation (applies to all gateway platforms, not just Discord)
 group_sessions_per_user: true     # Isolate sessions per user in shared channels
 ```
+
 #### `discord.self_start_forums`
 
 **Type:** list of forum channel IDs — **Default:** `[]`

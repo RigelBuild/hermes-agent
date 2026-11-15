@@ -135,6 +135,8 @@ def _event_clause(runner, event, provenance, fresh_roles):
         return 'prompt_response'
     if source.role_authorized and not fresh_roles:
         return 'role_authorized_without_fresh_roles'
+    if source.self_start_token and not fresh_roles:
+        return 'self_start_without_capability'
     if source.delivered_via_upstream_relay and not (provenance and 'relay' in provenance):
         return 'upstream_relay_without_provenance'
     if source.profile_route_rejected:
@@ -162,7 +164,9 @@ def _validate_native(runner, event, provenance=None, fresh_roles=False):
         # re-check denied what the inbound filter had just accepted (#139199).
         delegated = runner._adapter_flag(
             source.platform, "authorization_is_upstream", runner._adapter_profile_for_source(source))
-    if not runner._is_user_authorized_for_source(source, allow_adapter_delegation=delegated):
+    if not (fresh_roles and provenance and 'self_start' in provenance) and not runner._is_user_authorized_for_source(
+        source, allow_adapter_delegation=delegated
+    ):
         _refuse(event, 'permission_denied', 'user_not_authorized')
     for name in ('channel_prompt', 'channel_context', 'reply_anchor_override'):
         if getattr(event, name) is not None and not isinstance(getattr(event, name), str):

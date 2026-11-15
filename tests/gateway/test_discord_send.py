@@ -249,6 +249,18 @@ async def test_standalone_send_forum_records_session_only_when_opted_in(monkeypa
             PlatformConfig(enabled=True, token="token", extra={}), "42", "hello", start_session=True,
         )
     assert result["success"] is True
+    with patch("aiohttp.ClientSession", Session), \
+         patch("gateway.discord_self_start.record_created_thread", side_effect=OSError("failed")):
+        failed_record = await _standalone_send(
+            PlatformConfig(enabled=True, token="token", extra={}), "42", "hello", start_session=True,
+        )
+    assert failed_record["success"] is True
+    assert failed_record["thread_id"] == "thread-1"
+    assert "registration failed" in failed_record["warnings"][0]
+    with patch("aiohttp.ClientSession", Session), \
+         patch("gateway.discord_self_start.record_created_thread") as not_recorded:
+        await _standalone_send(PlatformConfig(enabled=True, token="token", extra={}), "42", "hello")
+    not_recorded.assert_not_called()
     record.assert_called_once_with("thread-1", "42")
 
 

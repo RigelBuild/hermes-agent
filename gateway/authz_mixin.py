@@ -776,6 +776,15 @@ class GatewayAuthorizationMixin:
         # Adapter-verified role auth (Discord DISCORD_ALLOWED_ROLES). ``is True``: no MagicMock pass.
         if allow_adapter_delegation and getattr(source, "role_authorized", False) is True:
             return True
+        if allow_adapter_delegation and getattr(source, "self_start_token", None):
+            adapter = self._adapter_for_source(source)
+            if getattr(adapter, "has_self_start", lambda _source: False)(source):
+                return True
+        marker = getattr(source, "_self_start_marker", None)
+        if allow_adapter_delegation and marker:
+            adapter = self._adapter_for_source(source)
+            if getattr(adapter, "valid_self_start", lambda *_: False)(source, marker):
+                return True
         # Pairing store: a first-class grant created only by an operator approving a code. Honored as
         # a UNION with the allowlist (approval also mirrors into it).
         pairing_store = self._pairing_store_for(source)

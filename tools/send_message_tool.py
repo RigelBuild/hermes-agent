@@ -203,6 +203,11 @@ def _handle_react(args, remove=False):
 
 
 def _handle_send(args):
+    if args.get("start_session"):
+        from tools.approval_context import _is_cron_approval_context, _is_peer_mesh_approval_context, is_plugin_origin_turn
+
+        if _is_cron_approval_context() or is_plugin_origin_turn() or _is_peer_mesh_approval_context():
+            return tool_error("start_session is not allowed in this session context")
     target, message = args.get("target", ""), args.get("message", "")
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
@@ -708,6 +713,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
+    if start_session and len(chunks) != 1:
+        return {"error": "start_session requires content to fit in one Discord message"}
     policy = _standalone_send_policy(platform_name)
     if policy is not None and (policy.all_sends or (policy.mentions and mentions) or (media_files and policy.media)):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,

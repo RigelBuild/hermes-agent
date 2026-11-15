@@ -201,6 +201,8 @@ def _binding(runner, source, profile):
 def capture_provenance(runner, event):
     context = _callback.get()
     if context is None or context[0] is not runner or context[1] is not event:
+        if event.source.self_start_token:
+            raise RuntimeStoreError('permission_denied')
         return None
     adapter, home, _, provenance = _binding(runner, event.source, context[3])
     if event.source.delivered_via_upstream_relay:
@@ -212,6 +214,12 @@ def capture_provenance(runner, event):
         owner = runner._transport_owner(event.source)
     if owner is None or owner[0] is not adapter or home != context[2]:
         raise RuntimeStoreError('not_found')
+    if event.source.self_start_token:
+        if not getattr(adapter, "redeem_self_start", lambda _source: False)(event.source):
+            raise RuntimeStoreError('permission_denied')
+        thread = str(event.source.thread_id)
+        provenance['self_start'] = {'thread': thread, 'message': thread}
+        event.source.self_start_token = None
     return provenance
 
 
@@ -222,8 +230,13 @@ def restore_provenance(runner, source, provenance):
     candidate = copy(source)
     candidate.delivered_via_upstream_relay = 'relay' in provenance
     adapter, home, runtime_home, expected = _binding(runner, candidate, provenance.get('transport_profile'))
-    if provenance != expected:
+    marker = provenance.get('self_start')
+    if {key: value for key, value in provenance.items() if key != 'self_start'} != expected:
         raise RuntimeStoreError('profile_mismatch')
+    if marker is not None and not getattr(adapter, 'valid_self_start', lambda *_: False)(source, marker):
+        raise RuntimeStoreError('permission_denied')
+    if marker is not None:
+        source._self_start_marker = marker
     source.delivered_via_upstream_relay = candidate.delivered_via_upstream_relay
     source._transport_adapter_ref = weakref.ref(adapter)
     # Re-pin the identity ingress resolved: the drained turn's route records the receiving bot from it
@@ -236,6 +249,9 @@ def restore_provenance(runner, source, provenance):
 
 async def reauthorize_roles(runner, source, provenance):
     """A role flag requests a connector check; it never supplies permission."""
+    if provenance and 'self_start' in provenance:
+        restore_provenance(runner, source, provenance)
+        return True
     if not source.role_authorized:
         return False
     if provenance is None or source.delivered_via_upstream_relay:
