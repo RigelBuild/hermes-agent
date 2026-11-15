@@ -118,6 +118,77 @@ async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
 
 
 @pytest.mark.asyncio
+async def test_clearing_route_heartbeat_stops_future_fires(poller):
+    runner, adapter, watch, key, clock = poller
+
+    async def handler(event):
+        event._heartbeat_execution_started = True
+
+    adapter.set_message_handler(handler)
+    clock.now += 60
+    await runner._heartbeat_poll_once(watch)
+    await asyncio.gather(*adapter._background_tasks)
+    assert HeartbeatManager("heartbeat-session").state.fire_count == 1
+
+    HeartbeatManager("heartbeat-session").clear()
+    clock.now += 60
+    await runner._heartbeat_poll_once(watch)
+    await asyncio.gather(*adapter._background_tasks)
+
+    state = HeartbeatManager("heartbeat-session").state
+    assert state is None
+    assert not adapter._background_tasks
+    assert not adapter._pending_messages
+    assert not runner._heartbeat_watch
+
+
+@pytest.mark.asyncio
+async def test_due_heartbeat_steers_an_active_turn_instead_of_waiting_for_idle(poller):
+    runner, adapter, watch, key, clock = poller
+    active = asyncio.Event()
+    steered = []
+
+    class RunningAgent:
+        def steer(self, text):
+            steered.append(text)
+            active.set()
+            return True
+
+    adapter.set_message_handler(lambda _event: None)
+    adapter._active_sessions[key] = asyncio.Event()
+    runner._busy_input_mode = "steer"
+    runner._is_user_authorized_for_source = lambda source: True
+    runner._admit_bot_message_for_source = lambda source: True
+    runner._admit_bot_chain = lambda event: True
+    runner._effective_busy_input_mode = lambda source: "steer"
+    runner._route_plaintext_approval_while_busy = lambda *args: asyncio.sleep(0, result=False)
+    runner._busy_skill_turn = lambda *args: asyncio.sleep(0, result=(False, None))
+    runner._effective_busy_text_mode = lambda source: "steer"
+    runner._peek_session_state = lambda session_key: SimpleNamespace(
+        turn=SimpleNamespace(agent=RunningAgent()),
+    )
+    runner._resolve_busy_steer_or_redirect = lambda *args: asyncio.sleep(
+        0, result=SimpleNamespace(
+            effective_mode="steer", steered=True, redirected=False,
+            demoted_for_subagents=False, demoted_for_compression=False,
+        ),
+    )
+    runner._busy_interrupt_and_ack = lambda *args: asyncio.sleep(0)
+    adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
+
+    clock.now += 60
+    await runner._heartbeat_poll_once(watch)
+    await asyncio.wait_for(active.wait(), 2)
+
+    assert len(steered) == 1
+    assert "check status" in steered[0]
+    assert "Heartbeat" in steered[0]
+    assert key not in adapter._pending_messages
+    assert HeartbeatManager("heartbeat-session").state.fire_count == 1
+
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "chat_id", ["1571155392069763142", "1571157949362081882", "1571263020523327488"]
 )
