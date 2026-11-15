@@ -49,17 +49,16 @@ class TurnState:
     def running_follow_up(self, event: Any) -> Iterator[None]:
         """Run *event* (a queued follow-up) as the slot's running turn; restore the outer one on
         exit unless the slot was cleared or rebound meanwhile."""
+        from gateway.run_heartbeat_acceptance import settle_busy_heartbeat
+        settle_busy_heartbeat(self)
+        self.heartbeat_steered = False
         previous, self.follow_up_event = self.follow_up_event, event
-        previous_claim, self.heartbeat_claim = self.heartbeat_claim, None
-        previous_steered, self.heartbeat_steered = self.heartbeat_steered, False
         try:
             yield
         finally:
             if self.follow_up_event is event:
-                from gateway.run_heartbeat_acceptance import settle_busy_heartbeat
                 settle_busy_heartbeat(self)
-                self.heartbeat_claim = previous_claim
-                self.heartbeat_steered = previous_steered
+                self.heartbeat_steered = False
                 self.follow_up_event = previous
 
     def clear(self) -> None:

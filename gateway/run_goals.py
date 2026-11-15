@@ -183,7 +183,7 @@ class GatewayGoalsMixin:
             or quick_key in adapter._active_sessions
             or self._queue_depth(quick_key, adapter=adapter) > 0
         ):
-            if self._is_user_authorized(source):
+            if self._is_user_authorized_for_source(source, allow_adapter_delegation=False):
                 steer_busy_heartbeat(self, source, session_id, quick_key)  # idle mode leaves the tick due
             return
         from agent.estop import check_paused

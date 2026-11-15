@@ -78,9 +78,13 @@ def settle_busy_heartbeat(turn):
     claim, turn.heartbeat_claim = turn.heartbeat_claim, None
     if claim is None:
         return
-    agent, ticket, manager = claim
-    if agent.withdraw_steer(ticket):
-        manager.abandon_fire()
+    try:
+        agent, ticket, manager = claim
+        withdraw = getattr(agent, "withdraw_steer", None)
+        if callable(withdraw) and withdraw(ticket):
+            manager.abandon_fire()
+    except Exception:
+        logger.warning("Failed to settle heartbeat steer", exc_info=True)
 
 
 def steer_busy_heartbeat(runner, source, session_id, route):
