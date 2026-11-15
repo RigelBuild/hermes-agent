@@ -1605,9 +1605,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         return mgr
 
     def _handle_heartbeat_command(self, cmd: str) -> None:
-        """Dispatch /heartbeat: set / status / pause / resume / clear. ``/heartbeat every 10m <prompt>``
-        sets the session's one recurring instruction, injected as a normal user turn when due.
-        Session-scoped and in-process — use `hermes cron` for durable schedules."""
+        """Dispatch heartbeat controls for the current session or route.
+
+        Gateway routes retain their heartbeat across resets and restarts.
+        """
         from hermes_cli.heartbeat import format_interval
         arg = _command_arg(cmd)
         lower = arg.lower()
