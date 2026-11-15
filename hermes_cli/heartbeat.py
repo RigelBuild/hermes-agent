@@ -315,10 +315,9 @@ def migrate_heartbeat_to_route(session_id: str, route_key: str, db: Any = None) 
 
 
 class HeartbeatManager:
-    """Per-session heartbeat state + due-tick decisions; the surface CLI + gateway talk to.
+    """Heartbeat state and due-tick decisions for a session or its current route.
 
-    Drivers (CLI thread / gateway task) call :meth:`due_prompt` on a poll cadence while the session is
-    idle; a non-None return is the user-role message to inject.
+    Drivers call :meth:`due_prompt` when ready to admit or steer a due tick.
     """
 
     def __init__(
