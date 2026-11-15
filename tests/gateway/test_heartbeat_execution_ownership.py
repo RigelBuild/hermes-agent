@@ -9,7 +9,7 @@ from evals.heartbeat_idle_wire import WireAdapter
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, SessionStore
-from hermes_cli.heartbeat import HeartbeatState, migrate_heartbeat_to_session, save_heartbeat
+from hermes_cli.heartbeat import HeartbeatState, save_heartbeat
 
 
 @pytest.mark.asyncio
@@ -45,7 +45,6 @@ async def test_admitted_heartbeat_executes_only_in_own_conversation(tmp_path, bo
                 require_compression_lease=False, model="offline", model_config={},
                 system_prompt="offline", messages=[{"role": "user", "content": "retained"}],
             )
-            assert migrate_heartbeat_to_session(old, child)
             assert runner.session_store.advance_compression_session(key, old, child)
 
     async def prepare(*args):
