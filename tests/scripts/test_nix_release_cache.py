@@ -33,6 +33,7 @@ def _narinfo(store_hash: str, nar_name: str, *, nar_hash: str, nar_size: int = 1
 
 def test_narinfo_without_references_parses_empty_tuple() -> None:
     data = _narinfo(SHARED_HASH, "nar.xz", nar_hash="sha256:empty").replace("References: \n", "").encode()
+    assert b"References" not in data
 
     assert parse_narinfo(data).references == ()
 
