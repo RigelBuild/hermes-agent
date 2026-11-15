@@ -88,12 +88,9 @@ async def test_runner_rejection_does_not_consume_tick_or_overwrite_replacement()
 
 
 @pytest.mark.asyncio
-async def test_failed_then_successful_attempt_clears_error(tmp_path, monkeypatch):
+async def test_failed_then_successful_attempt_clears_error():
     from gateway.run_heartbeat_acceptance import settle_heartbeat_attempt
-    from hermes_cli import goals
 
-    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    monkeypatch.setattr(goals, '_DB_CACHE', {})
     manager = HeartbeatManager('error-recovery')
     manager.set('check', 60)
     event = SimpleNamespace(_heartbeat_execution_started=True)
