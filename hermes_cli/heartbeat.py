@@ -201,6 +201,7 @@ def _legacy_route(
     except Exception as exc:
         raise RuntimeError("heartbeat route lookup failed") from exc
 
+
 def load_heartbeat(session_id: str) -> Optional[HeartbeatState]:
     db = _get_session_db() if session_id else None
     if db is None:
@@ -289,6 +290,8 @@ def list_heartbeats(db: Any = None) -> list[tuple[str, HeartbeatState]]:
 def migrate_heartbeat_to_route(session_id: str, route_key: str, db: Any = None) -> bool:
     db = db if db is not None else _get_session_db()
     if not session_id or not route_key or db is None:
+        return False
+    if db.get_meta(_META_PREFIX + session_id) is None:
         return False
     with _CLAIM_LOCK:
         try:

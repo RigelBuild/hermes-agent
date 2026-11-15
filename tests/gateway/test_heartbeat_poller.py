@@ -117,6 +117,7 @@ def test_route_lookup_failure_is_not_reported_as_success(poller, monkeypatch):
 
     runner, _, _, _, _ = poller
     db = goals._get_session_db()
+
     def fail(*args, **kwargs):
         raise OSError("routing unavailable")
     monkeypatch.setattr(db, "_read_all", fail)
@@ -137,8 +138,6 @@ def test_heartbeat_list_reports_route_and_error(poller, capsys):
     assert "Last fired: never" in output
     assert "Fire count: 0" in output
     assert "Last error: failed" in output
-
-
 
 
 @pytest.mark.asyncio
