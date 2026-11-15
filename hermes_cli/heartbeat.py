@@ -126,7 +126,6 @@ _ROUTING_SCOPE_CACHE: dict[str, str] = {}
 _ROUTING_SCOPE_LOCK = threading.Lock()
 
 
-
 def _default_routing_context() -> tuple[Any, Optional[str]]:
     """Return the root routing DB and its active scope, or no routing context."""
     try:
