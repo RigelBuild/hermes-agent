@@ -43,11 +43,7 @@ class GatewayGoalCommandsMixin:
             # authorize_local_source and the session:control capability (T7). Messaging stays
             # explicit-admin-only.
             from gateway.session_local import authorize_local_source
-
-            if (
-                event.source is not None
-                and authorize_local_source(self, event.source) is True
-            ):
+            if event.source is not None and authorize_local_source(self, event.source) is True:
                 return None
             if not self._resume_caller_is_admin(event.source):
                 return t("gateway.goal.gate_add_admin_only")
@@ -55,13 +51,9 @@ class GatewayGoalCommandsMixin:
 
         def dispatch():
             return dispatch_goal_command(
-                mgr,
-                event.get_command_args() or "",
-                authorize_gate=authorize_gate,
+                mgr, event.get_command_args() or "", authorize_gate=authorize_gate,
                 render=lambda key, default, **values: t(key, **values),
-                last_user_message=last_user_message_from_db(
-                    getattr(mgr, "session_id", None)
-                ),
+                last_user_message=last_user_message_from_db(getattr(mgr, "session_id", None)),
             )
 
         # Drafting resolves profile-scoped credentials. Keep ContextVars across the
@@ -70,9 +62,7 @@ class GatewayGoalCommandsMixin:
         if result.clear_pending:
             self._clear_goal_continuations(event, result.clear_pending)
         if result.prompt:
-            self._enqueue_goal_turn(
-                event, result.prompt, label="command enqueue", kickoff=result.kickoff
-            )
+            self._enqueue_goal_turn(event, result.prompt, label="command enqueue", kickoff=result.kickoff)
         return result.output
 
     def _clear_goal_continuations(self, event: MessageEvent, verb: str) -> None:
@@ -94,7 +84,6 @@ class GatewayGoalCommandsMixin:
         input id).
         """
         from gateway.session_command_sink import active_sink
-
         if (sink := active_sink()) is not None:
             sink.prompt = text
             if not kickoff:
@@ -108,9 +97,7 @@ class GatewayGoalCommandsMixin:
                     message_type=MessageType.TEXT,
                     source=event.source,
                     message_id=event.message_id if kickoff else None,
-                    edit_revision=event.edit_revision
-                    if kickoff
-                    else None,  # an edited /goal: own admission id
+                    edit_revision=event.edit_revision if kickoff else None,  # an edited /goal: own admission id
                     channel_prompt=event.channel_prompt if kickoff else None,
                     auto_skill=event.auto_skill if kickoff else None,
                     inherit_channel_pin=not kickoff,
@@ -123,11 +110,7 @@ class GatewayGoalCommandsMixin:
         """Match the poller's delivery requirements for local, legacy, and admitted routes."""
         from gateway.session_local import LocalSessionAdapter
 
-        adapter = (
-            self._delivery_adapter_for(event.source)
-            if event.source is not None
-            else None
-        )
+        adapter = self._delivery_adapter_for(event.source) if event.source is not None else None
         if adapter is None:
             return False
         local = isinstance(adapter, LocalSessionAdapter)
@@ -139,22 +122,13 @@ class GatewayGoalCommandsMixin:
         from gateway.session_automation import committed_route_envelope
 
         authority = active_authority(self)
-        return (
-            entry is not None
-            and authority is not None
-            and committed_route_envelope(authority, entry) is not None
-        )
+        return entry is not None and authority is not None and committed_route_envelope(authority, entry) is not None
 
     async def _handle_heartbeat_command(self, event: MessageEvent) -> str:
         """Handle /heartbeat (mirror of the CLI handler): the session's one recurring re-entry
         prompt. The gateway-wide poller injects due heartbeats through the adapter FIFO as
         ordinary user turns, so alternation and caching hold."""
-        from hermes_cli.heartbeat import (
-            parse_interval,
-            format_interval,
-            MIN_INTERVAL_SECONDS,
-        )
-
+        from hermes_cli.heartbeat import parse_interval, format_interval, MIN_INTERVAL_SECONDS
         args = (event.get_command_args() or "").strip()
         lower = args.lower()
         mgr, session_entry = await self._get_heartbeat_manager_for_event(event)
@@ -170,11 +144,7 @@ class GatewayGoalCommandsMixin:
             return mgr.status_line()
         if lower == "pause":
             state = mgr.pause()
-            return (
-                t("gateway.heartbeat.paused", prompt=state.prompt)
-                if state
-                else t("gateway.heartbeat.none_set")
-            )
+            return t("gateway.heartbeat.paused", prompt=state.prompt) if state else t("gateway.heartbeat.none_set")
         if lower == "resume":
             if not self._heartbeat_route_has_admission(event, session_entry):
                 return t("gateway.heartbeat.needs_admission")
@@ -182,20 +152,12 @@ class GatewayGoalCommandsMixin:
             if state is None:
                 return t("gateway.heartbeat.no_resume")
             _watch()
-            return t(
-                "gateway.heartbeat.resumed",
-                interval=format_interval(state.interval_seconds),
-                prompt=state.prompt,
-            )
+            return t("gateway.heartbeat.resumed", interval=format_interval(state.interval_seconds), prompt=state.prompt)
         if lower in {"clear", "stop", "off"}:
             had = mgr.clear()
             if quick_key:
                 self._unregister_heartbeat_watch(quick_key)
-            return (
-                t("gateway.heartbeat.cleared")
-                if had
-                else t("gateway.heartbeat.none_set")
-            )
+            return t("gateway.heartbeat.cleared") if had else t("gateway.heartbeat.none_set")
 
         # Set: `/heartbeat every 10m <prompt>` (also accepts `10m <prompt>`).
         tokens = args.split(None, 2)
@@ -205,32 +167,20 @@ class GatewayGoalCommandsMixin:
             prompt = tokens[2] if len(tokens) > 2 else ""
         else:
             interval = parse_interval(tokens[0])
-            prompt = args[len(tokens[0]) :].strip() if interval and interval > 0 else ""
+            prompt = args[len(tokens[0]):].strip() if interval and interval > 0 else ""
         if interval is None:
             return t("gateway.heartbeat.usage")
         if interval < 0:
-            return t(
-                "gateway.heartbeat.interval_too_small", min_seconds=MIN_INTERVAL_SECONDS
-            )
+            return t("gateway.heartbeat.interval_too_small", min_seconds=MIN_INTERVAL_SECONDS)
         if not prompt.strip():
             return t("gateway.heartbeat.prompt_required")
         if not self._heartbeat_route_has_admission(event, session_entry):
             return t("gateway.heartbeat.needs_admission")
-        state, err = _mgr_call(
-            t("gateway.heartbeat.invalid_prefix"),
-            mgr.set,
-            prompt,
-            interval,
-            errors=(ValueError,),
-        )
+        state, err = _mgr_call(t("gateway.heartbeat.invalid_prefix"), mgr.set, prompt, interval, errors=(ValueError,))
         if err:
             return err
         _watch()
-        return t(
-            "gateway.heartbeat.set",
-            interval=format_interval(state.interval_seconds),
-            prompt=state.prompt,
-        )
+        return t("gateway.heartbeat.set", interval=format_interval(state.interval_seconds), prompt=state.prompt)
 
     def _idle_cached_agent_or_error(self, event: MessageEvent, verb: str):
         """``(session_key, cached_agent, None)`` for /refine and /review, or ``(_, _, error_text)``:
@@ -240,11 +190,7 @@ class GatewayGoalCommandsMixin:
         if not quick_key:
             return None, None, t(f"gateway.{verb}.unavailable")
         if quick_key in self._running_agents:
-            return (
-                quick_key,
-                None,
-                t("gateway.shared.agent_running_retry_later", command=verb),
-            )
+            return quick_key, None, t("gateway.shared.agent_running_retry_later", command=verb)
         agent = self._cached_agent_for(quick_key)
         if agent is None:
             return quick_key, None, t(f"gateway.{verb}.nothing_yet")
@@ -261,7 +207,6 @@ class GatewayGoalCommandsMixin:
             # A local session's conversation is its stored transcript, not the cached agent: /moa
             # (and its settle) drop that agent, so /refine reads the session itself (T7).
             from gateway.session_refine import refine_local_session
-
             local = await refine_local_session(self, event.source, args)
             if local is not None:
                 return local
@@ -270,7 +215,6 @@ class GatewayGoalCommandsMixin:
             from gateway.session_cold_review import stored_transcript
             from gateway.session_transcript import TranscriptReadError
             from gateway.slash_commands_status import history_unreadable
-
             try:
                 session_id, snapshot = await stored_transcript(self, quick_key)
             except TranscriptReadError:
@@ -283,17 +227,11 @@ class GatewayGoalCommandsMixin:
         try:
             if agent is None:
                 from gateway.session_cold_review import start_cold_refine
-
-                await start_cold_refine(
-                    self, event.source, quick_key, session_id, snapshot, args
-                )
+                await start_cold_refine(self, event.source, quick_key, session_id, snapshot, args)
             else:
                 agent._spawn_background_review(
-                    messages_snapshot=snapshot,
-                    review_memory=True,
-                    review_skills="skill_manage"
-                    in getattr(agent, "valid_tool_names", set()),
-                    focus=args or None,
+                    messages_snapshot=snapshot, review_memory=True,
+                    review_skills="skill_manage" in getattr(agent, "valid_tool_names", set()), focus=args or None,
                     explicit=True,
                 )
         except Exception as exc:
@@ -314,32 +252,23 @@ class GatewayGoalCommandsMixin:
             from gateway.session_cold_review import cold_review_history
             from gateway.session_transcript import TranscriptReadError
             from gateway.slash_commands_status import history_unreadable
-
             try:
-                cold_session_id, snapshot = await cold_review_history(
-                    self, event.source
-                )
+                cold_session_id, snapshot = await cold_review_history(self, event.source)
             except TranscriptReadError:
                 return history_unreadable()
             error = None
         if error:
             return error
-        from tools.approval_context import (
-            reset_current_session_key,
-            set_current_session_key,
-        )
+        from tools.approval_context import reset_current_session_key, set_current_session_key
 
         def _dispatch():
             from agent.review_engine import start_review
             from gateway.session_cold_review import cold_review_parent
-
             token = set_current_session_key(quick_key)
             try:
                 if cold_session_id is None:
                     return start_review(agent, snapshot, args)
-                with cold_review_parent(
-                    self, event.source, quick_key, cold_session_id
-                ) as parent:
+                with cold_review_parent(self, event.source, quick_key, cold_session_id) as parent:
                     return start_review(parent, snapshot, args)
             finally:
                 reset_current_session_key(token)
@@ -353,7 +282,6 @@ class GatewayGoalCommandsMixin:
         except Exception as exc:
             return t("gateway.review.start_failed", error=exc)
         from agent.review_engine import format_dispatch_note
-
         return format_dispatch_note(result, args)
 
     async def _handle_subgoal_command(self, event: MessageEvent) -> str:
@@ -379,26 +307,16 @@ class GatewayGoalCommandsMixin:
             except ValueError:
                 return t("gateway.subgoal.remove_not_int")
             removed, err = _mgr_call(
-                "/subgoal remove",
-                mgr.remove_subgoal,
-                idx,
-                errors=(IndexError, RuntimeError),
+                "/subgoal remove", mgr.remove_subgoal, idx, errors=(IndexError, RuntimeError)
             )
             return err or t("gateway.subgoal.removed", index=idx, text=removed)
         if verb == "clear":
-            prev, err = _mgr_call(
-                "/subgoal clear", mgr.clear_subgoals, errors=(RuntimeError,)
-            )
+            prev, err = _mgr_call("/subgoal clear", mgr.clear_subgoals, errors=(RuntimeError,))
             if err:
                 return err
             if not prev:
                 return t("gateway.subgoal.none_to_clear")
-            return t(
-                "gateway.subgoal.cleared_one"
-                if prev == 1
-                else "gateway.subgoal.cleared_other",
-                count=prev,
-            )
+            return t("gateway.subgoal.cleared_one" if prev == 1 else "gateway.subgoal.cleared_other", count=prev)
         text, err = _mgr_call("/subgoal", mgr.add_subgoal, args)
         if err:
             return err
@@ -408,11 +326,7 @@ class GatewayGoalCommandsMixin:
     async def _handle_loop_command(self, event: MessageEvent) -> str:
         """Handle /loop — recurring in-session wakeups, via ``dispatch_loop_command`` (CLI mirror)."""
         try:
-            from hermes_cli.loops import (
-                LoopManager,
-                dispatch_loop_command,
-                goal_blocks_loop_tick,
-            )
+            from hermes_cli.loops import LoopManager, dispatch_loop_command, goal_blocks_loop_tick
         except Exception as exc:
             logger.debug("loops module unavailable: %s", exc)
             return t("gateway.loop.unavailable")
@@ -421,9 +335,7 @@ class GatewayGoalCommandsMixin:
         # reply claims the loop was set (same class as the /goal false-ack fix).
         await self._warm_goals_session_db("loop manager")
         try:
-            session_entry = await self.async_session_store.get_or_create_session(
-                event.source
-            )
+            session_entry = await self.async_session_store.get_or_create_session(event.source)
         except Exception:
             session_entry = None
         sid = getattr(session_entry, "session_id", None) or ""
@@ -439,29 +351,14 @@ class GatewayGoalCommandsMixin:
             src = event.source
             if src is not None:
                 platform = getattr(src, "platform", "")
-                route = {
-                    "platform": platform.value
-                    if hasattr(platform, "value")
-                    else str(platform or "")
-                }
-                for key in (
-                    "chat_id",
-                    "chat_type",
-                    "thread_id",
-                    "user_id",
-                    "user_name",
-                    "profile",
-                ):
+                route = {"platform": platform.value if hasattr(platform, "value") else str(platform or "")}
+                for key in ("chat_id", "chat_type", "thread_id", "user_id", "user_name", "profile"):
                     route[key] = str(getattr(src, key, "") or "")
                 route = {k: v for k, v in route.items() if v}
         except Exception:
             route = {}
-        result = dispatch_loop_command(
-            mgr, (event.get_command_args() or "").strip(), route=route
-        )
+        result = dispatch_loop_command(mgr, (event.get_command_args() or "").strip(), route=route)
         output = result.get("output") or ""
-        if result.get("created") and _quiet_bool(
-            lambda: goal_blocks_loop_tick(mgr.session_id)
-        ):
+        if result.get("created") and _quiet_bool(lambda: goal_blocks_loop_tick(mgr.session_id)):
             output += t("gateway.loop.goal_defers_note")
         return output
