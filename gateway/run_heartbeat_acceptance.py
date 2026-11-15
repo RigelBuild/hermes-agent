@@ -73,6 +73,16 @@ async def heartbeat_route_deliverable(runner, adapter, source, entry, *, check_e
     return True
 
 
+def settle_busy_heartbeat(turn):
+    """Refund a heartbeat steer the running agent never consumed."""
+    claim, turn.heartbeat_claim = turn.heartbeat_claim, None
+    if claim is None:
+        return
+    agent, ticket, manager = claim
+    if agent.withdraw_steer(ticket):
+        manager.abandon_fire()
+
+
 def steer_busy_heartbeat(runner, source, session_id, route):
     """Claim a due steer only when this route has a running agent."""
     from agent.estop import check_paused
@@ -94,14 +104,16 @@ def steer_busy_heartbeat(runner, source, session_id, route):
     event = runner._synthetic_prompt_event(source, prompt)
     event._heartbeat_session_id = session_id
     event.metadata["gateway_session_key"] = route
+    ticket = ("heartbeat", session_id, manager.state.fire_count)
     try:
-        accepted = runner._steer_running_agent(agent, runner._steer_text_with_origin(prompt, event))
+        accepted = bool(agent.steer(runner._steer_text_with_origin(prompt, event), ticket=ticket))
     except Exception:
         logger.warning("Heartbeat steer failed for session %s", route, exc_info=True)
         manager.abandon_fire()
         return
     if accepted:
         state.turn.heartbeat_steered = True
+        state.turn.heartbeat_claim = (agent, ticket, manager)
     else:
         manager.abandon_fire()
 
@@ -119,13 +131,19 @@ async def admit_heartbeat(runner, adapter, source, session_id, route):
         return
     manager = HeartbeatManager(session_id)
     if manager.state and manager.state.delivery_mode == "steer" and runner._is_session_running(route):
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        turn = runner._peek_session_state(route).turn
+        if turn.agent is _AGENT_PENDING_SENTINEL or turn.heartbeat_steered:
+            return
+        authority._require_admission_open()
         if not manager.state.is_due():
             return
         from gateway.session_automation import snapshot_automation
         event = MessageEvent(text=manager.state.render_prompt(), source=source, internal=True,
             metadata={'gateway_session_key': route, 'gateway_session_id': session_id})
         await runner._run_in_executor_with_context(snapshot_automation, authority, adapter, event, 'heartbeat-validation')
-        if runner._is_session_running(route):
+        authority._require_admission_open()
+        if runner.session_store.peek_session_id(route) == session_id and runner._is_session_running(route):
             steer_busy_heartbeat(runner, source, session_id, route)
         return
     # Admissions live on the route's logical owner (the compression root), not its transcript tip;

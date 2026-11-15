@@ -119,9 +119,7 @@ class GatewayGoalCommandsMixin:
             return False
 
     async def _handle_heartbeat_command(self, event: MessageEvent) -> str:
-        """Handle /heartbeat (mirror of the CLI handler): the session's one recurring re-entry
-        prompt. The gateway-wide poller injects due heartbeats through the adapter FIFO as
-        ordinary user turns, so alternation and caching hold."""
+        """Handle /heartbeat: idle turns by default, or opt-in busy gateway steering."""
         from hermes_cli.heartbeat import parse_heartbeat_set, format_interval, MIN_INTERVAL_SECONDS
         args = (event.get_command_args() or "").strip()
         lower = args.lower()

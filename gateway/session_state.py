@@ -38,6 +38,7 @@ class TurnState:
     # agent): ``_release_running_agent_state`` releases them once the slot clears.
     retired_agents: list[Any] = field(default_factory=list)
     heartbeat_steered: bool = False  # one heartbeat-originated steer per running turn
+    heartbeat_claim: Any = None  # (agent, ticket, manager) awaiting turn settlement
 
     def running_event(self) -> Any:
         """The event whose input the worker is running now: a drained queued follow-up, else the
@@ -49,11 +50,15 @@ class TurnState:
         """Run *event* (a queued follow-up) as the slot's running turn; restore the outer one on
         exit unless the slot was cleared or rebound meanwhile."""
         previous, self.follow_up_event = self.follow_up_event, event
+        previous_claim, self.heartbeat_claim = self.heartbeat_claim, None
         previous_steered, self.heartbeat_steered = self.heartbeat_steered, False
         try:
             yield
         finally:
             if self.follow_up_event is event:
+                from gateway.run_heartbeat_acceptance import settle_busy_heartbeat
+                settle_busy_heartbeat(self)
+                self.heartbeat_claim = previous_claim
                 self.heartbeat_steered = previous_steered
                 self.follow_up_event = previous
 
@@ -62,6 +67,7 @@ class TurnState:
         self.agent = self.lease = self.event = self.ctx = self.follow_up_event = None
         self.started_ts = self.busy_ack_ts = 0.0
         self.heartbeat_steered = False
+        self.heartbeat_claim = None
 
 
 @dataclass

@@ -88,7 +88,6 @@ async def test_idle_wake_coalesces_intervals_while_adapter_owns_turn(poller):
         await asyncio.gather(*adapter._background_tasks)
 
 
-
 @pytest.mark.asyncio
 async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
     runner, adapter, watch, key, clock = poller

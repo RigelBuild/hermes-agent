@@ -93,6 +93,7 @@ async def test_authority_default_busy_heartbeat_runs_after_turn(monkeypatch):
 @pytest.mark.asyncio
 async def test_steer_mode_heartbeat_reaches_busy_tool_turn_once(poller):
     runner, adapter, watch, key, clock = poller
+    runner._is_user_authorized = lambda source: True
     started, release = asyncio.Event(), asyncio.Event()
     received = []
 
@@ -100,7 +101,7 @@ async def test_steer_mode_heartbeat_reaches_busy_tool_turn_once(poller):
         def __init__(self):
             self.steered = []
 
-        def steer(self, text):
+        def steer(self, text, *, ticket=None):
             self.steered.append(text)
             return True
 
@@ -139,6 +140,94 @@ async def test_steer_mode_heartbeat_reaches_busy_tool_turn_once(poller):
             await task
         adapter._active_sessions.pop(key, None)
         runner._session_state(key).turn.agent = None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,authorized", [("idle", True), ("steer", False)])
+async def test_legacy_busy_holds_unsteerable_heartbeat(poller, mode, authorized):
+    from tests.agent.test_steer import _bare_agent
+
+    runner, adapter, watch, key, clock = poller
+    runner._is_user_authorized = lambda source: authorized
+    received = []
+    async def handler(event):
+        event._heartbeat_execution_started = True
+        received.append(event)
+    adapter.set_message_handler(handler)
+    agent = _bare_agent()
+    runner._session_state(key).turn.agent = agent
+    HeartbeatManager("heartbeat-session").set("check status", 60, delivery_mode=mode)
+    clock.now += 60
+    await runner._heartbeat_poll_once(watch)
+    assert agent._pending_steer is None
+    assert HeartbeatManager("heartbeat-session").state.fire_count == 0
+    runner._session_state(key).turn.agent = None
+    await runner._heartbeat_poll_once(watch)
+    await asyncio.gather(*adapter._background_tasks)
+    assert len(received) == 1 and received[0]._heartbeat_session_id == "heartbeat-session"
+    assert HeartbeatManager("heartbeat-session").state.fire_count == 1
+
+
+@pytest.mark.asyncio
+async def test_unconsumed_ticket_is_refunded_and_runs_as_heartbeat(poller):
+    from tests.agent.test_steer import _bare_agent
+
+    runner, adapter, watch, key, clock = poller
+    runner._is_user_authorized = lambda source: True
+    runner._persist_active_agents = lambda: None
+    received = []
+    async def handler(event):
+        event._heartbeat_execution_started = True
+        received.append(event)
+    adapter.set_message_handler(handler)
+    agent = _bare_agent()
+    runner._session_state(key).turn.agent = agent
+    HeartbeatManager("heartbeat-session").set("check status", 60, delivery_mode="steer")
+    clock.now += 60
+    await runner._heartbeat_poll_once(watch)
+    assert agent._pending_steer and agent._drain_leftover_steer() is None
+    assert HeartbeatManager("heartbeat-session").state.fire_count == 1
+    runner._release_running_agent_state(key)
+    assert agent._pending_steer is None
+    assert HeartbeatManager("heartbeat-session").state.fire_count == 0
+    await runner._heartbeat_poll_once(watch)
+    await asyncio.gather(*adapter._background_tasks)
+    assert len(received) == 1 and received[0]._heartbeat_session_id == "heartbeat-session"
+    assert HeartbeatManager("heartbeat-session").state.fire_count == 1
+
+
+def test_follow_up_resets_and_restores_steer_flag():
+    from gateway.session_state import TurnState
+
+    turn = TurnState(heartbeat_steered=True)
+    with turn.running_follow_up(object()):
+        assert not turn.heartbeat_steered
+    assert turn.heartbeat_steered
+
+
+@pytest.mark.asyncio
+async def test_next_turn_can_steer_parent_without_fanout(poller):
+    from tests.agent.test_steer import _bare_agent
+
+    runner, adapter, watch, key, clock = poller
+    runner._is_user_authorized = lambda source: True
+    runner._persist_active_agents = lambda: None
+    adapter.set_message_handler(lambda event: None)
+    parent, child = _bare_agent(), _bare_agent()
+    parent._active_children = [child]
+    HeartbeatManager("heartbeat-session").set("check status", 60, delivery_mode="steer")
+    runner._session_state(key).turn.agent = parent
+    clock.now += 60
+    await runner._heartbeat_poll_once(watch)
+    assert parent._pending_steer and child._pending_steer is None
+    parent._drain_pending_steer()
+    runner._release_running_agent_state(key)
+    next_agent = _bare_agent()
+    runner._session_state(key).turn.agent = next_agent
+    clock.now += 60
+    await runner._heartbeat_poll_once(watch)
+    assert next_agent._pending_steer
+    assert HeartbeatManager("heartbeat-session").state.fire_count == 2
 
 
 def test_heartbeat_legacy_state_and_prompt_parsing():

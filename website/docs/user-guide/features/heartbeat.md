@@ -44,7 +44,7 @@ On messaging platforms, send a normal message in the chat before setting or resu
 ## Behavior details
 
 - **Idle by default.** If the agent is busy when a tick comes due, it fires at the next idle poll. An idle watched gateway session wakes proactively.
-- **Opt-in steering.** `--steer` sends a due gateway heartbeat through the existing busy-steer path. The agent sees it after the next tool result. At most one heartbeat steer is accepted per running turn. The classic CLI still waits for idle.
+- **Opt-in steering.** `--steer` sends a due gateway heartbeat to the parent agent, not its delegated subagents. The agent sees it after the next tool result. At most one heartbeat steer is accepted per running turn; an unread steer is returned to the heartbeat schedule. The classic CLI still waits for idle.
 - **Missed ticks coalesce.** If several intervals pass, the next fire represents one tick, not a backlog. The timer re-anchors on every fire.
 - **User messages win by default.** In idle mode, a queued user message takes priority and the heartbeat waits for the queue to drain.
 - **Owned by the surface that set it.** A heartbeat set from a messaging chat fires from the gateway and replies into that chat even while the same session is open in the TUI / Desktop app; the viewer never claims the tick.
