@@ -16,7 +16,7 @@ async def restore_heartbeat_watches(runner) -> None:
     from gateway.run_idle_gates import profile_has_active_heartbeat
     from hermes_cli.heartbeat import HeartbeatManager, HeartbeatState, _legacy_route, migrate_heartbeat_to_route
     from hermes_cli.goals import _get_session_db
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_hermes_home, set_hermes_home_override, reset_hermes_home_override
 
     store = runner.session_store
 
@@ -28,14 +28,18 @@ async def restore_heartbeat_watches(runner) -> None:
         if not any(profile_has_active_heartbeat(path) for path in dict.fromkeys(watched_homes)):
             return []
         groups = {}
-        for entry in store.list_sessions():
-            if entry.origin is None or not entry.session_id or entry.suspended:
-                continue
-            try:
-                source = runner._restored_source(entry)
-                groups.setdefault(runner._profile_scope_key_for_source(source), []).append((entry, source))
-            except Exception:
-                logger.debug("heartbeat restore for %s failed", entry.session_key, exc_info=True)
+        token = set_hermes_home_override(str(home))
+        try:
+            for entry in store.list_sessions():
+                if entry.origin is None or not entry.session_id or entry.suspended:
+                    continue
+                try:
+                    source = runner._restored_source(entry)
+                    groups.setdefault(runner._profile_scope_key_for_source(source), []).append((entry, source))
+                except Exception:
+                    logger.debug("heartbeat restore for %s failed", entry.session_key, exc_info=True)
+        finally:
+            reset_hermes_home_override(token)
         for _name, profile_home in profile_homes:
             groups.setdefault(profile_home, [])
         if not multiplex:
