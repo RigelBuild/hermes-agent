@@ -132,7 +132,7 @@ class GatewayGoalsMixin:
         (getattr(self, "_heartbeat_watch", None) or {}).pop(quick_key, None)
 
     async def _heartbeat_poll_once(self, watch: dict) -> None:
-        """Wake each idle watched session once; leave busy sessions' ticks unclaimed."""
+        """Poll watched routes and deliver due heartbeats to their current sessions."""
         for quick_key, (source, session_id) in list(watch.items()):
             try:
                 with self._profile_scope_for_source(source):
