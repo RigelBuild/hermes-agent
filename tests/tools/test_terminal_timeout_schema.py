@@ -51,18 +51,22 @@ def test_registered_terminal_schema_uses_bound_timeout_over_ambient(
     terminal_config_home, monkeypatch,
 ):
     monkeypatch.setenv("TERMINAL_TIMEOUT", "90")
+    home_token = set_hermes_home_override(str(terminal_config_home.parent / "routed"))
     scope = set_terminal_scope({"TERMINAL_ENV": "local", "TERMINAL_TIMEOUT": "60"})
     try:
         description = _registered_timeout_description()
     finally:
         reset_terminal_scope(scope)
+        reset_hermes_home_override(home_token)
 
     assert "default 60" in description
+    assert "default 90" not in description
 
 
-def test_registered_terminal_schema_skips_bridge_for_routed_home_without_scope(
-    terminal_config_home,
+def test_registered_terminal_schema_skips_launch_timeout_for_routed_home_without_scope(
+    terminal_config_home, monkeypatch,
 ):
+    monkeypatch.setenv("TERMINAL_TIMEOUT", "90")
     routed_home = terminal_config_home.parent / "routed"
     routed_home.mkdir()
     (routed_home / "config.yaml").write_text(
@@ -75,4 +79,6 @@ def test_registered_terminal_schema_skips_bridge_for_routed_home_without_scope(
         reset_hermes_home_override(home_token)
 
     assert "default 180" in description
-    assert terminal_tool._terminal_config_bridge_attempted is False
+    assert "default 90" not in description
+
+
