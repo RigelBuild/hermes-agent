@@ -85,3 +85,24 @@ async def test_runner_rejection_does_not_consume_tick_or_overwrite_replacement()
     await asyncio.sleep(0)
     state = HeartbeatManager('rejected-test').state
     assert state.prompt == 'replacement' and state.fire_count == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_then_successful_attempt_clears_error():
+    from gateway.run_heartbeat_acceptance import settle_heartbeat_attempt
+
+    manager = HeartbeatManager('error-recovery')
+    manager.set('check', 60)
+    event = SimpleNamespace(_heartbeat_execution_started=True)
+
+    async def fail():
+        raise ValueError('delivery failed')
+
+    task = asyncio.create_task(fail())
+    await asyncio.gather(task, return_exceptions=True)
+    settle_heartbeat_attempt(event, manager, task)
+    assert HeartbeatManager('error-recovery').state.last_error == 'delivery failed'
+    task = asyncio.create_task(asyncio.sleep(0))
+    await task
+    settle_heartbeat_attempt(event, manager, task)
+    assert HeartbeatManager('error-recovery').state.last_error == ''

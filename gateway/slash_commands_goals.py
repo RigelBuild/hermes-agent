@@ -119,7 +119,7 @@ class GatewayGoalCommandsMixin:
             return False
 
     async def _handle_heartbeat_command(self, event: MessageEvent) -> str:
-        """Handle /heartbeat: idle turns by default, or opt-in busy gateway steering."""
+        """Handle /heartbeat with busy steering by default or explicit idle delivery."""
         from hermes_cli.heartbeat import parse_heartbeat_set, format_interval, MIN_INTERVAL_SECONDS
         args = (event.get_command_args() or "").strip()
         lower = args.lower()

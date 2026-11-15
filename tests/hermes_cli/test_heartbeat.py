@@ -16,6 +16,30 @@ from hermes_cli.heartbeat import (
     save_heartbeat,
 )
 
+@pytest.mark.parametrize("command,method", [
+    ("/heartbeat 1m check", "set"),
+    ("/heartbeat pause", "pause"),
+    ("/heartbeat resume", "resume"),
+    ("/heartbeat clear", "clear"),
+])
+def test_cli_reports_route_lookup_failure(command, method, monkeypatch):
+    from unittest.mock import MagicMock
+    from hermes_cli import cli_commands_mixin as commands
+
+    manager = MagicMock()
+    getattr(manager, method).side_effect = RuntimeError("heartbeat route lookup failed")
+    cli = commands.CLICommandsMixin()
+    cli._session_manager = lambda *args: manager
+    cli._get_heartbeat_manager = lambda: manager
+    cli._start_heartbeat_watchdog = MagicMock()
+    output = []
+    monkeypatch.setattr(commands, "_cp", lambda *args: output.extend(args))
+    cli._handle_heartbeat_command(command)
+    assert len(output) == 1
+    assert "heartbeat route lookup failed" in output[0]
+    cli._start_heartbeat_watchdog.assert_not_called()
+
+
 
 # ──────────────────────────────────────────────────────────────────────
 # interval parsing

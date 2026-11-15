@@ -40,6 +40,7 @@ _STATE_FIELDS = {
     "prompt": (str, ""), "interval_seconds": (int, 0), "status": (str, "active"),
     "created_at": (float, 0.0), "last_fired_at": (float, 0.0), "fire_count": (int, 0),
     "delivery_mode": (str, "idle"),
+    "last_error": (str, ""),
 }
 
 
@@ -56,14 +57,14 @@ def parse_interval(text: str) -> Optional[int]:
 
 
 def parse_heartbeat_set(text: str) -> tuple[Optional[int], str, str]:
-    """Parse the interval and optional leading steer flag without rewriting prompt text."""
+    """Parse the interval and optional leading delivery flag without rewriting prompt text."""
     match = re.match(r"^\s*(?:every\s+)?(\S+)(?:\s+(.*))?$", text, re.IGNORECASE | re.DOTALL)
     if not match:
-        return None, "", "idle"
+        return None, "", "steer"
     interval = parse_interval(match.group(1))
     prompt = match.group(2) or ""
-    flag = re.match(r"^--steer(?:\s+|$)", prompt)
-    return interval, prompt[flag.end():] if flag else prompt, "steer" if flag else "idle"
+    flag = re.match(r"^--(idle|steer)(?:\s+|$)", prompt)
+    return interval, prompt[flag.end():] if flag else prompt, flag.group(1) if flag else "steer"
 
 
 def format_interval(seconds: int) -> str:
@@ -83,10 +84,14 @@ class HeartbeatState:
     created_at: float = 0.0
     last_fired_at: float = 0.0
     fire_count: int = 0
-    delivery_mode: str = "idle"  # idle | steer
+    delivery_mode: str = "steer"  # idle | steer
+    last_error: str = ""
 
     def to_json(self) -> str:
-        return json.dumps(asdict(self), ensure_ascii=False)
+        from hermes_cli.debug_redaction import redact_debug_support_text
+        data = asdict(self)
+        data["last_error"] = redact_debug_support_text(self.last_error, max_chars=500)
+        return json.dumps(data, ensure_ascii=False)
 
     @classmethod
     def from_json(cls, raw: str) -> HeartbeatState:
@@ -113,7 +118,87 @@ def _get_session_db() -> Optional[Any]:
 
 
 _META_PREFIX = "heartbeat:"
+_ROUTE_PREFIX = _META_PREFIX + "route:"
 _CLAIM_LOCK = threading.Lock()  # every driver of a session's heartbeat runs in its owning gateway process
+
+
+_ROUTING_SCOPE_CACHE: dict[str, str] = {}
+_ROUTING_SCOPE_LOCK = threading.Lock()
+
+
+def _default_routing_context() -> tuple[Any, Optional[str]]:
+    """Return the root routing DB and its active scope, or no routing context."""
+    try:
+        from hermes_constants import (
+            get_routing_process_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        home = get_routing_process_hermes_home()
+        home_key = str(home.resolve())
+        with _ROUTING_SCOPE_LOCK:
+            scope = _ROUTING_SCOPE_CACHE.get(home_key)
+        token = set_hermes_home_override(str(home))
+        try:
+            from hermes_cli.goals import _get_session_db
+
+            if scope is None:
+                from gateway.config import load_gateway_config
+                from gateway.session import SessionStore
+
+                config = load_gateway_config()
+                store = object.__new__(SessionStore)
+                store.sessions_dir = config.sessions_dir
+                scope = store._routing_scope()
+                with _ROUTING_SCOPE_LOCK:
+                    _ROUTING_SCOPE_CACHE[home_key] = scope
+            db = _get_session_db()
+            return (db, scope) if db is not None else (None, None)
+        finally:
+            reset_hermes_home_override(token)
+    except Exception as exc:
+        logger.debug("HeartbeatManager: routing context unavailable: %s", exc)
+        return None, None
+
+
+def _route_scope(route: str, routing_scope: str) -> str:
+    return "" if ":local:" in route else routing_scope
+
+
+def _legacy_route(
+    session_id: str,
+    db: Any,
+    routing_db: Any = None,
+    routing_scope: Optional[str] = None,
+) -> tuple[Optional[str], bool]:
+    """Resolve a session only when the scoped routing index confirms its current owner."""
+    if not session_id:
+        return None, False
+    if routing_db is None:
+        return None, False
+    try:
+        row = db.get_session(session_id) if db is not None else None
+        route = row.get("session_key") if row else None
+        if not route:
+            return None, False
+        if routing_scope is None:
+            raise RuntimeError("heartbeat routing scope unavailable")
+        scope = _route_scope(route, routing_scope)
+        entries = routing_db._read_all(
+            "SELECT entry_json FROM gateway_routing WHERE scope = ? AND session_key = ?",
+            (scope, route),
+        )
+        if not entries:
+            return None, False
+        data = json.loads(entries[0]["entry_json"])
+        if not isinstance(data, dict) or data.get("session_key") != route or not data.get("session_id"):
+            raise RuntimeError("heartbeat routing entry is invalid")
+        if data["session_id"] == session_id and not data.get("suspended"):
+            return route, False
+        return None, True
+    except Exception as exc:
+        raise RuntimeError("heartbeat route lookup failed") from exc
 
 
 def load_heartbeat(session_id: str) -> Optional[HeartbeatState]:
@@ -131,6 +216,7 @@ def load_heartbeat(session_id: str) -> Optional[HeartbeatState]:
         logger.warning("HeartbeatManager: could not parse stored heartbeat for %s: %s", session_id, exc)
         return None
     return None if state is None or state.status == "cleared" else state
+
 
 
 def store_has_active_heartbeat(db: Any) -> bool:
@@ -160,17 +246,142 @@ def save_heartbeat(session_id: str, state: HeartbeatState) -> None:
         logger.debug("HeartbeatManager: set_meta failed: %s", exc)
 
 
-class HeartbeatManager:
-    """Per-session heartbeat state + due-tick decisions; the surface CLI + gateway talk to.
+def load_route_heartbeat(route_key: str, db: Any = None) -> Optional[HeartbeatState]:
+    db = db if db is not None else _get_session_db()
+    if not route_key or db is None:
+        return None
+    try:
+        raw = db.get_meta(_ROUTE_PREFIX + route_key)
+        state = HeartbeatState.from_json(raw) if raw else None
+        return None if state is None or state.status == "cleared" else state
+    except Exception as exc:
+        logger.warning("HeartbeatManager: could not load route heartbeat: %s", exc)
+        return None
 
-    Drivers (CLI thread / gateway task) call :meth:`due_prompt` on a poll cadence while the session is
-    idle; a non-None return is the user-role message to inject.
+
+def save_route_heartbeat(route_key: str, state: HeartbeatState, db: Any = None) -> bool:
+    db = db if db is not None else _get_session_db()
+    if not route_key or db is None:
+        return False
+    try:
+        db.set_meta(_ROUTE_PREFIX + route_key, state.to_json())
+        return True
+    except Exception as exc:
+        logger.debug("HeartbeatManager: route set_meta failed: %s", exc)
+        return False
+
+
+def list_heartbeats(db: Any = None) -> list[tuple[str, HeartbeatState]]:
+    db = db if db is not None else _get_session_db()
+    if db is None:
+        return []
+    result = []
+    for key, raw in db.list_meta_prefix(_ROUTE_PREFIX):
+        try:
+            state = HeartbeatState.from_json(raw)
+            if state.status in {"active", "paused"} and state.prompt.strip() and state.interval_seconds >= MIN_INTERVAL_SECONDS:
+                result.append((key[len(_ROUTE_PREFIX):], state))
+        except (ValueError, TypeError, AttributeError):
+            continue
+    return sorted(result, key=lambda item: item[0])
+
+
+def migrate_heartbeat_to_route(session_id: str, route_key: str, db: Any = None) -> bool:
+    db = db if db is not None else _get_session_db()
+    if not session_id or not route_key or db is None:
+        return False
+    if db.get_meta(_META_PREFIX + session_id) is None:
+        return False
+    with _CLAIM_LOCK:
+        try:
+            def migrate(conn):
+                legacy_key = _META_PREFIX + session_id
+                route_meta = _ROUTE_PREFIX + route_key
+                legacy = conn.execute("SELECT value FROM state_meta WHERE key = ?", (legacy_key,)).fetchone()
+                if not legacy:
+                    return False
+                data = json.loads(legacy[0])
+                if not isinstance(data, dict) or data.get("status") not in {"active", "paused"}:
+                    return False
+                if not isinstance(data.get("prompt"), str) or not data["prompt"].strip():
+                    return False
+                if HeartbeatState.from_json(legacy[0]).interval_seconds < MIN_INTERVAL_SECONDS:
+                    return False
+                existing = conn.execute("SELECT 1 FROM state_meta WHERE key = ?", (route_meta,)).fetchone()
+                if existing is None:
+                    conn.execute("INSERT INTO state_meta(key, value) VALUES (?, ?)", (route_meta, legacy[0]))
+                conn.execute("DELETE FROM state_meta WHERE key = ?", (legacy_key,))
+                return existing is None
+            return bool(db._execute_write(migrate))
+        except Exception as exc:
+            logger.debug("HeartbeatManager: route migration failed: %s", exc)
+            return False
+
+
+class HeartbeatManager:
+    """Heartbeat state and due-tick decisions for a session or its current route.
+
+    Drivers call :meth:`due_prompt` when ready to admit or steer a due tick.
     """
 
-    def __init__(self, session_id: str):
+    def __init__(
+        self,
+        session_id: str,
+        *,
+        route_key: Optional[str] = None,
+        db: Any = None,
+        routing_db: Any = None,
+        routing_scope: Optional[str] = None,
+    ):
         self.session_id = session_id
-        self._state: Optional[HeartbeatState] = load_heartbeat(session_id)
-        self._last_claim: Optional[tuple[float, int]] = None  # (last_fired_at, fire_count) before the last due_prompt
+        self.route_key = route_key
+        self.db = db
+        if not route_key and routing_db is None and routing_scope is None:
+            routing_db, routing_scope = _default_routing_context()
+        self.routing_db = routing_db
+        self.routing_scope = routing_scope
+        self._lookup_logged = False
+        try:
+            if not self.route_key:
+                route, archived = self._storage()
+                if route and not archived:
+                    db = self.db if self.db is not None else _get_session_db()
+                    if db is not None and db.get_meta(_META_PREFIX + self.session_id) is not None:
+                        migrate_heartbeat_to_route(self.session_id, route, db=db)
+        except RuntimeError as exc:
+            self._log_lookup_failure(exc)
+        self._state: Optional[HeartbeatState] = self._load()
+        self._last_claim: Optional[tuple[float, int]] = None
+
+    def _storage(self) -> tuple[Optional[str], bool]:
+        if self.route_key:
+            return self.route_key, False
+        db = self.db if self.db is not None else _get_session_db()
+        return _legacy_route(self.session_id, db, self.routing_db, self.routing_scope)
+
+    def _log_lookup_failure(self, exc: RuntimeError) -> None:
+        if not self._lookup_logged:
+            logger.debug("HeartbeatManager: route lookup failed: %s", exc)
+            self._lookup_logged = True
+
+    def _load(self) -> Optional[HeartbeatState]:
+        try:
+            route, archived = self._storage()
+        except RuntimeError as exc:
+            self._log_lookup_failure(exc)
+            return None
+        if archived:
+            return None
+        return load_route_heartbeat(route, self.db) if route else load_heartbeat(self.session_id)
+
+    def _save(self, state: HeartbeatState) -> None:
+        route, archived = self._storage()
+        if archived:
+            raise RuntimeError("heartbeat session is no longer the route owner")
+        if route:
+            save_route_heartbeat(route, state, self.db)
+        else:
+            save_heartbeat(self.session_id, state)
 
     @property
     def state(self) -> Optional[HeartbeatState]:
@@ -195,7 +406,7 @@ class HeartbeatManager:
         icon = "⏸ " if s.status == "paused" else ""
         return f"{icon}Heartbeat ({s.status}, every {every}{fired}, mode {mode}): {s.prompt}"
 
-    def set(self, prompt: str, interval_seconds: int, *, delivery_mode: str = "idle") -> HeartbeatState:
+    def set(self, prompt: str, interval_seconds: int, *, delivery_mode: str = "steer") -> HeartbeatState:
         prompt = (prompt or "").strip()
         if not prompt:
             raise ValueError("heartbeat prompt is empty")
@@ -204,19 +415,22 @@ class HeartbeatManager:
             raise ValueError(f"interval must be at least {MIN_INTERVAL_SECONDS}s")
         if delivery_mode not in {"idle", "steer"}:
             raise ValueError("delivery mode must be idle or steer")
-        self._state = HeartbeatState(prompt=prompt, interval_seconds=interval_seconds, status="active",
-                                     created_at=time.time(), delivery_mode=delivery_mode)
-        save_heartbeat(self.session_id, self._state)
+        with _CLAIM_LOCK:
+            self._state = HeartbeatState(prompt=prompt, interval_seconds=interval_seconds, status="active",
+                                         created_at=time.time(), delivery_mode=delivery_mode)
+            self._save(self._state)
         return self._state
 
     def _set_status(self, status: str, *, reanchor: bool = False) -> Optional[HeartbeatState]:
-        if not self._state:
-            return None
-        with _CLAIM_LOCK:  # a stop landing inside a claim's reread-then-write would be overwritten by it
+        with _CLAIM_LOCK:
+            self._storage()  # Mutations must report routing failures, even after a failed read.
+            self._state = self._load()
+            if not self._state:
+                return None
             self._state.status = status
             if reanchor:
                 self._state.last_fired_at = time.time()
-            save_heartbeat(self.session_id, self._state)
+            self._save(self._state)
         return self._state
 
     def pause(self) -> Optional[HeartbeatState]:
@@ -244,7 +458,7 @@ class HeartbeatManager:
                 return None
             # Compare-and-set on the stored row: the gateway poller and a viewer's due_prompt RPC each hold
             # their own manager over it, and only one may take the tick. A row cleared or paused since is lost too.
-            stored = load_heartbeat(self.session_id)
+            stored = self._load()
             if stored is None or stored.status != "active" or (
                     stored.last_fired_at, stored.fire_count) != (s.last_fired_at, s.fire_count):
                 self._state = stored
@@ -252,24 +466,37 @@ class HeartbeatManager:
             self._last_claim = (s.last_fired_at, s.fire_count)
             s.last_fired_at = now if now is not None else time.time()
             s.fire_count += 1
-            save_heartbeat(self.session_id, s)
+            self._save(s)
             return s.render_prompt()
 
     def abandon_fire(self) -> bool:
         """Rewind the fire recorded by the last :meth:`due_prompt` whose turn never started, so the tick stays
         due for the next poll instead of being silently consumed. Mirrors ``LoopManager.abandon_tick``. Skipped
         (False) when the persisted state moved on — a pause/resume/clear that landed in between wins."""
-        claim, s = self._last_claim, self._state
-        if claim is None or s is None:
-            return False
-        current = load_heartbeat(self.session_id)
-        if current is None or current.status != "active" or (current.last_fired_at, current.fire_count) != (
-                s.last_fired_at, s.fire_count):
-            return False
-        s.last_fired_at, s.fire_count = claim
-        self._last_claim = None
-        save_heartbeat(self.session_id, s)
-        return True
+        with _CLAIM_LOCK:
+            claim, s = self._last_claim, self._state
+            if claim is None or s is None:
+                return False
+            current = self._load()
+            if current is None or current.status != "active" or (current.last_fired_at, current.fire_count) != (
+                    s.last_fired_at, s.fire_count):
+                return False
+            current.last_fired_at, current.fire_count = claim
+            self._last_claim = None
+            self._state = current
+            self._save(current)
+            return True
+
+    def record_error(self, error: object) -> None:
+        from hermes_cli.debug_redaction import redact_debug_support_text
+        with _CLAIM_LOCK:
+            current = self._load()
+            if current is None:
+                self._state = None
+                return
+            current.last_error = redact_debug_support_text(error, max_chars=500) if error else ""
+            self._state = current
+            self._save(current)
 
 
 def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bool:
@@ -300,7 +527,12 @@ __all__ = [
     "HeartbeatState",
     "format_interval",
     "load_heartbeat",
+    "load_route_heartbeat",
+    "save_route_heartbeat",
+    "migrate_heartbeat_to_route",
+    "list_heartbeats",
     "migrate_heartbeat_to_session",
+    "parse_heartbeat_set",
     "parse_interval",
     "save_heartbeat",
 ]

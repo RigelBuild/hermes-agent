@@ -94,10 +94,15 @@ class GatewayGoalsMixin:
 
     async def _get_heartbeat_manager_for_event(self, event: MessageEvent):
         """Return ``(HeartbeatManager, session_entry)`` for this event, or ``(None, None)``."""
-        def _load():
-            from hermes_cli.heartbeat import HeartbeatManager
-            return lambda sid: HeartbeatManager(session_id=sid)
-        return await self._manager_for_event(event, "heartbeat", _load)
+        from hermes_cli.heartbeat import HeartbeatManager, migrate_heartbeat_to_route
+
+        entry = await self._session_entry_for_manager(event, "heartbeat manager")
+        if entry is None:
+            return None, None
+        route = entry.session_key
+        db = self.session_store._db_for_key(route)
+        migrate_heartbeat_to_route(entry.session_id, route, db=db)
+        return HeartbeatManager(entry.session_id, route_key=route, db=db), entry
 
     @staticmethod
     def _synthetic_prompt_event(source: Any, text: str, *, internal: bool = False) -> MessageEvent:
@@ -127,7 +132,7 @@ class GatewayGoalsMixin:
         (getattr(self, "_heartbeat_watch", None) or {}).pop(quick_key, None)
 
     async def _heartbeat_poll_once(self, watch: dict) -> None:
-        """Wake each idle watched session once; leave busy sessions' ticks unclaimed."""
+        """Poll watched routes and deliver due heartbeats to their current sessions."""
         for quick_key, (source, session_id) in list(watch.items()):
             try:
                 with self._profile_scope_for_source(source):
@@ -163,6 +168,18 @@ class GatewayGoalsMixin:
                 return
             session_id = current
             watch[quick_key] = (source, session_id)
+        from hermes_cli.heartbeat import HeartbeatManager, migrate_heartbeat_to_route
+        db_for_key = getattr(store, "_db_for_key", None)
+        if callable(db_for_key):
+            db = db_for_key(quick_key)
+            if db is not None and db.get_meta("heartbeat:" + session_id) is not None:
+                migrate_heartbeat_to_route(session_id, quick_key, db=db)
+            mgr = HeartbeatManager(session_id, route_key=quick_key, db=db)
+        else:
+            mgr = HeartbeatManager(session_id)
+        if not mgr.has_heartbeat():
+            watch.pop(quick_key, None)
+            return
         adapter = self._delivery_adapter_for(source)
         from gateway.run_heartbeat_acceptance import heartbeat_route_deliverable
         if not await heartbeat_route_deliverable(
@@ -170,30 +187,28 @@ class GatewayGoalsMixin:
         ):
             return
         from gateway.session_local import LocalSessionAdapter
+        local = isinstance(adapter, LocalSessionAdapter)
         from gateway.session_viewer_automation import viewer_driven
-        if isinstance(adapter, LocalSessionAdapter) and viewer_driven(adapter.authority, source.chat_id, "viewer_heartbeat"):
+        if local and viewer_driven(adapter.authority, source.chat_id, "viewer_heartbeat"):
             return  # the classic CLI's watchdog fires it: that CLI paints only the turns it submits
         if getattr(self, 'session_authority', None) is not None:
             from gateway.run_heartbeat_acceptance import admit_heartbeat
             await admit_heartbeat(self, adapter, source, session_id, quick_key)
             return
-        from gateway.run_heartbeat_acceptance import steer_busy_heartbeat
         if (
             self._is_session_running(quick_key)
             or quick_key in adapter._active_sessions
             or self._queue_depth(quick_key, adapter=adapter) > 0
         ):
             if self._is_user_authorized_for_source(source, allow_adapter_delegation=False):
-                steer_busy_heartbeat(self, source, session_id, quick_key)  # idle mode leaves the tick due
+                from gateway.run_heartbeat_acceptance import steer_busy_heartbeat
+                steer_busy_heartbeat(self, source, session_id, quick_key)
             return
         from agent.estop import check_paused
-        if check_paused("heartbeat", logger):  # keep the tick due until resume
-            return
-        from hermes_cli.heartbeat import HeartbeatManager
-        mgr = HeartbeatManager(session_id=session_id)
-        if not mgr.has_heartbeat():
-            watch.pop(quick_key, None)
-            return
+
+        if check_paused("heartbeat", logger):
+            return  # `hermes pause`: leave the tick unclaimed so it fires after `hermes resume`
+
         prompt = mgr.due_prompt()
         if not prompt:
             return
@@ -207,11 +222,14 @@ class GatewayGoalsMixin:
         # check and adapter claim. FIFO alone never wakes an idle session.
         try:
             await adapter.handle_message(event)
+        except Exception as exc:
+            mgr.record_error(str(exc))
+            raise
         finally:
             task = getattr(adapter, "_session_tasks", {}).get(quick_key)
             if task is not None:
                 from gateway.run_heartbeat_acceptance import settle_heartbeat_attempt
-                task.add_done_callback(lambda done: settle_heartbeat_attempt(event, mgr))
+                task.add_done_callback(lambda done: settle_heartbeat_attempt(event, mgr, done))
             elif quick_key not in adapter._active_sessions:
                 mgr.abandon_fire()
 

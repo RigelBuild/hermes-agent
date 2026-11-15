@@ -1605,9 +1605,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         return mgr
 
     def _handle_heartbeat_command(self, cmd: str) -> None:
-        """Dispatch /heartbeat: set / status / pause / resume / clear. ``/heartbeat every 10m <prompt>``
-        sets the session's one recurring instruction, injected as a normal user turn when due.
-        Session-scoped and in-process — use `hermes cron` for durable schedules."""
+        """Dispatch heartbeat controls for the current session or route.
+
+        Gateway routes retain their heartbeat across resets and restarts.
+        """
         from hermes_cli.heartbeat import format_interval
         arg = _command_arg(cmd)
         lower = arg.lower()
@@ -1617,23 +1618,30 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         if not arg or lower == "status":
             _cp(f"  {mgr.status_line()}")
         elif lower == "pause":
-            state = mgr.pause()
+            state = _attempt(_t("heartbeat.invalid_label"), RuntimeError, mgr.pause)
+            if state is _FAILED:
+                return
             _cp(f"  {_t('heartbeat.paused', prompt=state.prompt)}" if state
                 else _dim_line(_t("heartbeat.none_set")))
         elif lower == "resume":
-            state = mgr.resume()
+            state = _attempt(_t("heartbeat.invalid_label"), RuntimeError, mgr.resume)
+            if state is _FAILED:
+                return
             if state is None:
                 _cp(_dim_line(_t("heartbeat.none_to_resume")))
             else:
                 self._start_heartbeat_watchdog()
                 _cp(f"  {_t('heartbeat.resumed', interval=format_interval(state.interval_seconds), prompt=state.prompt)}")
         elif lower in {"clear", "stop", "off"}:
-            _cp(f"  {_t('heartbeat.cleared')}" if mgr.clear() else _dim_line(_t("heartbeat.none_set")))
+            cleared = _attempt(_t("heartbeat.invalid_label"), RuntimeError, mgr.clear)
+            if cleared is _FAILED:
+                return
+            _cp(f"  {_t('heartbeat.cleared')}" if cleared else _dim_line(_t("heartbeat.none_set")))
         else:
             self._heartbeat_set(mgr, arg)
 
     def _heartbeat_set(self, mgr, arg: str) -> None:
-        """Set a recurring heartbeat, optionally with ``--steer <prompt>``."""
+        """Set a recurring heartbeat, optionally choosing idle or steer delivery."""
         from hermes_cli.heartbeat import parse_heartbeat_set, format_interval
         interval, prompt, delivery_mode = parse_heartbeat_set(arg)
         if interval is None:
@@ -1643,7 +1651,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             return _cp(f"  {_t('heartbeat.interval_too_small', min_seconds=MIN_INTERVAL_SECONDS)}")
         if not prompt.strip():
             return _cp(f"  {_t('heartbeat.prompt_required')}")
-        state = _attempt(_t("heartbeat.invalid_label"), ValueError, mgr.set, prompt, interval,
+        state = _attempt(_t("heartbeat.invalid_label"), (ValueError, RuntimeError), mgr.set, prompt, interval,
                          delivery_mode=delivery_mode)
         if state is _FAILED:
             return

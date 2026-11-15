@@ -37,7 +37,7 @@ class TurnState:
     # Agents taken out of the cache while this turn still ran them (a one-turn ``model_override``
     # agent): ``_release_running_agent_state`` releases them once the slot clears.
     retired_agents: list[Any] = field(default_factory=list)
-    heartbeat_steered: bool = False  # one heartbeat-originated steer per running turn
+    heartbeat_steered: bool = False
     heartbeat_claim: Any = None  # (agent, ticket, manager) awaiting turn settlement
 
     def running_event(self) -> Any:

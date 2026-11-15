@@ -30,10 +30,32 @@ async def test_kanban_wake_is_admitted_into_a_local_chat(tmp_path, monkeypatch):
 
 
 def _overdue_heartbeat(session_id):
-    from hermes_cli.heartbeat import HeartbeatManager, save_heartbeat
-    state = HeartbeatManager(session_id).set('status tick', 60)
+    from hermes_cli.heartbeat import HeartbeatManager, save_route_heartbeat, save_heartbeat
+    manager = HeartbeatManager(session_id)
+    state = manager.set('status tick', 60)
     state.created_at = time.time() - 120  # one interval overdue
-    save_heartbeat(session_id, state)
+    route, _archived = manager._storage()
+    if route:
+        save_route_heartbeat(route, state)
+    else:
+        save_heartbeat(session_id, state)
+
+
+@pytest.mark.asyncio
+async def test_legacy_local_heartbeat_migrates_and_fires(tmp_path, monkeypatch):
+    from gateway.run_heartbeat_restore import restore_heartbeat_watches
+    from hermes_cli.heartbeat import HeartbeatState, save_heartbeat
+
+    runner, authority, ref, _ = await _local(tmp_path, monkeypatch)
+    route = authority.sessions[ref.session_id].route
+    save_heartbeat(ref.session_id, HeartbeatState(prompt='legacy tick', interval_seconds=60,
+                                                  created_at=time.time() - 120))
+    await restore_heartbeat_watches(runner)
+    assert authority.db.get_meta('heartbeat:' + ref.session_id) is None
+    assert authority.db.get_meta('heartbeat:route:' + route) is not None
+    assert route in runner._heartbeat_watch
+    await runner._heartbeat_poll_once(runner._heartbeat_watch)
+    assert _heartbeat_admissions(authority, ref)
 
 
 def _heartbeat_admissions(authority, ref):

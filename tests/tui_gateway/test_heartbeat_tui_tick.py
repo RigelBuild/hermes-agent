@@ -93,30 +93,35 @@ def test_notification_poller_fires_due_heartbeat_when_idle(server, session):
 
 
 def test_desktop_poller_leaves_gateway_owned_heartbeat_for_gateway(server, session, hermes_home):
-    """A Desktop viewer must not consume a messaging session's routed heartbeat, but ownership follows the
-    gateway's live routing index, not the row's immutable ``source``: once /reset archives the row the gateway
-    never registers a watch for it again, so the Desktop viewer must fire it (else nobody does)."""
+    """Desktop leaves current route ticks and archived legacy rows to the gateway."""
     from gateway.config import GatewayConfig, Platform
     from gateway.session import SessionSource, SessionStore
-    from hermes_cli.heartbeat import load_heartbeat
+    from hermes_cli.heartbeat import HeartbeatState, load_route_heartbeat, save_heartbeat
 
     sid, _, s = session
     s["source"] = "desktop"
     store = SessionStore(hermes_home / "sessions", GatewayConfig())
-    store._db = server._get_db()  # the routing index lives in the store the Desktop poller reads
+    store._db = server._get_db()
     src = SessionSource(platform=Platform.TELEGRAM, chat_id="42")
     archived_key = store.get_or_create_session(src).session_id
-    current_key = store.get_or_create_session(src, force_new=True).session_id
+    current = store.get_or_create_session(src, force_new=True)
+    state = HeartbeatState(prompt="report backend health", interval_seconds=60, created_at=time.time() - 3600)
+    save_heartbeat(current.session_id, state)
+    s["session_key"], s["running"] = current.session_id, False
+    p_submit, p_emit = _submits(server, MagicMock())
+    with p_submit as submit, p_emit:
+        server._maybe_fire_tui_heartbeat_tick(sid, s)
+    submit.assert_not_called()
+    routed = load_route_heartbeat(current.session_key)
+    assert routed.fire_count == 0 and routed.is_due()
 
-    for key, desktop_fires in ((current_key, False), (archived_key, True)):
-        s["session_key"], s["running"] = key, False
-        _arm_due(key)
-        p_submit, p_emit = _submits(server, MagicMock())
-        with p_submit as submit, p_emit:
-            server._maybe_fire_tui_heartbeat_tick(sid, s)
-        assert submit.called is desktop_fires, key
-        assert (load_heartbeat(key).fire_count == 1) is desktop_fires
-        assert load_heartbeat(key).is_due() is not desktop_fires
+    save_heartbeat(archived_key, state)
+    s["session_key"], s["running"] = archived_key, False
+    p_submit, p_emit = _submits(server, MagicMock())
+    with p_submit as submit, p_emit:
+        server._maybe_fire_tui_heartbeat_tick(sid, s)
+    submit.assert_not_called()
+    assert server._get_db().get_meta("heartbeat:" + archived_key) is not None
 
 
 @pytest.mark.parametrize("running,due", [(True, True), (False, False)])

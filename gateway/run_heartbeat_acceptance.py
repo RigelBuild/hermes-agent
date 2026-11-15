@@ -37,12 +37,18 @@ def heartbeat_owner_is_current(runner, event, session_key):
     return current is not None and not current.suspended and current.session_id == expected
 
 
-def settle_heartbeat_attempt(event, manager):
+def settle_heartbeat_attempt(event, manager, task=None):
     if not getattr(event, "_heartbeat_execution_started", False):
         try:
             manager.abandon_fire()
         except Exception:
             logger.warning("Failed to refund unexecuted heartbeat", exc_info=True)
+    if task is not None and not task.cancelled():
+        error = task.exception()
+        if error is not None:
+            manager.record_error(str(error))
+        elif getattr(event, "_heartbeat_execution_started", False):
+            manager.record_error("")
 
 
 async def heartbeat_route_deliverable(runner, adapter, source, entry, *, check_envelope=True):
@@ -97,7 +103,9 @@ def steer_busy_heartbeat(runner, source, session_id, route):
     agent = state.turn.agent if state else None
     if agent is None or agent is _AGENT_PENDING_SENTINEL or state.turn.heartbeat_steered:
         return
-    manager = HeartbeatManager(session_id)
+    store = getattr(runner, "session_store", None)
+    db = store._db_for_key(route) if store is not None else None
+    manager = HeartbeatManager(session_id, route_key=route, db=db)
     if not manager.has_heartbeat() or manager.state.delivery_mode != "steer":
         return
     if check_paused("heartbeat", logger):
@@ -111,8 +119,9 @@ def steer_busy_heartbeat(runner, source, session_id, route):
     ticket = ("heartbeat", session_id, manager.state.fire_count)
     try:
         accepted = bool(agent.steer(runner._steer_text_with_origin(prompt, event), ticket=ticket))
-    except Exception:
+    except Exception as exc:
         logger.warning("Heartbeat steer failed for session %s", route, exc_info=True)
+        manager.record_error(str(exc))
         manager.abandon_fire()
         return
     if accepted:
@@ -133,7 +142,10 @@ async def admit_heartbeat(runner, adapter, source, session_id, route):
     authority = active_authority(runner)
     if authority is None:
         return
-    manager = HeartbeatManager(session_id)
+    store = getattr(runner, 'session_store', None)
+    db_for_key = getattr(store, '_db_for_key', None)
+    manager = (HeartbeatManager(session_id, route_key=route, db=db_for_key(route))
+               if callable(db_for_key) else HeartbeatManager(session_id))
     if manager.state and manager.state.delivery_mode == "steer" and runner._is_session_running(route):
         from gateway.run import _AGENT_PENDING_SENTINEL
         turn = runner._peek_session_state(route).turn
@@ -156,7 +168,6 @@ async def admit_heartbeat(runner, adapter, source, session_id, route):
     if any(row['payload'].get('native_text_v1', {}).get('automation', {}).get('heartbeat')
            or row['payload'].get('local_automation_v1', {}).get('heartbeat') for row in pending):
         return
-    manager = HeartbeatManager(session_id)
     prompt = manager.due_prompt()
     if prompt is None:
         return
@@ -167,7 +178,9 @@ async def admit_heartbeat(runner, adapter, source, session_id, route):
     event._heartbeat_session_id = session_id
     try:
         await authority.admit_automation(adapter, event, identity)
-    except BaseException:
+    except BaseException as exc:
+        if isinstance(exc, Exception):
+            manager.record_error(str(exc))
         # Readiness is not a delivery attempt, and cancellation before commit is not ACK.
         if getattr(event, '_gateway_accepted', False) is not True:
             manager.abandon_fire()

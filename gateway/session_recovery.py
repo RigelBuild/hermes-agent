@@ -302,11 +302,10 @@ class SessionRecoveryMixin:
                 db.end_session(session_id, reason)
             from gateway.session_bot import release_superseded_bot_chat
             release_superseded_bot_chat(db, self, session_key, session_id)
-            # Stop the departed conversation's schedule in its owning profile, even when
-            # the in-memory watch still holds a pre-reset session id.
-            heartbeat_key = f"heartbeat:{session_id}"
-            if db.get_meta(heartbeat_key):
-                db.set_meta(heartbeat_key, "")
+            # The departing session owned this route at the boundary. Preserve its legacy
+            # schedule; route-keyed schedules need no reset action.
+            from hermes_cli.heartbeat import migrate_heartbeat_to_route
+            migrate_heartbeat_to_route(session_id, session_key, db=db)
         except Exception as exc:
             log(exc)
 
