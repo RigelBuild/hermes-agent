@@ -38,8 +38,9 @@ async def restore_heartbeat_watches(runner) -> None:
                     groups.setdefault(runner._profile_scope_key_for_source(source), []).append((entry, source))
                 except Exception:
                     logger.debug("heartbeat restore for %s failed", entry.session_key, exc_info=True)
-        finally:
+        except BaseException:
             reset_hermes_home_override(token)
+            raise
         for _name, profile_home in profile_homes:
             groups.setdefault(profile_home, [])
         if not multiplex:
@@ -86,6 +87,7 @@ async def restore_heartbeat_watches(runner) -> None:
                             logger.debug("heartbeat restore for %s failed", entry.session_key, exc_info=True)
             except Exception:
                 logger.debug("heartbeat restore scope for %s failed", scope or home, exc_info=True)
+        reset_hermes_home_override(token)
         return restored
 
     try:
