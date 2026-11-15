@@ -53,6 +53,7 @@ async def test_heartbeat_remains_on_route_through_reset_and_fresh_runner_restore
     from gateway.run_heartbeat_restore import restore_heartbeat_watches
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr('hermes_state.DEFAULT_DB_PATH', tmp_path / '.hermes' / 'state.db')
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="reset", user_id="owner")
     config = GatewayConfig()
     store = SessionStore(config.sessions_dir, config)
@@ -93,6 +94,7 @@ async def test_restore_does_not_migrate_archived_session_heartbeat(tmp_path, mon
     from gateway.run_heartbeat_restore import restore_heartbeat_watches
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr('hermes_state.DEFAULT_DB_PATH', tmp_path / '.hermes' / 'state.db')
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="archive", user_id="owner")
     config = GatewayConfig()
     store = SessionStore(config.sessions_dir, config)
