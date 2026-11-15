@@ -60,7 +60,7 @@ async def test_authority_refuses_busy_steer_without_committed_route(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_authority_default_busy_heartbeat_runs_after_turn(monkeypatch):
+async def test_authority_idle_busy_heartbeat_runs_after_turn(monkeypatch):
     from gateway.run_heartbeat_acceptance import admit_heartbeat
     from hermes_cli import heartbeat
     from hermes_state_runtime import list_session_admissions
@@ -72,7 +72,7 @@ async def test_authority_default_busy_heartbeat_runs_after_turn(monkeypatch):
     entry = await runner.async_session_store.get_or_create_session(source)
     key = runner._session_key_for_source(source)
     manager = HeartbeatManager(entry.session_id)
-    manager.set("check status", 60)
+    manager.set("check status", 60, delivery_mode="idle")
     now = manager.state.created_at + 61
     monkeypatch.setattr(heartbeat, "time", type("Clock", (), {"time": staticmethod(lambda: now)}))
     gates["long turn"] = asyncio.Event()
