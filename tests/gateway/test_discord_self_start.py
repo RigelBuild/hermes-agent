@@ -103,6 +103,24 @@ async def test_opener_commits_native_admission_and_unrecorded_is_denied(
         )
         assert row["payload"]["text"] == "start this task"
         assert row["payload"]["native_text_v1"]["provenance"]["self_start"]
+        from gateway.run_turn_runner import TurnRunner
+        from gateway.session_contract import SessionRef
+
+        turns = []
+
+        def run_sync(turn):
+            turns.append(turn._ctx.message)
+            result = {"final_response": "done", "messages": [], "completed": True}
+            turn._ctx.result_holder[0] = result
+            return result
+
+        monkeypatch.setattr(TurnRunner, "run_sync", run_sync)
+        ref = SessionRef(authority.profile_id, sid)
+        live = authority.sessions[sid]
+        claimed, _ = await authority._claim_with_retry(ref, live)
+        assert claimed and claimed["admission_id"] == row["admission_id"]
+        await authority._execute_claimed(ref, live, claimed)
+        assert turns == ["[bot] start this task"]
         from gateway.session_envelope import check_native_route
 
         restored, _ = await check_native_route(
@@ -158,6 +176,15 @@ async def test_opener_commits_native_admission_and_unrecorded_is_denied(
         forged_payload["native_text_v1"]["source"]["user_id"] = "42"
         with pytest.raises(RuntimeStoreError):
             restore_native(forged_payload, runner)
+        wrong_marker = __import__("copy").deepcopy(row["payload"])
+        wrong_marker["native_text_v1"]["provenance"]["self_start"]["thread"] = "999"
+        with pytest.raises(RuntimeStoreError):
+            restore_native(wrong_marker, runner)
+        wrong_thread = __import__("copy").deepcopy(row["payload"])
+        wrong_thread["native_text_v1"]["source"]["thread_id"] = "999"
+        wrong_thread["native_text_v1"]["source"]["chat_id"] = "999"
+        with pytest.raises(RuntimeStoreError):
+            restore_native(wrong_thread, runner)
         replacement.config.extra["self_start_forums"] = []
         with pytest.raises(RuntimeStoreError):
             restore_native(row["payload"], runner)
