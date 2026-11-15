@@ -1525,6 +1525,7 @@ DEFAULT_CONFIG = {
         "approval_index_channel": "",  # optional channel for daily exec-approval thread index
         "approval_mentions_target": "session",  # session prompts (default) or daily index line
         "require_mention": True,  # require @mention to respond in server channels
+        "self_start_forums": [],  # forum parent IDs where opted-in Hermes openers can start sessions
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
         "auto_thread": True,  # auto-create threads on @mention in channels (like Slack)

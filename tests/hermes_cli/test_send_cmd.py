@@ -26,6 +26,63 @@ def _parse(argv):
     send_cmd.register_send_subparser(subparsers)
     return parser.parse_args(["send", *argv])
 
+
+def test_start_session_cli_records_created_forum_thread(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import aiohttp
+    from gateway import discord_self_start
+    from gateway.config import PlatformConfig
+    from plugins.platforms.discord import adapter as discord_adapter
+    from tools import send_message_tool as sender
+
+    monkeypatch.setattr(discord_self_start, "_path", lambda _home=None: tmp_path / "registry.json")
+    monkeypatch.setattr(sender, "_resolve_tool_target", lambda _target: ("discord", "42", None, None))
+    from gateway.platforms.send_targets import StandaloneSendPolicy
+
+    monkeypatch.setattr(sender, "_standalone_send_policy", lambda _name: StandaloneSendPolicy(all_sends=True))
+    monkeypatch.setattr(sender, "_plugin_standalone_sender", lambda *_args, **_kwargs: (discord_adapter._standalone_send, None))
+    monkeypatch.setattr(sender, "_resolve_platform_config", lambda *_args: (
+        SimpleNamespace(value="discord"), PlatformConfig(enabled=True, token="fake"), None, None
+    ))
+    monkeypatch.setattr(sender, "_authorize_relay_target", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(discord_adapter, "_standalone_is_forum", AsyncMock(return_value=True))
+    monkeypatch.setattr("gateway.platforms.base.resolve_proxy_url", lambda **_kwargs: None)
+    monkeypatch.setattr("gateway.platforms.base.proxy_kwargs_for_aiohttp", lambda _proxy: ({}, {}))
+
+    class Response:
+        status = 200
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def json(self, **_kwargs):
+            return {"id": "700", "message": {"id": "700"}}
+
+    class Session:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def post(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(aiohttp, "ClientSession", Session)
+    with pytest.raises(SystemExit) as result:
+        send_cmd.cmd_send(_parse(["--to", "discord:42", "--start-session", "start task"]))
+    assert result.value.code == 0
+    assert "700" in json.loads((tmp_path / "registry.json").read_text())["threads"]
+
 class _FakeTool:
     """Replacement for ``tools.send_message_tool.send_message_tool``."""
 
@@ -136,6 +193,22 @@ def test_whatsapp_mention_rejections_never_reach_the_bridge(whatsapp_bridge, cap
     assert "mention" in capsys.readouterr().err.lower()
     assert whatsapp_bridge.calls == []
 
+
+def test_start_session_flag_reaches_send_tool_only_for_discord(fake_tool, monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(_parse(["--to", "discord:42", "--start-session", "start this"] ))
+    assert exc.value.code == 0
+    assert fake_tool.calls[-1]["start_session"] is True
+
+
+def test_start_session_flag_rejects_non_discord_target(fake_tool, monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(_parse(["--to", "telegram:42", "--start-session", "start this"] ))
+    assert exc.value.code == 2
+    assert "Discord forum posts" in capsys.readouterr().err
+    assert fake_tool.calls == []
 def test_whatsapp_mentions_ride_the_first_bridge_payload_only(whatsapp_bridge, tmp_path, capsys):
     """Across chunked text and text+media, exactly one bridge payload carries the normalized,
     deduplicated JIDs; a captioned single-media send carries them on the media payload; a bridge

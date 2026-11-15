@@ -49,6 +49,15 @@ hermes send --list
 
 # Filter by platform
 hermes send --list telegram
+
+```
+
+### Start a session from a Discord forum post
+
+`--start-session` asks Hermes to start a gateway session from the opener when a standalone Discord send creates a new forum post. The post's parent forum must be listed in `discord.self_start_forums` in `config.yaml`. It does not start a session for a message sent to an existing thread or a non-forum channel.
+
+```bash
+hermes send --to discord:123456789012345678 --start-session "Review this report"
 ```
 
 ---
@@ -60,6 +69,7 @@ hermes send --list telegram
 | `-t, --to TARGET` | Destination. See [target formats](#target-formats). |
 | `message` (positional) | Message text. Omit to read from `--file` or stdin. |
 | `-f, --file PATH` | Read the body from a file. `--file -` forces stdin. |
+| `--start-session` | For a Discord forum target, let Hermes start a session from the new post's opener. Configure its parent in `discord.self_start_forums`. |
 | `-s, --subject LINE` | Prepend a header/subject line before the body. |
 | `-l, --list` | List available targets. Optional positional platform filter. |
 | `-q, --quiet` | No stdout on success (exit code only — ideal for scripts). |

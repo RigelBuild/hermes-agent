@@ -396,10 +396,25 @@ discord:
     users: true                   # @user pings (default: true)
     replied_user: true            # reply-reference pings the author (default: true)
   post_channels: []               # Where the discord tool's post actions may post (empty = anywhere)
+  self_start_forums: []           # Forum IDs where explicitly opted-in Hermes posts may start sessions
+
 
 # Session isolation (applies to all gateway platforms, not just Discord)
 group_sessions_per_user: true     # Isolate sessions per user in shared channels
 ```
+#### `discord.self_start_forums`
+
+**Type:** list of forum channel IDs — **Default:** `[]`
+
+This allowlist permits only explicitly opted-in posts created by Hermes to start a gateway session. Add a forum ID to enable it. An ordinary bot-authored message, a post without creation provenance, and a post in an unlisted forum remain blocked. The one-time creation record expires after 10 minutes. Human replies in an admitted thread use the same thread session.
+
+The `discord` tool's `create_forum_post` action accepts `start_session: true`. The CLI can also start a session when a standalone send creates a new forum post:
+
+```bash
+hermes send --to discord:FORUM_ID --start-session "Investigate this report"
+```
+
+This option does not start a session when the target is an existing thread or a non-forum channel.
 
 #### `discord.post_channels`
 

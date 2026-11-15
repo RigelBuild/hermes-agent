@@ -203,6 +203,54 @@ async def test_forum_post_file_creates_thread_with_attachment():
     # Thread name derived from content's first line
     assert call_kwargs["name"] == "here is a photo"
 
+@pytest.mark.asyncio
+async def test_standalone_send_forum_records_session_only_when_opted_in(monkeypatch):
+    from plugins.platforms.discord import adapter as discord_adapter
+    from plugins.platforms.discord.adapter import _standalone_send
+    from unittest.mock import patch
+
+    monkeypatch.setattr(discord_adapter, "_standalone_is_forum", AsyncMock(return_value=True))
+    monkeypatch.setattr("gateway.platforms.base.resolve_proxy_url", lambda **_kwargs: None)
+    monkeypatch.setattr("gateway.platforms.base.proxy_kwargs_for_aiohttp", lambda _proxy: ({}, {}))
+
+    class Response:
+        status = 200
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def json(self, **_kwargs):
+            return {"id": "thread-1", "message": {"id": "starter-1"}}
+
+        async def text(self):
+            return ""
+
+    class Session:
+        def __init__(self, **_kwargs):
+            self.posts = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def post(self, url, **kwargs):
+            self.posts.append((url, kwargs))
+            return Response()
+
+    with patch("aiohttp.ClientSession", Session), \
+         patch("gateway.discord_self_start.record_created_thread") as record:
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, token="token", extra={}), "42", "hello", start_session=True,
+        )
+    assert result["success"] is True
+    record.assert_called_once_with("thread-1", "42")
+
 
 @pytest.mark.asyncio
 async def test_forum_post_file_fails_when_starter_has_no_attachments():

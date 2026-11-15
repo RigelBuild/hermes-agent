@@ -1640,7 +1640,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         elif self._dedup.contains(message_id):
             return False, False
         if message.author == self._client.user:
-            return False, False
+            return self._admit_gateway_created_opener(message)
         if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
             return False, False
         role_authorized = False
@@ -1712,6 +1712,52 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                         return False, False
         return True, role_authorized
 
+    def _self_start_parent(self, message: Any) -> str | None:
+        """Return the configured parent for an eligible self-authored thread message."""
+        if message.author != self._client.user:
+            return None
+        if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
+            return None
+        thread_type = getattr(discord, "Thread", ())
+        if not thread_type or not isinstance(getattr(message, "channel", None), thread_type):
+            return None
+        if str(getattr(message, "id", "")) != str(getattr(message.channel, "id", "")):
+            return None
+        parent_id = str(getattr(message.channel, "parent_id", None) or "")
+        if not parent_id:
+            return None
+        extra = getattr(self.config, "extra", {})
+        forums = extra.get("self_start_forums", []) if isinstance(extra, dict) else []
+        if isinstance(forums, str):
+            forums = forums.split(",")
+        if not isinstance(forums, (list, tuple, set, frozenset)):
+            return None
+        if parent_id not in {str(value).strip() for value in forums if str(value).strip()}:
+            return None
+        return parent_id
+
+    def _admit_gateway_created_opener(self, message: Any) -> tuple[bool, bool]:
+        """Admit only an explicitly recorded opener from a configured forum."""
+        parent_id = self._self_start_parent(message)
+        if not parent_id:
+            return False, False
+        from gateway.discord_self_start import consume_created_thread
+
+        if not consume_created_thread(str(message.channel.id), parent_id):
+            return False, False
+        return True, True
+
+    async def _await_gateway_created_opener(self, message: Any) -> tuple[bool, bool]:
+        if not self._self_start_parent(message):
+            return False, False
+        for _ in range(10):
+            await asyncio.sleep(0.5)
+            admitted = self._admit_gateway_created_opener(message)
+            if admitted[0]:
+                return admitted
+        return False, False
+
+
     async def _dispatch_discord_message(self, message: Any) -> bool:
         """Apply Discord ingress policy and dispatch one live event."""
         if not self._ready_event.is_set():
@@ -1719,7 +1765,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 await asyncio.wait_for(self._ready_event.wait(), timeout=30.0)
             except TimeoutError:
                 pass
+        if self._dedup.contains(str(getattr(message, "id", ""))):
+            return False
         admitted, role_authorized = self._discord_message_admission(message, claim=True)
+        if not admitted and message.author == self._client.user:
+            admitted, role_authorized = await self._await_gateway_created_opener(message)
         if not admitted:
             return False
         self._record_bot_tag_debounce(message)
@@ -6215,7 +6265,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 or is_voice_linked_channel
             )
             in_bot_thread = self._in_bot_thread(message)
-            if require_mention and not is_free_channel and not in_bot_thread:
+            if require_mention and not is_free_channel and not in_bot_thread and not (
+                role_authorized and message.author == self._client.user
+            ):
                 if (
                     not self._self_is_explicitly_mentioned(message)
                     and not mention_prefix
@@ -7103,6 +7155,7 @@ async def _standalone_is_forum(aiohttp, chat_id: str, json_headers: dict, sess_k
 async def _standalone_send(
     pconfig, chat_id: str, message: str, *, thread_id: Optional[str] = None,
     media_files: Optional[list] = None, force_document: bool = False, caption: Optional[str] = None,
+    start_session: bool = False,
 ) -> dict[str, Any]:
     """Send via Discord REST without a live gateway adapter (token: ``pconfig.token`` then env var).
     Forum channels (type 15) reject ``POST /messages``, so a thread post is created via
@@ -7176,6 +7229,10 @@ async def _standalone_send(
                                 return err
                 thread_id_created = data.get("id")
                 starter_msg_id = (data.get("message") or {}).get("id", thread_id_created)
+                if start_session and thread_id_created:
+                    from gateway.discord_self_start import record_created_thread
+
+                    record_created_thread(str(thread_id_created), str(chat_id))
                 result = {
                     "success": True, "platform": "discord", "chat_id": chat_id,
                     "thread_id": thread_id_created, "message_id": starter_msg_id,
@@ -7293,6 +7350,12 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             candidate_extra = discord_platform_cfg.get("extra")
             if isinstance(candidate_extra, dict):
                 platform_extra_cfg = candidate_extra
+    self_start_forums = (
+        discord_cfg["self_start_forums"] if "self_start_forums" in discord_cfg
+        else platform_extra_cfg.get("self_start_forums")
+    )
+    if self_start_forums is not None:
+        seeded_extra["self_start_forums"] = self_start_forums
     approval_index_channel = (
         discord_cfg["approval_index_channel"] if "approval_index_channel" in discord_cfg
         else platform_extra_cfg.get("approval_index_channel")

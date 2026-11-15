@@ -927,6 +927,25 @@ class TestDiscordForumActions:
         assert starter.endswith("line of text\n")  # split after a newline
         assert starter + rest == content  # nothing added or stripped
 
+    def test_create_forum_post_records_thread_only_when_opted_in(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        self._allow_actions(monkeypatch)
+        with patch("tools.discord_tool._discord_request", return_value={
+            "id": "thread-1", "name": "today", "message": {"id": "starter-1"},
+        }), patch("gateway.discord_self_start.record_created_thread") as record:
+            result = discord_core(
+                action="create_forum_post", channel_id="forum", name="today", content="hello",
+                start_session=True,
+            )
+        assert json.loads(result)["success"] is True
+        record.assert_called_once_with("thread-1", "forum")
+
+        with patch("tools.discord_tool._discord_request", return_value={
+            "id": "thread-2", "name": "tomorrow", "message": {"id": "starter-2"},
+        }), patch("gateway.discord_self_start.record_created_thread") as record:
+            discord_core(action="create_forum_post", channel_id="forum", name="tomorrow", content="hello")
+        record.assert_not_called()
+
     def test_message_chunks_keep_code_fences_balanced(self):
         from tools.discord_tool import _message_chunks
 

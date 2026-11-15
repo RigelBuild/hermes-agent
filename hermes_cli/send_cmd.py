@@ -237,6 +237,10 @@ def cmd_send(args: argparse.Namespace) -> None:
     tool_args = {"action": "send", "target": target, "message": message}
     if mentions:
         tool_args["mentions"] = mentions
+    if getattr(args, "start_session", False):
+        if target.split(":", 1)[0].strip().lower() != "discord":
+            _fail("hermes send: --start-session is only supported for Discord forum posts.", _USAGE_EXIT)
+        tool_args["start_session"] = True
     result = send_message_tool(tool_args)
     sys.exit(_emit_result(result, json_mode=getattr(args, "json", False), quiet=getattr(args, "quiet", False)))
 
@@ -256,6 +260,8 @@ _SEND_ARGUMENTS = (
     (("--mention",), dict(dest="mentions", action="append", default=None, metavar="PHONE_OR_JID", help=(
         "WhatsApp only: add a native participant mention. Repeat for multiple recipients; "
         "bare phone numbers are normalized to JIDs. Include each matching @<number> near the start of the message text."))),
+    (("--start-session",), dict(action="store_true", default=False, help=(
+        "Start a Hermes session from the opener when sending a Discord forum post."))),
     (("-l", "--list"), dict(dest="list_targets", action="store_true", default=False,
                             help="List available targets. Optional positional filter: `hermes send --list telegram`.")),
     (("-q", "--quiet"), dict(action="store_true", default=False, help="Suppress stdout on success (exit code only).")),
