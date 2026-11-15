@@ -164,17 +164,14 @@ class GatewayGoalsMixin:
             session_id = current
             watch[quick_key] = (source, session_id)
         adapter = self._delivery_adapter_for(source)
-        from gateway.session_viewer_automation import viewer_driven
         from gateway.run_heartbeat_acceptance import heartbeat_route_deliverable
-        entry = (
-            store.lookup_by_session_key(quick_key)
-            if store is not None and getattr(self, 'session_authority', None) is not None
-            else None
-        )
-        if not await heartbeat_route_deliverable(self, adapter, source, entry):
+        if not await heartbeat_route_deliverable(
+            self, adapter, source, None, check_envelope=False
+        ):
             return
         from gateway.session_local import LocalSessionAdapter
         local = isinstance(adapter, LocalSessionAdapter)
+        from gateway.session_viewer_automation import viewer_driven
         if local and viewer_driven(adapter.authority, source.chat_id, "viewer_heartbeat"):
             return  # the classic CLI's watchdog fires it: that CLI paints only the turns it submits
         if getattr(self, 'session_authority', None) is not None:

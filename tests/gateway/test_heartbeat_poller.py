@@ -234,6 +234,62 @@ async def test_discord_group_heartbeat_is_allowed_after_native_message(
 
 
 @pytest.mark.asyncio
+async def test_discord_group_active_heartbeat_resume_reanchors_after_native_message(monkeypatch):
+    from tests.gateway.test_authority_lane_moves_on import _chat, _gateway
+
+    runner, adapter, _, _, sent, _, _ = await _gateway(monkeypatch)
+    user_id = "1385361904591044669"
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", user_id)
+    source = adapter.build_source(
+        chat_id="1571155392069763142",
+        chat_type="group",
+        user_id=user_id,
+        guild_id="1477066497896742955",
+    )
+    await _chat(adapter, source, sent, "check status")
+    session_id = runner.session_store.peek_session_id(runner._session_key_for_source(source))
+    manager = HeartbeatManager(session_id)
+    before = manager.set("check status", 60)
+    monkeypatch.setattr(runner, "_start_heartbeat_poller", lambda: None)
+
+    await _chat(adapter, source, sent, "/heartbeat resume")
+
+    after = HeartbeatManager(session_id).state
+    assert after.status == "active"
+    assert after.created_at == before.created_at
+    assert after.fire_count == before.fire_count
+    assert after.last_fired_at is not None
+    assert "check status" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_poller_skips_envelope_validation_until_heartbeat_is_due(monkeypatch):
+    from tests.gateway.test_authority_lane_moves_on import _chat, _gateway
+    from gateway import session_automation
+
+    runner, adapter, _, source, sent, _, _ = await _gateway(monkeypatch)
+    await _chat(adapter, source, sent, "check status")
+    session_id = runner.session_store.peek_session_id(runner._session_key_for_source(source))
+    state = HeartbeatManager(session_id).set("check status", 3600)
+    validated = False
+
+    def reject_early_validation(*args):
+        nonlocal validated
+        validated = True
+        raise AssertionError("envelope validation ran before a tick was due")
+
+    monkeypatch.setattr(session_automation, "validated_committed_route_envelope", reject_early_validation)
+    watch = {runner._session_key_for_source(source): (source, session_id)}
+
+    await runner._heartbeat_poll_once(watch)
+
+    after = HeartbeatManager(session_id).state
+    assert not validated
+    assert after.fire_count == state.fire_count
+    assert after.last_fired_at == state.last_fired_at
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("command", ["/heartbeat every 1m x", "/heartbeat resume"])
 async def test_legacy_heartbeat_commands_remain_available(monkeypatch, command):
     from agent.i18n import t
