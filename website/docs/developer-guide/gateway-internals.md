@@ -47,10 +47,10 @@ Desktop and Ink use authenticated `session.control.read`, `process.list`,
 a cold session: use `session.resume` first. A retired route binding returns
 `stale_generation` rather than exposing its replacement conversation.
 
-Control reads project the physical transcript's persisted goal, loop and heartbeat
-through the existing frontend field allowlists, without constructing managers or
-clearing wait barriers. Revisions hash the visible snapshot; timed wait barriers
-can disappear when their deadline passes without changing persisted state.
+Control reads project the physical transcript's goal and loop and the current route
+owner's heartbeat through the existing frontend field allowlists. They do not
+construct managers or clear wait barriers. Revisions hash the visible snapshot;
+timed wait barriers can disappear when their deadline passes without changing persisted state.
 Process reads use already-owned registry objects and include a bounded output tail;
 they do not recover processes, consume notifications or scan retained receipts.
 Subagent reads require the current parent's live object ancestry, not merely equal
