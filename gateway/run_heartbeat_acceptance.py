@@ -73,6 +73,39 @@ async def heartbeat_route_deliverable(runner, adapter, source, entry, *, check_e
     return True
 
 
+def steer_busy_heartbeat(runner, source, session_id, route):
+    """Claim a due steer only when this route has a running agent."""
+    from agent.estop import check_paused
+    from gateway.run import _AGENT_PENDING_SENTINEL
+    from hermes_cli.heartbeat import HeartbeatManager
+
+    state = runner._peek_session_state(route)
+    agent = state.turn.agent if state else None
+    if agent is None or agent is _AGENT_PENDING_SENTINEL or state.turn.heartbeat_steered:
+        return
+    manager = HeartbeatManager(session_id)
+    if not manager.has_heartbeat() or manager.state.delivery_mode != "steer":
+        return
+    if check_paused("heartbeat", logger):
+        return
+    prompt = manager.due_prompt()
+    if not prompt:
+        return
+    event = runner._synthetic_prompt_event(source, prompt)
+    event._heartbeat_session_id = session_id
+    event.metadata["gateway_session_key"] = route
+    try:
+        accepted = runner._steer_running_agent(agent, runner._steer_text_with_origin(prompt, event))
+    except Exception:
+        logger.warning("Heartbeat steer failed for session %s", route, exc_info=True)
+        manager.abandon_fire()
+        return
+    if accepted:
+        state.turn.heartbeat_steered = True
+    else:
+        manager.abandon_fire()
+
+
 async def admit_heartbeat(runner, adapter, source, session_id, route):
     """Coalesce overdue ticks behind the canonical FIFO, not an adapter-local slot."""
     import json
@@ -83,6 +116,17 @@ async def admit_heartbeat(runner, adapter, source, session_id, route):
     from gateway.session_authorities import active_authority
     authority = active_authority(runner)
     if authority is None:
+        return
+    manager = HeartbeatManager(session_id)
+    if manager.state and manager.state.delivery_mode == "steer" and runner._is_session_running(route):
+        if not manager.state.is_due():
+            return
+        from gateway.session_automation import snapshot_automation
+        event = MessageEvent(text=manager.state.render_prompt(), source=source, internal=True,
+            metadata={'gateway_session_key': route, 'gateway_session_id': session_id})
+        await runner._run_in_executor_with_context(snapshot_automation, authority, adapter, event, 'heartbeat-validation')
+        if runner._is_session_running(route):
+            steer_busy_heartbeat(runner, source, session_id, route)
         return
     # Admissions live on the route's logical owner (the compression root), not its transcript tip;
     # a LOCAL route's heartbeat rides local_automation_v1.

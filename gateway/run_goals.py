@@ -178,18 +178,18 @@ class GatewayGoalsMixin:
             from gateway.run_heartbeat_acceptance import admit_heartbeat
             await admit_heartbeat(self, adapter, source, session_id, quick_key)
             return
+        from gateway.run_heartbeat_acceptance import steer_busy_heartbeat
         if (
             self._is_session_running(quick_key)
             or quick_key in adapter._active_sessions
             or self._queue_depth(quick_key, adapter=adapter) > 0
         ):
-            return  # keep missed intervals due until user work has drained
+            steer_busy_heartbeat(self, source, session_id, quick_key)
+            return
         from agent.estop import check_paused
-
         if check_paused("heartbeat", logger):
-            return  # `hermes pause`: leave the tick unclaimed so it fires after `hermes resume`
+            return
         from hermes_cli.heartbeat import HeartbeatManager
-
         mgr = HeartbeatManager(session_id=session_id)
         if not mgr.has_heartbeat():
             watch.pop(quick_key, None)
