@@ -1,6 +1,6 @@
 """List persisted route heartbeats for the active profile."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def _list_heartbeats(_args):
@@ -13,13 +13,13 @@ def _list_heartbeats(_args):
 
     for route, state in heartbeats:
         last_fired = (
-            datetime.fromtimestamp(state.last_fired_at, timezone.utc).isoformat()
+            datetime.fromtimestamp(state.last_fired_at, UTC).isoformat()
             if state.last_fired_at else "never"
         )
         print(f"Route: {route}")
         print(f"  Status: {state.status}")
         print(f"  {'Schedule' if state.schedule else 'Interval'}: {state.cadence_label()}")
-        print(f"  Next fire: {datetime.fromtimestamp(state.next_fire(), timezone.utc).isoformat() if state.status == 'active' else 'paused'}")
+        print(f"  Next fire: {datetime.fromtimestamp(state.next_fire(), UTC).isoformat() if state.status == 'active' else 'paused'}")
         print(f"  Last fired: {last_fired}")
         print(f"  Fire count: {state.fire_count}")
         print(f"  Last error: {state.last_error or 'none'}")

@@ -12,7 +12,7 @@ import re
 import threading
 import time
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone as utc_timezone
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any, Optional
 
@@ -119,7 +119,7 @@ class HeartbeatState:
     def next_fire(self) -> float:
         anchor = self.last_fired_at or self.created_at
         if self.schedule:
-            return _next_scheduled_fire(self.schedule, self.timezone, datetime.fromtimestamp(anchor, utc_timezone.utc))
+            return _next_scheduled_fire(self.schedule, self.timezone, datetime.fromtimestamp(anchor, UTC))
         return anchor + self.interval_seconds
 
     def valid_cadence(self) -> bool:
@@ -452,7 +452,7 @@ class HeartbeatManager:
                 except (ZoneInfoNotFoundError, ValueError) as exc:
                     raise ValueError("invalid IANA timezone") from exc
             try:
-                _next_scheduled_fire(schedule, timezone, datetime.now(utc_timezone.utc))
+                _next_scheduled_fire(schedule, timezone, datetime.now(UTC))
             except Exception as exc:
                 raise ValueError(f"invalid cron schedule: {exc}") from exc
         if delivery_mode not in {"idle", "steer"}:
@@ -569,13 +569,13 @@ __all__ = [
     "HeartbeatManager",
     "HeartbeatState",
     "format_interval",
+    "list_heartbeats",
     "load_heartbeat",
     "load_route_heartbeat",
-    "save_route_heartbeat",
     "migrate_heartbeat_to_route",
-    "list_heartbeats",
     "migrate_heartbeat_to_session",
     "parse_heartbeat_set",
     "parse_interval",
     "save_heartbeat",
+    "save_route_heartbeat",
 ]

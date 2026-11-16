@@ -213,7 +213,7 @@ async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
 
 @pytest.mark.asyncio
 async def test_clearing_route_heartbeat_stops_future_fires(poller):
-    runner, adapter, watch, key, clock = poller
+    runner, adapter, watch, _key, clock = poller
 
     async def handler(event):
         event._heartbeat_execution_started = True
