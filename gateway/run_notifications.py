@@ -1897,6 +1897,12 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         if exit != 0) / off."""
         from tools.process_registry import process_registry
         from tools.process_registry_notifications import format_process_notification, should_surface_notification
+        notice = watcher.get('recovery_notice')
+        if notice:
+            event = {'type': 'completion', **watcher, 'command': '', 'exit_code': None,
+                     'completion_reason': 'unknown', 'output': notice}
+            await self._enqueue_process_completion_notification(notice, event)
+            return
         session_id = watcher["session_id"]
         interval = watcher["check_interval"]
         platform_name = watcher.get("platform", "")
