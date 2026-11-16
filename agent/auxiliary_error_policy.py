@@ -86,12 +86,6 @@ def is_usage_limit(failure: Failure) -> bool:
     return benches_provider(failure.verdict) and any(token in text for token in _USAGE_LIMIT_TEXT)
 
 
-def is_usage_limit(failure: Failure) -> bool:
-    """A spent usage window on the model that was sent (Codex ``usage_limit_reached``), not a billing wall."""
-    text = str(failure.error).lower()
-    return benches_provider(failure.verdict) and any(token in text for token in _USAGE_LIMIT_TEXT)
-
-
 def fallback_label(failure: Failure, *, rung_spent: bool = False) -> Optional[str]:
     """Why another provider should take this request, or None when the failure would follow it anywhere.
     ``rung_spent``: a parameter rung already changed the request and it still failed."""
