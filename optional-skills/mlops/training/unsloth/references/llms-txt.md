@@ -1175,7 +1175,7 @@ Run Qwen3-30B-A3B-2507 and 235B-A22B Thinking and Instruct versions locally on y
 
 Qwen released 2507 (July 2025) updates for their [Qwen3](https://docs.unsloth.ai/models/qwen3-how-to-run-and-fine-tune) 4B, 30B and 235B models, introducing both "thinking" and "non-thinking" variants. The non-thinking '**Qwen3-30B-A3B-Instruct-2507**' and '**Qwen3-235B-A22B-Instruct-2507'** features a 256K context window, improved instruction following, multilingual capabilities and alignment.
 
-The models '**Qwen3-30B-A3B-Thinking-2507**' and '**Qwen3-235B-A22B-Thinking-2507**' excel at analysis, with the 235B achieving SOTA results in logic, math, science, coding, and advanced academic tasks.
+The thinking variants '**Qwen3-30B-A3B-Thinking-2507**' and '**Qwen3-235B-A22B-Thinking-2507**' excel at analysis, with the 235B achieving SOTA results in logic, math, science, coding, and advanced academic tasks.
 
 [Unsloth](https://github.com/unslothai/unsloth) also now supports fine-tuning and [Reinforcement Learning (RL)](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) of Qwen3-2507 models — 2x faster, with 70% less VRAM, and 8x longer context lengths
 
@@ -7071,7 +7071,7 @@ Compile llama.cpp from source like below:
 
 Learn to run & fine-tune Phi-4 reasoning models locally with Unsloth + our Dynamic 2.0 quants
 
-Microsoft's new Phi-4 reasoning models are now supported in Unsloth. The 'plus' variant performs on par with OpenAI's o1-mini, o3-mini and Sonnet 3.7. The 'plus' and standard variants have 14B parameters, while the 'mini' has 4B parameters.
+Microsoft's new Phi-4 reasoning models are now supported in Unsloth. The 'plus' variant performs on par with OpenAI's o1-mini, o3-mini and Sonnet 3.7. The 'plus' and standard variants have 14B parameters, while the 'mini' has 4B parameters.\
 \
 All Phi-4 reasoning uploads use our [Unsloth Dynamic 2.0](https://docs.unsloth.ai/basics/unsloth-dynamic-2.0-ggufs) methodology.
 
@@ -8068,7 +8068,7 @@ We tested Llama 3.3 (70B) Instruct on a 80GB A100 and did 4bit QLoRA on all line
 **URL:** llms-txt#fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth
 
 **Contents:**
-  - ⚡ detailed tutorial
+  - ⚡ Tutorial
 
 Tutorial on how to fine-tune and do reinforcement learning (RL) with OpenAI gpt-oss on NVIDIA DGX Spark.
 
@@ -11698,7 +11698,7 @@ model.push_to_hub_gguf("hf_username/directory", tokenizer, quantization_method =
 **URL:** llms-txt#how-to-fine-tune-llms-with-unsloth-&-docker
 
 **Contents:**
-  - ⚡ detailed tutorial
+  - ⚡ Tutorial
   - 📖 Usage Example
 
 Learn how to fine-tune LLMs or do Reinforcement Learning (RL) with Unsloth's Docker image.

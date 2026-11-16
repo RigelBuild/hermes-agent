@@ -287,7 +287,7 @@ lm_eval --model hf \
 
 ### HellaSwag
 
-**What it measures**: Commonsense inference about everyday situations.
+**What it measures**: Commonsense understanding of everyday situations.
 
 **Format**: Choose most plausible continuation
 
@@ -306,7 +306,7 @@ lm_eval --model hf \
 
 ### WinoGrande
 
-**What it measures**: Commonsense inference via pronoun resolution.
+**What it measures**: Commonsense understanding via pronoun resolution.
 
 **Example**:
 ```
@@ -325,7 +325,7 @@ lm_eval --model hf \
 
 ### PIQA
 
-**What it measures**: Physical commonsense inference.
+**What it measures**: Physical commonsense understanding.
 
 **Example**: "To clean a keyboard, use compressed air or..."
 
@@ -395,7 +395,7 @@ lm_eval --model hf \
 
 ### DROP
 
-**What it measures**: Reading comprehension requiring discrete inference.
+**What it measures**: Reading comprehension requiring discrete logical deductions.
 
 **Command**:
 ```bash

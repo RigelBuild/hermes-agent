@@ -188,7 +188,7 @@ def assemble_api_request(
     _cross_protocol = agent.api_mode != "codex_responses"
     api_messages = agent._drop_thinking_only_and_merge_users(
         api_messages, drop_codex_reasoning_items=_cross_protocol,
-        drop_nudge_marker=_CODEX_INCOMPLETE_NUDGE if _cross_protocol else None,
+        drop_codex_nudges=_cross_protocol,
     )
 
     # Normalize whitespace and tool-call JSON for bit-perfect prefixes across turns

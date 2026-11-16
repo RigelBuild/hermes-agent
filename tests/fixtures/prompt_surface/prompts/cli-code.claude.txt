@@ -113,11 +113,9 @@ Platform: cli
 
 # Hermes runtime environment
 
-Host: WSL (Windows Subsystem for Linux)
+Host: <HOST_OS>
 User home directory: <HOME>
 Current working directory: <HOME>/code
 Scratch directory: <HERMES_HOME>/cache/scratch (TMPDIR points here; write temporary files and probes there, never under the system temp dir; entries idle for 24h are pruned)
-
-You are running inside WSL (Windows Subsystem for Linux). The Windows host filesystem is mounted under /mnt/ — /mnt/c/ is the C: drive, /mnt/d/ is D:, etc. The user's Windows files are typically at /mnt/c/Users/<username>/Desktop/, Documents/, Downloads/, etc. When the user references Windows paths or desktop files, translate to the /mnt/c/ equivalent. You can list /mnt/c/Users/ to discover the Windows username if needed.
 
 <!-- End Hermes runtime environment -->

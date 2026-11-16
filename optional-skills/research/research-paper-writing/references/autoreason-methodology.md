@@ -107,7 +107,7 @@ Every role is a **fresh, isolated agent** with no shared context:
 | **In-loop judges** | 3 | Balance per-pass cost vs evaluation stability |
 | **Final evaluation judges** | 7 | Higher statistical power for final comparison |
 | **Max tokens** | 4096 | Standard; 8192 for long-form (papers) |
-| **Judge type** | Worked-steps judge | 3x faster convergence on some tasks. Always use. |
+| **Judge type** | Chain-of-thought | 3x faster convergence on some tasks. Always use. |
 | **Tiebreak** | Conservative (incumbent wins) | Prevents false positives — A must be genuinely beaten |
 | **Max passes** | 25 (constrained), 50 (remedy) | Safety cap; most converge by pass 10-15 |
 
@@ -145,16 +145,16 @@ User: [TASK] + [VERSION X] + [VERSION Y]
 (labels randomized — synthesizer doesn't know which is incumbent)
 ```
 
-#### Judge (Worked-Steps) — ALWAYS USE THIS VERSION
+#### Judge (Chain-of-Thought) — ALWAYS USE THIS VERSION
 ```
 System: You are an independent evaluator. Think carefully before deciding.
 
-User: [TASK] + Three proposals. For each, work through the points in order:
+User: [TASK] + Three proposals. For each, think step by step:
 1. What does it get right?
 2. What does it get wrong or miss?
 3. Are numbers and claims defensible?
 4. Is detail appropriate or bloated?
-After your analysis, rank all three.
+After reasoning, rank all three.
 RANKING: [best], [second], [worst]
 ```
 
@@ -367,7 +367,7 @@ Judge prompt (CoT): "Compare three versions of this paper. For each, evaluate:
 2. Clarity of the narrative and contribution
 3. Whether claims are properly hedged and supported
 4. Writing quality (concision, precision, no filler)
-After your analysis, rank all three. RANKING: [best], [second], [worst]"
+After reasoning, rank all three. RANKING: [best], [second], [worst]"
 ```
 
 ### What to Provide as Ground Truth

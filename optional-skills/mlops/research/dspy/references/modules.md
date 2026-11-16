@@ -67,14 +67,14 @@ print(result.answer)  # "Paris"
 # Basic usage
 cot = dspy.ChainOfThought("question -> answer")
 result = cot(question="If I have 5 apples and give away 2, how many remain?")
-print(result.rationale)  # Rationale text
+print(result.rationale)  # "Let's think step by step..."
 print(result.answer)     # "3"
 
 # Custom rationale field
 cot = dspy.ChainOfThought(
     signature="problem -> solution",
     rationale_field=dspy.OutputField(
-        prefix="Rationale: Let's break this down in order to"
+        prefix="Reasoning: Let's break this down step by step to"
     )
 )
 ```

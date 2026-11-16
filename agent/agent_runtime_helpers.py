@@ -1207,13 +1207,13 @@ _UNMERGEABLE = object()
 
 def drop_thinking_only_and_merge_users(
     messages: list[dict[str, Any]], *, drop_codex_reasoning_items: bool = True,
-    drop_nudge_marker: Optional[str] = None,
+    drop_codex_nudges: bool = False,
 ) -> list[dict[str, Any]]:
     """Drop thinking-only assistant turns and merge adjacent user messages left behind, on the
     per-call ``api_messages`` copy only (``agent.messages`` is never mutated). Drop-and-merge
     (not stub text) keeps history honest and preserves role alternation.
 
-    ``drop_nudge_marker`` (#67321): when set, current and legacy synthetic Codex
+    ``drop_codex_nudges`` (#67321): when set, current and legacy synthetic Codex
     continuation nudges are dropped once the turn has crossed to a non-Codex provider;
     doing it in this pass keeps alternation valid when the nudge sat between dropped
     reasoning-only interims and a tool result rather than next to the user's message."""
@@ -1223,7 +1223,7 @@ def drop_thinking_only_and_merge_users(
 
     kept = [
         m for m in messages
-        if not (drop_nudge_marker is not None and m.get("role") == "user"
+        if not (drop_codex_nudges and m.get("role") == "user"
                 and _is_codex_incomplete_nudge(m.get("content")))
         and not _ra().AIAgent._is_thinking_only_assistant(m, drop_codex_reasoning_items=drop_codex_reasoning_items)
     ]

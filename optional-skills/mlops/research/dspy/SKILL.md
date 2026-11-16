@@ -74,17 +74,17 @@ import dspy
 lm = dspy.Claude(model="claude-sonnet-4-5-20250929")
 dspy.settings.configure(lm=lm)
 
-# Use ChainOfThought for better answers
+# Use ChainOfThought for better reasoning
 class MathProblem(dspy.Signature):
     """Solve math word problems."""
     problem = dspy.InputField()
     answer = dspy.OutputField(desc="numerical answer")
 
-# ChainOfThought generates rationale steps automatically
+# ChainOfThought generates reasoning steps automatically
 cot = dspy.ChainOfThought(MathProblem)
 
 response = cot(problem="If John has 5 apples and gives 2 to Mary, how many does he have?")
-print(response.rationale)  # Shows rationale steps
+print(response.rationale)  # Shows reasoning steps
 print(response.answer)     # "3"
 ```
 
@@ -130,7 +130,7 @@ Generates rationale steps before answering:
 ```python
 cot = dspy.ChainOfThought("question -> answer")
 result = cot(question="Why is the sky blue?")
-print(result.rationale)  # Rationale steps
+print(result.rationale)  # Reasoning steps
 print(result.answer)     # Final answer
 ```
 
@@ -328,7 +328,7 @@ dspy.settings.configure(lm=lm)
 cheap_lm = dspy.OpenAI(model="gpt-3.5-turbo")
 strong_lm = dspy.Claude(model="claude-sonnet-4-5-20250929")
 
-# Use cheap model for retrieval, strong model for hard questions
+# Use cheap model for retrieval, strong model for reasoning
 with dspy.settings.context(lm=cheap_lm):
     context = retriever(question)
 
@@ -492,7 +492,7 @@ print(f"Improvement: {score_after - score_before:.2%}")
 # Start with Predict
 qa = dspy.Predict("question -> answer")
 
-# Add rationale if needed
+# Add reasoning if needed
 qa = dspy.ChainOfThought("question -> answer")
 
 # Add optimization when you have data
