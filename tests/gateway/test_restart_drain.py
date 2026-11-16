@@ -749,3 +749,33 @@ def test_same_job_id_wedged_in_one_profile_does_not_hide_live_run_in_another(mon
     finally:
         sched.release_running_job("daily-brief", home_a)
         sched.release_running_job("daily-brief", home_b)
+
+
+@pytest.mark.asyncio
+async def test_request_restart_keeps_a_chat_failing_in_the_restart_wait(monkeypatch, tmp_path):
+    import json
+    from tools import process_registry as module
+    from tools.process_registry import ProcessRegistry, ProcessSession
+
+    path = tmp_path / "processes.json"
+    monkeypatch.setattr(module, "CHECKPOINT_PATH", path)
+    registry = ProcessRegistry()
+    monkeypatch.setattr(module, "process_registry", registry)
+    session = ProcessSession(
+        id="proc_att", command="hermes chat -Q", task_id="t", owner_task_id="t", started_at=1.0,
+        pid=4242, session_key="route", attempt_token="tok", attempt_status="running",
+        argv=["hermes", "chat", "-Q", "-q", "x", "--request-id", "r"], request_id="r")
+    registry._running[session.id] = session
+    registry._write_checkpoint()
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._launch_detached_restart_command = AsyncMock()
+    assert registry.shutting_down is False
+
+    assert runner.request_restart(detached=False, via_service=True) is True
+    assert registry.shutting_down is True
+    registry._finish_exited(session, 1)  # "Gateway disconnected" during the restart wait
+    await runner._restart_task
+
+    entry = json.loads(path.read_text())[0]
+    assert entry["session_id"] == "proc_att" and entry["resume_reason"] == "gateway_shutdown"
