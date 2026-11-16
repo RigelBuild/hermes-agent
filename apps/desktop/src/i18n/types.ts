@@ -3122,6 +3122,7 @@ export interface Translations extends NoticeTranslations {
       heartbeatPaused: string
       heartbeatEveryMinutes: (minutes: number) => string
       heartbeatEveryHours: (hours: number) => string
+      heartbeatProfileTimezone: string
       heartbeatEverySeconds: (seconds: number) => string
       heartbeatNext: (time: string) => string
       dueWaitingForIdle: string

@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 
 def _list_heartbeats(_args):
-    from hermes_cli.heartbeat import list_heartbeats
+    from hermes_cli.heartbeat import format_interval, list_heartbeats
 
     heartbeats = list_heartbeats()
     if not heartbeats:
@@ -18,8 +18,10 @@ def _list_heartbeats(_args):
         )
         print(f"Route: {route}")
         print(f"  Status: {state.status}")
-        print(f"  {'Schedule' if state.schedule else 'Interval'}: {state.cadence_label()}")
-        print(f"  Next fire: {datetime.fromtimestamp(state.next_fire(), UTC).isoformat() if state.status == 'active' else 'paused'}")
+        print(f"  {'Schedule' if state.schedule else 'Interval'}: {state.cadence_label() if state.schedule else format_interval(state.interval_seconds)}")
+        next_fire = state.next_fire_or_none()
+        next_label = datetime.fromtimestamp(next_fire, UTC).isoformat() if next_fire is not None else state.last_error
+        print(f"  Next fire: {next_label if state.status == 'active' else 'paused'}")
         print(f"  Last fired: {last_fired}")
         print(f"  Fire count: {state.fire_count}")
         print(f"  Last error: {state.last_error or 'none'}")

@@ -233,8 +233,13 @@ class GatewayHeartbeatManager(_Remote):
     del _Local
 
     def set(self, prompt, interval_seconds=None, *, schedule=None, timezone=None, delivery_mode="steer"):
-        return self._rpc("set", prompt, interval_seconds, schedule=schedule, timezone=timezone,
-                         delivery_mode=delivery_mode)
+        kwargs = {"delivery_mode": delivery_mode}
+        if schedule:
+            kwargs.update(schedule=schedule, timezone=timezone)
+        result = self._rpc("set", prompt, interval_seconds, **kwargs)
+        if schedule and result is None:
+            raise RuntimeError("gateway unavailable or does not support scheduled heartbeats")
+        return result
 
     def pause(self):
         return self._rpc("pause")

@@ -4084,6 +4084,7 @@ export const frOverrides = {
       heartbeatPaused: 'Suivi périodique en pause',
       heartbeatEveryMinutes: minutes => `toutes les ${minutes} min`,
       heartbeatEveryHours: hours => `toutes les ${hours} h`,
+      heartbeatProfileTimezone: 'fuseau horaire du profil',
       heartbeatEverySeconds: seconds => `toutes les ${seconds} s`,
       heartbeatNext: time => `prochain : ${time}`,
       dueWaitingForIdle: 'échu — en attente de disponibilité',

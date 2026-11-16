@@ -1654,7 +1654,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             return _cp(f"  {_t('heartbeat.prompt_required')}")
         state = _attempt(_t("heartbeat.invalid_label"), (ValueError, RuntimeError), mgr.set, prompt, interval,
                          schedule=schedule, timezone=timezone, delivery_mode=delivery_mode)
-        if state is _FAILED:
+        if state is _FAILED or state is None:
             return
         self._start_heartbeat_watchdog()
         _cp(f"  {_t('heartbeat.set', interval=state.cadence_label(), prompt=state.prompt)}",

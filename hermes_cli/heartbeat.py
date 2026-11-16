@@ -22,7 +22,7 @@ MIN_INTERVAL_SECONDS = 60  # floor: re-entering more often than once a minute is
 POLL_SECONDS = 5.0  # how often drivers poll for due heartbeats; not user-facing
 
 HEARTBEAT_PROMPT_TEMPLATE = (
-    "[Heartbeat — recurring instruction, fires every {interval}]\n{prompt}\n\n"
+    "[Heartbeat — recurring instruction, {interval}]\n{prompt}\n\n"
     "If there is nothing meaningful to do or report for this instruction "
     "right now, reply briefly that nothing has changed and stop — do not invent work."
 )
@@ -83,6 +83,10 @@ def format_interval(seconds: int) -> str:
 
 
 def _next_scheduled_fire(schedule: str, timezone: Optional[str], anchor: datetime) -> float:
+    if len(schedule.split()) != 5:
+        raise ValueError("cron schedule must have five fields")
+    if timezone:
+        ZoneInfo(timezone)
     from cron.jobs import compute_next_run
     result = compute_next_run({"kind": "cron", "expr": schedule}, anchor.isoformat(), timezone=timezone or None)
     if result is None:
@@ -122,16 +126,28 @@ class HeartbeatState:
             return _next_scheduled_fire(self.schedule, self.timezone, datetime.fromtimestamp(anchor, UTC))
         return anchor + self.interval_seconds
 
+    def next_fire_or_none(self) -> Optional[float]:
+        try:
+            if bool(self.schedule) == bool(self.interval_seconds):
+                raise ValueError("exactly one cadence is required")
+            if not self.schedule and self.interval_seconds < MIN_INTERVAL_SECONDS:
+                raise ValueError("interval is too small")
+            return self.next_fire()
+        except Exception as exc:
+            self.last_error = f"Invalid heartbeat cadence: {exc}"
+            return None
+
     def valid_cadence(self) -> bool:
-        return bool(self.schedule) != bool(self.interval_seconds) and (bool(self.schedule) or self.interval_seconds >= MIN_INTERVAL_SECONDS)
+        return self.next_fire_or_none() is not None
 
     def cadence_label(self) -> str:
-        return f'{self.schedule} ({self.timezone or "profile timezone"})' if self.schedule else format_interval(self.interval_seconds)
+        return f'on schedule "{self.schedule}" ({self.timezone or "profile timezone"})' if self.schedule else f'every {format_interval(self.interval_seconds)}'
 
     def is_due(self, now: Optional[float] = None) -> bool:
-        if self.status != "active" or not self.prompt or not self.valid_cadence():
+        if self.status != "active" or not self.prompt:
             return False
-        return (time.time() if now is None else now) >= self.next_fire()
+        next_fire = self.next_fire_or_none()
+        return next_fire is not None and (time.time() if now is None else now) >= next_fire
 
     def render_prompt(self) -> str:
         return HEARTBEAT_PROMPT_TEMPLATE.format(interval=self.cadence_label(), prompt=self.prompt)
@@ -309,7 +325,7 @@ def list_heartbeats(db: Any = None) -> list[tuple[str, HeartbeatState]]:
     for key, raw in db.list_meta_prefix(_ROUTE_PREFIX):
         try:
             state = HeartbeatState.from_json(raw)
-            if state.status in {"active", "paused"} and state.prompt.strip() and state.valid_cadence():
+            if state.status in {"active", "paused"} and state.prompt.strip():
                 result.append((key[len(_ROUTE_PREFIX):], state))
         except (ValueError, TypeError, AttributeError):
             continue
@@ -426,15 +442,16 @@ class HeartbeatManager:
     def status_line(self) -> str:
         s = self._state
         if s is None:
-            return "No heartbeat. Set one with /heartbeat every <interval> <prompt>."
+            return 'No heartbeat. Use /heartbeat every <interval> <prompt> or /heartbeat at "<cron>" [tz <IANA>] <prompt>.'
         every = s.cadence_label()
         mode = "steer (gateway only)" if s.delivery_mode == "steer" else s.delivery_mode
         fired = f", fired {s.fire_count}×" if s.fire_count else ""
         if s.status == "active":
-            next_in = max(0, int(s.next_fire() - time.time()))
-            return f"♥ Heartbeat (every {every}, next in ~{next_in}s{fired}, mode {mode}): {s.prompt}"
+            next_fire = s.next_fire_or_none()
+            next_text = f"next in ~{max(0, int(next_fire - time.time()))}s" if next_fire is not None else s.last_error
+            return f"♥ Heartbeat ({every}, {next_text}{fired}, mode {mode}): {s.prompt}"
         icon = "⏸ " if s.status == "paused" else ""
-        return f"{icon}Heartbeat ({s.status}, every {every}{fired}, mode {mode}): {s.prompt}"
+        return f"{icon}Heartbeat ({s.status}, {every}{fired}, mode {mode}): {s.prompt}"
 
     def set(self, prompt: str, interval_seconds: Optional[int] = None, *, schedule: Optional[str] = None,
             timezone: Optional[str] = None, delivery_mode: str = "steer") -> HeartbeatState:
@@ -497,7 +514,12 @@ class HeartbeatManager:
         """
         with _CLAIM_LOCK:
             s = self._state
-            if s is None or not s.is_due(now):
+            if s is None:
+                return None
+            previous_error = s.last_error
+            if not s.is_due(now):
+                if s.last_error != previous_error:
+                    self._save(s)
                 return None
             # Compare-and-set on the stored row: the gateway poller and a viewer's due_prompt RPC each hold
             # their own manager over it, and only one may take the tick. A row cleared or paused since is lost too.

@@ -120,6 +120,20 @@ def test_manager_requires_exactly_one_schedule(interval, schedule):
     with pytest.raises(ValueError, match="exactly one"):
         mgr.set("watch CI", interval, schedule=schedule)
 
+@pytest.mark.parametrize("schedule,zone", [("30 7 * * *", "Mars/Base"), ("* * * * * *", "UTC")])
+def test_manager_rejects_invalid_cron(schedule, zone):
+    with pytest.raises(ValueError):
+        HeartbeatManager("invalid-cron").set("check", schedule=schedule, timezone=zone)
+
+
+def test_corrupt_schedule_is_safe():
+    from tui_gateway.methods_session_control import _safe_heartbeat_snapshot
+
+    state = HeartbeatState(prompt="check", interval_seconds=0, schedule="bad cron", timezone="Mars/Base")
+    assert not state.valid_cadence()
+    assert state.last_error
+    assert _safe_heartbeat_snapshot(state)["next_fire_at"] is None
+
 
 @pytest.mark.parametrize(
     ("start", "expected"),
@@ -137,6 +151,21 @@ def test_schedule_next_fire_preserves_wall_clock_across_dst(start, expected):
 
     next_fire = _next_scheduled_fire("30 7 * * *", "America/New_York", datetime.fromisoformat(start))
     assert next_fire == datetime.fromisoformat(expected).timestamp()
+
+@pytest.mark.parametrize("schedule,start", [
+    ("30 2 * * *", "2026-03-07T12:00:00-05:00"),
+    ("30 1 * * *", "2026-10-31T12:00:00-04:00"),
+])
+def test_gap_and_fold_fire_once(schedule, start, monkeypatch):
+    from hermes_cli import heartbeat
+    anchor = datetime.fromisoformat(start).timestamp()
+    monkeypatch.setattr(heartbeat.time, "time", lambda: anchor)
+    manager = HeartbeatManager("dst-" + schedule)
+    manager.set("check", schedule=schedule, timezone="America/New_York")
+    fire = manager.state.next_fire()
+    assert manager.due_prompt(fire - 1) is None
+    assert manager.due_prompt(fire) is not None
+    assert manager.due_prompt(fire + 3600) is None
 
 def test_scheduled_route_survives_restart_and_fires_once(monkeypatch):
     from hermes_cli import heartbeat

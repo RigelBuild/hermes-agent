@@ -109,6 +109,13 @@ describe('session-control store', () => {
     expect(parsed!.goal!.wait_barrier).toEqual({ reason: 'waiting for deploy', type: 'until', until_at: 1_700_000_200 })
   })
 
+  it('accepts scheduled and future heartbeat fields and nullable optionals', () => {
+    const heartbeat = { ...FULL_SNAPSHOT.heartbeat!, schedule: '30 7 * * *', timezone: 'America/New_York', next_fire_at: 123, future: true }
+    expect(parseSessionControlSnapshot({ ...FULL_SNAPSHOT, heartbeat })?.heartbeat).toMatchObject({ schedule: heartbeat.schedule, timezone: heartbeat.timezone, next_fire_at: 123 })
+    expect(parseSessionControlSnapshot({ ...FULL_SNAPSHOT, heartbeat: { ...heartbeat, schedule: null, timezone: null, next_fire_at: null } })?.heartbeat).toEqual(FULL_SNAPSHOT.heartbeat)
+    expect(parseSessionControlSnapshot({ ...FULL_SNAPSHOT, heartbeat: { ...heartbeat, next_fire_at: 'bad' } })).toBeNull()
+  })
+
   it.each([
     ['unknown goal status', { ...FULL_SNAPSHOT, goal: { ...FULL_SNAPSHOT.goal!, status: 'waiting' } }],
     ['non-finite top-level timestamp', { ...FULL_SNAPSHOT, updated_at: Number.NaN }],

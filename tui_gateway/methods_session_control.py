@@ -135,7 +135,7 @@ def _safe_heartbeat_snapshot(state) -> dict | None:
         "fire_count": state.fire_count,
     }
     if state.schedule:
-        snapshot.update(schedule=state.schedule, timezone=state.timezone, next_fire_at=state.next_fire())
+        snapshot.update(schedule=state.schedule, timezone=state.timezone, next_fire_at=state.next_fire_or_none())
     return snapshot
 
 
@@ -379,7 +379,7 @@ def _execute_subgoal_action(session_key: str, action: str, args: dict) -> dict:
 
 
 def _execute_heartbeat_action(session_key: str, action: str) -> dict:
-    from hermes_cli.heartbeat import HeartbeatManager, format_interval
+    from hermes_cli.heartbeat import HeartbeatManager
 
     manager = HeartbeatManager(session_id=session_key)
     if action == "heartbeat.pause":
@@ -388,7 +388,7 @@ def _execute_heartbeat_action(session_key: str, action: str) -> dict:
     elif action == "heartbeat.resume":
         state = manager.resume()
         output = (
-            f"▶ Heartbeat resumed (every {format_interval(state.interval_seconds)}): {state.prompt}"
+            f"▶ Heartbeat resumed ({state.cadence_label()}): {state.prompt}"
             if state else "No heartbeat to resume."
         )
     elif action == "heartbeat.clear":

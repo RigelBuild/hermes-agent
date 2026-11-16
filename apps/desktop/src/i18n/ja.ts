@@ -2603,6 +2603,7 @@ export const jaOverrides = {
       heartbeatPaused: 'ハートビート一時停止',
       heartbeatEveryMinutes: minutes => `${minutes}分ごと`,
       heartbeatEveryHours: hours => `${hours}時間ごと`,
+      heartbeatProfileTimezone: 'プロファイルのタイムゾーン',
       heartbeatEverySeconds: seconds => `${seconds}秒ごと`,
       heartbeatNext: time => `次回 ${time}`,
       dueWaitingForIdle: '期限到来 — アイドル待ち',

@@ -4074,6 +4074,7 @@ export const deOverrides = {
       heartbeatPaused: 'Heartbeat pausiert',
       heartbeatEveryMinutes: minutes => `alle ${minutes}m`,
       heartbeatEveryHours: hours => `alle ${hours}h`,
+      heartbeatProfileTimezone: 'Profilzeitzone',
       heartbeatEverySeconds: seconds => `alle ${seconds}s`,
       heartbeatNext: time => `nächstes ${time}`,
       dueWaitingForIdle: 'fällig — wartet auf Ruhezustand',

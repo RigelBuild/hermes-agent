@@ -421,7 +421,7 @@ function parseLoop(value: unknown): SessionControlLoop | null {
 function parseHeartbeat(value: unknown): SessionControlHeartbeat | null {
   const required = ['prompt', 'status', 'interval_seconds', 'created_at', 'last_fired_at', 'fire_count']
 
-  if (!isRecord(value) || !hasExactFields(value, required, ['schedule', 'timezone', 'next_fire_at'])) {
+  if (!isRecord(value) || !required.every(key => hasOwn(value, key))) {
     return null
   }
 
@@ -433,8 +433,9 @@ function parseHeartbeat(value: unknown): SessionControlHeartbeat | null {
     !isFiniteNumber(value.created_at) ||
     !isFiniteNumber(value.last_fired_at) ||
     !isInteger(value.fire_count) ||
-    !hasOptionalStrings(value, ['schedule', 'timezone']) ||
-    (hasOwn(value, 'next_fire_at') && !isFiniteNumber(value.next_fire_at))
+    (value.schedule != null && typeof value.schedule !== 'string') ||
+    (value.timezone != null && typeof value.timezone !== 'string') ||
+    (value.next_fire_at != null && !isFiniteNumber(value.next_fire_at))
   ) {
     return null
   }

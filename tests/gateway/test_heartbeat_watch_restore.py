@@ -71,7 +71,10 @@ async def test_restore_retries_persisted_routes_in_their_own_profiles(tmp_path, 
             with _profile_runtime_scope(named if profile else home):
                 entry = store.get_or_create_session(source)
                 manager = HeartbeatManager(entry.session_id)
-                manager.set('check ' + topic, 60)
+                if topic == '22':
+                    manager.set('check ' + topic, schedule='30 7 * * *', timezone='America/New_York')
+                else:
+                    manager.set('check ' + topic, 60)
                 if status == 'paused':
                     manager.pause()
                 elif status == 'cleared':
@@ -98,6 +101,11 @@ async def test_restore_retries_persisted_routes_in_their_own_profiles(tmp_path, 
             await restore_heartbeat_watches(runner)
         expected = {e.session_key: (e.origin, e.session_id) for e in entries[:2]}
         assert runner._heartbeat_watch == expected
+        with _profile_runtime_scope(named):
+            state = HeartbeatManager(entries[1].session_id).state
+            assert state.schedule == '30 7 * * *'
+            from tui_gateway.methods_session_control import _safe_heartbeat_snapshot
+            assert _safe_heartbeat_snapshot(state)['timezone'] == 'America/New_York'
         with monkeypatch.context() as patch:
             patch.setattr('hermes_cli.heartbeat.load_heartbeat', lambda sid: None)
             await restore_heartbeat_watches(runner)
