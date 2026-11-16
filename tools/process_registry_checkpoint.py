@@ -33,7 +33,7 @@ class ProcessCheckpointMixin:
                         s.host_start_time = self._safe_host_start_time(s.pid)
                     entry = {"session_id": s.id, **{f: getattr(s, f) for f in _CHECKPOINT_FIELDS}}
                     if not s.attempt_token:
-                        for field in ("argv", "request_id", "attempt_token", "resume_count", "status"):
+                        for field in ("argv", "request_id", "attempt_token", "resume_count", "attempt_status"):
                             entry.pop(field, None)
                     # Redact inline credentials before persisting (~/.hermes/processes.json).
                     # Recovery uses command only for display (adoption re-validates the
@@ -68,13 +68,13 @@ class ProcessCheckpointMixin:
         except (OSError, ValueError):
             return []
         return [entry for entry in on_disk if isinstance(entry, dict) and entry.get("session_id") not in known
-                and ((entry.get("attempt_token") and entry.get("status") in {"pending", "running", "claimed"})
+                and ((entry.get("attempt_token") and entry.get("attempt_status") in {"pending", "running", "claimed"})
                      or ((log := adoptable_log(entry.get("output_log"))) and Path(log).exists()
                          and (_exit_path(log).exists() or self._detached_host_fate(
                              entry.get("pid"), entry.get("host_start_time")) == "running")))]
 
     def _write_resumable_entry(self, entry):
-        """Persist an admitted attempt; unlike ordinary checkpoints, failures propagate."""
+        """Persist an admitted attempt; corrupt checkpoint data disables admission."""
         from hermes_cli.active_sessions import _FileLock
         from tools.process_registry import _checkpoint_path
         from utils import atomic_json_write
@@ -85,8 +85,25 @@ class ProcessCheckpointMixin:
                 entries = json.loads(path.read_text(encoding="utf-8-sig"))
             except FileNotFoundError:
                 entries = []
-            entries = [item for item in entries if item.get("session_id") != entry["session_id"]]
+            if not isinstance(entries, list):
+                raise ValueError("invalid process checkpoint")
+            entries = [item for item in entries if isinstance(item, dict) and item.get("session_id") != entry["session_id"]]
             entries.append(entry)
+            atomic_json_write(path, entries)
+
+    def _remove_resumable_entry(self, session_id, attempt_token):
+        from hermes_cli.active_sessions import _FileLock
+        from tools.process_registry import _checkpoint_path
+        from utils import atomic_json_write
+
+        path = _checkpoint_path()
+        with _FileLock(path.with_name(path.name + ".lock")):
+            try:
+                entries = json.loads(path.read_text(encoding="utf-8-sig"))
+            except FileNotFoundError:
+                return
+            entries = [entry for entry in entries if not (isinstance(entry, dict)
+                       and entry.get("session_id") == session_id and entry.get("attempt_token") == attempt_token)]
             atomic_json_write(path, entries)
 
     def recover_from_checkpoint(self) -> int:

@@ -575,7 +575,7 @@ class ProcessSession:
     request_id: str = ""
     attempt_token: str = ""
     resume_count: int = 0
-    status: str = ""
+    attempt_status: str = ""                    # pending, running, or claimed attempt
     pty_fallback: str = ""                      # why a pty=true local spawn runs in pipe mode instead
     # Watcher/notification routing (persisted for crash recovery)
     watcher_platform: str = ""
@@ -665,7 +665,7 @@ _CHECKPOINT_FIELDS = (
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
     "heartbeat_seconds", "persist_on_release", "output_log", "argv", "request_id",
-    "attempt_token", "resume_count", "status")
+    "attempt_token", "resume_count", "attempt_status")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -1151,7 +1151,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                                   daemon=True, name=reader_name)
         session._reader_thread = reader
         if session.attempt_token:
-            session.status = "running"
+            session.attempt_status = "running"
         with self._lock:
             self._prune_if_needed()
             # Completion takes this lock too. Starting here also leaves no
@@ -1205,7 +1205,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             request_id = uuid.uuid4().hex
             argv.extend(["--request-id", request_id])
             attempt = {"session_id": session.id, "argv": argv, "request_id": request_id,
-                       "attempt_token": uuid.uuid4().hex, "resume_count": 0, "status": "pending",
+                       "attempt_token": uuid.uuid4().hex, "resume_count": 0, "attempt_status": "pending",
                        "cwd": session.cwd, "task_id": task_id, "owner_task_id": owner_task_id,
                        "session_key": session_key, "parent_session_id": session.parent_session_id}
             try:
@@ -1217,8 +1217,19 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 session.argv = argv
                 session.request_id = request_id
                 session.attempt_token = attempt["attempt_token"]
-                session.status = "pending"
+                session.attempt_status = "pending"
                 safe_command = _append_dropped_path_entries(shlex.join(argv), self._spawn_env(env_vars).get("PATH", "") if restore_login_path else "")
+        try:
+            return self._spawn_local_admitted(session, safe_command, env_vars, use_pty, persist_on_release)
+        except BaseException:
+            if attempt:
+                try:
+                    self._remove_resumable_entry(session.id, attempt["attempt_token"])
+                except Exception:
+                    logger.exception("Could not remove failed background chat attempt")
+            raise
+
+    def _spawn_local_admitted(self, session, safe_command, env_vars, use_pty, persist_on_release):
         pty_scope_attempted = False
         # A worker's pipe or PTY dies with the worker (the child's next write is SIGPIPE): write to a log.
         log = worker_output_log(session.id)
