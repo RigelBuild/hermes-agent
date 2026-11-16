@@ -225,6 +225,64 @@ def test_gap_and_fold_fire_once(schedule, start, monkeypatch):
     assert manager.due_prompt(fire) is not None
     assert manager.due_prompt(fire + 3600) is None
 
+
+def _scheduled_fire_walk(schedule, created_at, claims):
+    """Claim each fire through ``due_prompt(now)`` and return the ``next_fire`` after each claim.
+
+    ``claims`` is a list of poll instants; each claim re-anchors the next fire the way the poller does.
+    """
+    manager = HeartbeatManager(f"walk-{schedule}-{created_at.isoformat()}")
+    manager.set("check", schedule=schedule, timezone="America/New_York")
+    manager.state.created_at = created_at.timestamp()
+    manager._save(manager.state)
+    fires = []
+    for now in claims:
+        assert manager.due_prompt(now) is not None
+        fires.append(manager.state.next_fire())
+    return fires
+
+
+def test_scheduled_heartbeat_next_fire_at_holds_wall_clock_across_dst():
+    """A 07:30 heartbeat claimed on time every day for a year reads 07:30 New York, across both DST changes."""
+    manager = HeartbeatManager("walk-dst-year", route_key="test:walk-dst-year")
+    manager.set("check", schedule="30 7 * * *", timezone="America/New_York")
+    manager.state.created_at = datetime(2026, 2, 1, 7, 30, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    manager._save(manager.state)
+    walls = []
+    for _ in range(365):
+        fire = manager.state.next_fire()
+        assert manager.due_prompt(fire) is not None
+        walls.append(datetime.fromtimestamp(fire, ZoneInfo("America/New_York")))
+    assert {(w.hour, w.minute) for w in walls} == {(7, 30)}
+    assert [w.strftime("%Y-%m-%d") for w in walls] == [
+        (datetime(2026, 2, 2) + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(365)]
+
+
+@pytest.mark.parametrize("schedule,created_at,claims,expected", [
+    # 02:30 does not exist on 2026-03-08; the claim at 03:30 EDT anchors the next fire on 03-09.
+    ("30 2 * * *", datetime(2026, 3, 7, 7, 30, tzinfo=ZoneInfo("America/New_York")),
+     ["2026-03-08T03:30:00-04:00"], ["2026-03-09T02:30:00-04:00"]),
+    # On-time claim of the repeated 01:30; the next fire is Nov 2, not the second 01:30.
+    ("30 1 * * *", datetime(2026, 10, 31, 7, 30, tzinfo=ZoneInfo("America/New_York")),
+     ["2026-11-01T01:30:00-04:00"], ["2026-11-02T01:30:00-05:00"]),
+    # Late poll at 01:10 EST, inside the second 01:xx hour, of the 01:30 EDT fire: next fire is Nov 2.
+    ("30 1 * * *", datetime(2026, 10, 31, 7, 30, tzinfo=ZoneInfo("America/New_York")),
+     ["2026-11-01T01:10:00-05:00"], ["2026-11-02T01:30:00-05:00"]),
+    # A late poll of a per-minute cron coalesces missed ticks: next fire is the next minute after the poll.
+    ("* * * * *", datetime(2026, 5, 1, 12, 0, tzinfo=ZoneInfo("America/New_York")),
+     ["2026-05-01T12:10:00-04:00"], ["2026-05-01T12:11:00-04:00"]),
+    # Weekly cron: the last Monday slot (05-04) is over a day before the claim, so the scan finds none and falls back.
+    ("0 9 * * 1", datetime(2026, 5, 1, 9, 0, tzinfo=ZoneInfo("America/New_York")),
+     ["2026-05-06T10:00:00-04:00"], ["2026-05-11T09:00:00-04:00"]),
+    # Daily cron claimed 24.5 h after its first due slot: the window still holds the 05-03 slot, so the next fire is 05-04.
+    ("30 9 * * *", datetime(2026, 5, 1, 9, 30, tzinfo=ZoneInfo("America/New_York")),
+     ["2026-05-03T10:00:00-04:00"], ["2026-05-04T09:30:00-04:00"]),
+])
+def test_scheduled_heartbeat_gap_and_fold_next_fire_at(schedule, created_at, claims, expected):
+    fires = _scheduled_fire_walk(schedule, created_at, [datetime.fromisoformat(c).timestamp() for c in claims])
+    assert fires == [datetime.fromisoformat(e).timestamp() for e in expected]
+
+
 def test_scheduled_route_survives_restart_and_fires_once(monkeypatch):
     from hermes_cli import heartbeat
 
@@ -238,6 +296,97 @@ def test_scheduled_route_survives_restart_and_fires_once(monkeypatch):
     assert restored.due_prompt(fire - 1) is None
     assert "check CI" in restored.due_prompt(fire)
     assert restored.due_prompt(fire) is None
+
+
+def test_resume_inside_repeated_hour_does_not_refire_a_fired_slot(monkeypatch):
+    """Fired at the first EDT 01:30, paused, resumed at 01:10 EST: the next fire is Nov 2, not the second 01:30."""
+    from hermes_cli import heartbeat
+
+    first_fire = datetime(2026, 11, 1, 1, 30, tzinfo=ZoneInfo("America/New_York"), fold=0).timestamp()
+    resumed_at = datetime(2026, 11, 1, 1, 10, tzinfo=ZoneInfo("America/New_York"), fold=1).timestamp()
+    now = {"t": first_fire}
+    monkeypatch.setattr(heartbeat.time, "time", lambda: now["t"])
+    manager = HeartbeatManager("resume-dst", route_key="test:resume-dst")
+    manager.set("check", schedule="30 1 * * *", timezone="America/New_York")
+    manager.state.created_at = datetime(2026, 10, 31, 7, 30, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    manager._save(manager.state)
+    assert manager.due_prompt(first_fire) is not None
+    manager.pause()
+    now["t"] = resumed_at
+    manager.resume()
+    expected_next = datetime(2026, 11, 2, 1, 30, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    assert manager.state.next_fire() == expected_next
+    assert manager.due_prompt(resumed_at) is None
+    assert manager.due_prompt(expected_next) is not None
+    assert manager.state.fire_count == 2
+
+
+def test_resume_after_multi_day_pause_waits_for_the_next_slot(monkeypatch):
+    """Daily 09:00 paused Mon 10:00, resumed Thu 12:00: the next fire is Fri 09:00, and nothing is due at resume."""
+    from hermes_cli import heartbeat
+
+    tz = ZoneInfo("America/New_York")
+    monday_fire = datetime(2026, 5, 4, 9, 0, tzinfo=tz).timestamp()
+    monday_pause = datetime(2026, 5, 4, 10, 0, tzinfo=tz).timestamp()
+    thursday_resume = datetime(2026, 5, 7, 12, 0, tzinfo=tz).timestamp()
+    now = {"t": monday_fire}
+    monkeypatch.setattr(heartbeat.time, "time", lambda: now["t"])
+    manager = HeartbeatManager("multi-day-pause", route_key="test:multi-day-pause")
+    manager.set("check", schedule="0 9 * * *", timezone="America/New_York")
+    manager.state.created_at = datetime(2026, 5, 3, 9, 0, tzinfo=tz).timestamp()
+    manager._save(manager.state)
+    assert manager.due_prompt(monday_fire) is not None
+    now["t"] = monday_pause
+    manager.pause()
+    now["t"] = thursday_resume
+    manager.resume()
+    friday_fire = datetime(2026, 5, 8, 9, 0, tzinfo=tz).timestamp()
+    assert manager.state.next_fire() == friday_fire
+    assert manager.due_prompt(thursday_resume) is None
+
+
+def test_resume_of_an_invalid_cadence_does_not_raise_and_stays_active():
+    """A paused row whose cron is invalid resumes without raising, and the stored row agrees with the cache."""
+    from hermes_cli.heartbeat import load_route_heartbeat
+
+    manager = HeartbeatManager("bad-cadence-resume", route_key="test:bad-cadence-resume")
+    manager.set("check", schedule="30 7 * * *", timezone="America/New_York")
+    manager.state.schedule = "bad cron"
+    manager._save(manager.state)
+    manager.pause()
+    manager.resume()
+    assert manager.state.status == "active"
+    assert load_route_heartbeat("test:bad-cadence-resume").status == "active"
+
+
+def test_abandon_of_a_scheduled_claim_restores_the_slot_so_it_fires_again():
+    """A scheduled claim whose turn never starts rewinds the anchor, so the same slot is due on the next poll."""
+    tz = ZoneInfo("America/New_York")
+    slot = datetime(2026, 5, 4, 7, 30, tzinfo=tz).timestamp()
+    manager = HeartbeatManager("abandon-scheduled", route_key="test:abandon-scheduled")
+    manager.set("check", schedule="30 7 * * *", timezone="America/New_York")
+    manager.state.created_at = datetime(2026, 5, 3, 7, 30, tzinfo=tz).timestamp()
+    manager._save(manager.state)
+    before_anchor, before_fired = manager.state.schedule_anchor, manager.state.last_fired_at
+    assert manager.due_prompt(slot) is not None
+    assert manager.abandon_fire() is True
+    assert manager.state.schedule_anchor == before_anchor
+    assert manager.state.last_fired_at == before_fired
+    assert manager.state.next_fire() == slot
+    assert manager.due_prompt(slot) is not None
+
+
+def test_weekly_claim_anchors_to_the_scan_start_when_no_slot_is_in_the_window():
+    """A weekly cron claimed 5 days late has no slot in the one-day window: the anchor is the window start, not the poll."""
+    manager = HeartbeatManager("weekly-anchor", route_key="test:weekly-anchor")
+    manager.set("check", schedule="0 9 * * 1", timezone="America/New_York")
+    manager.state.created_at = datetime(2026, 5, 1, 9, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    manager._save(manager.state)
+    claim = datetime(2026, 5, 6, 10, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    assert manager.due_prompt(claim) is not None
+    assert manager.state.last_fired_at == claim
+    assert manager.state.schedule_anchor == datetime(2026, 5, 5, 10, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    assert manager.state.next_fire() == datetime(2026, 5, 11, 9, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
 
 
 def test_scheduled_list_displays_next_fire(capsys):

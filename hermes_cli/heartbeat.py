@@ -43,7 +43,7 @@ _STATE_FIELDS = {
     "created_at": (float, 0.0), "last_fired_at": (float, 0.0), "fire_count": (int, 0),
     "delivery_mode": (str, "idle"),
     "last_error": (str, ""),
-    "schedule": (str, ""), "timezone": (str, ""),
+    "schedule": (str, ""), "timezone": (str, ""), "schedule_anchor": (float, 0.0),
 }
 
 
@@ -94,6 +94,31 @@ def _next_scheduled_fire(schedule: str, timezone: Optional[str], anchor: datetim
     return datetime.fromisoformat(result).timestamp()
 
 
+_MAX_SLOT_STEPS = 2000  # a per-minute cron walks at most ~1440 slots in one day; the bound keeps the claim lock finite
+
+
+def _last_scheduled_slot(schedule: str, timezone: Optional[str], start: float, now: float) -> float:
+    """Latest cron slot in ``(start, now]``, or ``start`` when none falls in that window.
+
+    Steps ``compute_next_run`` on the instant timeline so a repeated DST hour is not skipped. The caller
+    passes ``start`` as the previous slot or the claim window's lower bound, so an on-time claim is one step.
+    """
+    from cron.jobs import compute_next_run
+    slot, base = start, datetime.fromtimestamp(start, UTC)
+    for _ in range(_MAX_SLOT_STEPS):
+        nxt = datetime.fromisoformat(
+            compute_next_run({"kind": "cron", "expr": schedule}, base.isoformat(), timezone=timezone or None)
+        ).timestamp()
+        if nxt > now or nxt <= base.timestamp():
+            return slot
+        slot, base = nxt, datetime.fromtimestamp(nxt, UTC)
+
+
+def _scan_start(state: "HeartbeatState", now: float) -> float:
+    """Earliest instant the slot scan may start from: the last slot or claim, but never more than a day back."""
+    return max(state.schedule_anchor, state.last_fired_at, state.created_at, now - 86400)
+
+
 @dataclass
 class HeartbeatState:
     """Serializable per-session heartbeat."""
@@ -108,6 +133,7 @@ class HeartbeatState:
     last_error: str = ""
     schedule: str = ""
     timezone: str = ""
+    schedule_anchor: float = 0.0  # scheduled only: the cron slot the last claim fired; last_fired_at is the claim time
 
     def to_json(self) -> str:
         from hermes_cli.debug_redaction import redact_debug_support_text
@@ -123,7 +149,8 @@ class HeartbeatState:
     def next_fire(self) -> float:
         anchor = self.last_fired_at or self.created_at
         if self.schedule:
-            return _next_scheduled_fire(self.schedule, self.timezone, datetime.fromtimestamp(anchor, UTC))
+            slot = self.schedule_anchor or anchor
+            return _next_scheduled_fire(self.schedule, self.timezone, datetime.fromtimestamp(slot, UTC))
         return anchor + self.interval_seconds
 
     def next_fire_or_none(self) -> Optional[float]:
@@ -404,7 +431,7 @@ class HeartbeatManager:
         except RuntimeError as exc:
             self._log_lookup_failure(exc)
         self._state: Optional[HeartbeatState] = self._load()
-        self._last_claim: Optional[tuple[float, int]] = None
+        self._last_claim: Optional[tuple[float, int, float]] = None
 
     def _storage(self) -> tuple[Optional[str], bool]:
         if self.route_key:
@@ -494,9 +521,19 @@ class HeartbeatManager:
             self._state = self._load()
             if not self._state:
                 return None
-            self._state.status = status
             if reanchor:
-                self._state.last_fired_at = time.time()
+                now = time.time()
+                # Compute the new anchor before touching state: a bad cron raises here and must not leave a half-set row.
+                anchor = None
+                if self._state.schedule and self._state.valid_cadence():
+                    # Latest slot in the last day, or the window start when none falls in it. Same rule as a claim.
+                    anchor = _last_scheduled_slot(self._state.schedule, self._state.timezone, _scan_start(self._state, now), now)
+                self._state.status = status
+                self._state.last_fired_at = now
+                if anchor is not None:
+                    self._state.schedule_anchor = anchor
+            else:
+                self._state.status = status
             self._save(self._state)
         return self._state
 
@@ -516,8 +553,10 @@ class HeartbeatManager:
         """Return the injection prompt if the heartbeat is due, else None.
 
         The fire is recorded immediately (before the turn runs) so overlapping polls or a long turn can never
-        double-fire the same tick. Missed ticks coalesce: the anchor resets to NOW, not the theoretical
-        schedule.
+        double-fire the same tick. ``last_fired_at`` is the claim time for every heartbeat. A scheduled claim also
+        stores the cron slot it fired in ``schedule_anchor``, the latest slot in a window of at most one day before
+        NOW. A slot older than that window is not found, so the anchor falls back to the window start. Missed
+        interval ticks coalesce: the anchor resets to NOW.
         """
         with _CLAIM_LOCK:
             s = self._state
@@ -536,8 +575,11 @@ class HeartbeatManager:
                     stored.last_fired_at, stored.fire_count) != (s.last_fired_at, s.fire_count):
                 self._state = stored
                 return None
-            self._last_claim = (s.last_fired_at, s.fire_count)
-            s.last_fired_at = now if now is not None else time.time()
+            self._last_claim = (s.last_fired_at, s.fire_count, s.schedule_anchor)
+            claimed_at = now if now is not None else time.time()
+            if s.schedule:
+                s.schedule_anchor = _last_scheduled_slot(s.schedule, s.timezone, _scan_start(s, claimed_at), claimed_at)
+            s.last_fired_at = claimed_at
             s.fire_count += 1
             self._save(s)
             return s.render_prompt()
@@ -554,7 +596,7 @@ class HeartbeatManager:
             if current is None or current.status != "active" or (current.last_fired_at, current.fire_count) != (
                     s.last_fired_at, s.fire_count):
                 return False
-            current.last_fired_at, current.fire_count = claim
+            current.last_fired_at, current.fire_count, current.schedule_anchor = claim
             self._last_claim = None
             self._state = current
             self._save(current)
