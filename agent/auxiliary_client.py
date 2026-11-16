@@ -3366,7 +3366,7 @@ def _should_skip_same_provider_retry(task: Optional[str], failure: aux_errors.Fa
             and "no-progress timeout" not in str(failure.error))
 
 
-def _evict_cached_clients(provider: str) -> None:
+def _evict_cached_clients(provider: str, model: Optional[str] = None) -> None:
     """Drop this profile's cached auxiliary clients for a provider so fresh creds are used.
 
     Scoped to the calling profile (``hermes_home_key()`` is the first key slot): a rotation in
@@ -3374,14 +3374,24 @@ def _evict_cached_clients(provider: str) -> None:
     gateway, since that profile's credentials did not change. Entries are popped, not closed:
     a concurrent caller may be mid-request on the shared client (closing it raises ReadError /
     "client has been closed" for them); the dropped client is retired by GC like the FIFO
-    overflow path in ``_get_cached_client``.
+    overflow path in ``_get_cached_client``. ``model`` narrows the drop to entries for that model: the
+    key's model slot (requested or runtime model) or the stored default the client sends (the main
+    model read from config, a fast model, a normalized id), compared without a vendor prefix.
     """
     normalized = _normalize_aux_provider(provider)
     home = hermes_home_key()
+    wanted = _bare_model_id(model)
     with _client_cache_lock:
-        for key in [key for key in _client_cache
-                    if key[0] == home and _normalize_aux_provider(str(key[1])) == normalized]:
+        for key in [key for key, entry in _client_cache.items()
+                    if key[0] == home and _normalize_aux_provider(str(key[1])) == normalized
+                    and (model is None or wanted in {_bare_model_id(key[_CACHE_KEY_MODEL_SLOT]),
+                                                     _bare_model_id(entry[1])})]:
             _client_cache.pop(key, None)
+
+
+def _bare_model_id(model: Any) -> str:
+    """A model id without its ``vendor/`` prefix, for matching ids that one path normalized."""
+    return str(model or "").rsplit("/", 1)[-1]
 
 
 def _evict_cached_client_instance(target: Any) -> bool:
@@ -4416,6 +4426,16 @@ def _main_route_target(runtime: dict[str, Any], task: Optional[str]) -> tuple[st
     return main_provider, main_model, runtime_base_url, runtime_api_key, runtime_api_mode
 
 
+def _auto_request_model_limited(main_runtime: Optional[dict[str, Any]], task: Optional[str], model: Optional[str]) -> bool:
+    """True when the main provider is marked usage-limited for an auto route's requested model. Only then
+    does the route's own model replace the requested one; any other explicit model still wins."""
+    if not model:
+        return False
+    main_provider, _main_model, base_url, _key, _mode = _main_route_target(_normalize_main_runtime(main_runtime), task)
+    label = _normalize_chain_label(main_provider)
+    return bool(label) and _is_provider_unhealthy(label, _custom_health_base_url(main_provider, base_url), model)
+
+
 def _try_main_provider_route(
     main_provider: str, main_model: str, runtime_base_url: str, runtime_api_key: Any, runtime_api_mode: str,
 ) -> Optional[tuple[Any, str, str]]:
@@ -4451,8 +4471,8 @@ def _try_main_provider_route(
         explicit_api_key = runtime_api_key
     # Skip if the main provider was recently 402'd (unhealthy TTL bounds the bypass).
     main_chain_label = _normalize_chain_label(resolved_provider)
-    if main_chain_label and _is_provider_unhealthy(main_chain_label, health_base_url):
-        _log_skip_unhealthy(main_chain_label, base_url=health_base_url)
+    if main_chain_label and _is_provider_unhealthy(main_chain_label, health_base_url, main_model):
+        _log_skip_unhealthy(main_chain_label, base_url=health_base_url, model=main_model)
         return None
     client, resolved = resolve_provider_client(
         resolved_provider, main_model, explicit_base_url=explicit_base_url,
@@ -4518,8 +4538,11 @@ def _resolve_auto_route(
     if routed is not None:
         return routed
     if task:
+        skipped = bool(main_model) and _is_provider_unhealthy(
+            _normalize_chain_label(main_provider), _custom_health_base_url(main_provider, base_url), main_model)
+        scope = {"failed_model": main_model, "failed_base_url": base_url or ""} if skipped else {}
         fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-            task, main_provider or "auto", reason="main provider unavailable")
+            task, main_provider or "auto", reason="main provider unavailable", **scope)
         if fb_client is not None:
             return fb_client, fb_model, _fallback_provider_from_label(fb_label)
     fb_client, fb_model, fb_label = _try_main_fallback_chain(
@@ -4551,6 +4574,15 @@ def _classification_provider(client: Any, fallback: str, main_runtime: Optional[
         return label
     return _recoverable_pool_provider("custom" if route == "custom" else "auto", client,
                                       main_runtime=_normalize_main_runtime(main_runtime), same_path=True) or label
+
+
+def _mark_label(label: str, route: "_LadderRoute") -> str:
+    """The label an unhealthy mark is keyed on: the main runtime's provider for an ``auto`` route, the one
+    the main route reads back (``_try_main_provider_route``); otherwise the label as given."""
+    if _normalize_aux_provider(label) != "auto":
+        return label
+    runtime_provider = str((route.main_runtime or {}).get("provider", "") or "").strip()
+    return runtime_provider or label
 
 
 # Centralized Provider Router: resolve_provider_client() is the single entry point for building a configured
@@ -4836,17 +4868,18 @@ def _route_or_warn(req: _ResolveRequest, client: Any, default: Optional[str], un
 
 def _resolve_auto_branch(req: _ResolveRequest) -> _ResolveResult:
     """Auto: try all providers in priority order; tag the client with the effective provider (survives cache reuse)."""
-    client, resolved, effective_provider = _resolve_auto_route(main_runtime=req.main_runtime, task=req.task)
+    client, route_model, effective_provider = _resolve_auto_route(main_runtime=req.main_runtime, task=req.task)
     if client is None:
         return None, None
-    model = req.model
+    # An explicit requested model wins, unless it is the model the main route skipped as usage-limited.
+    model = None if _auto_request_model_limited(req.main_runtime, req.task, req.model) else req.model
     # An OpenRouter-format model override won't work on a non-OpenRouter provider (e.g. local
     # server); drop it for the provider's default.
-    if model and "/" in model and resolved and "/" not in resolved:
+    if model and "/" in model and route_model and "/" not in route_model:
         logger.debug("Dropping OpenRouter-format model %r for non-OpenRouter "
-                     "auxiliary provider (using %r instead)", model, resolved)
+                     "auxiliary provider (using %r instead)", model, route_model)
         model = None
-    routed_client, routed_model = _route_client(req, client, model or resolved)
+    routed_client, routed_model = _route_client(req, client, model or route_model)
     if routed_client is not None and effective_provider:
         try:
             routed_client._hermes_aux_effective_provider = effective_provider
@@ -5624,6 +5657,10 @@ def _runtime_cache_discriminator(field: str, value: Any) -> Any:
     return value
 
 
+# Index of ``model_key`` in the tuple _client_cache_key returns; _evict_cached_clients reads it.
+_CACHE_KEY_MODEL_SLOT = 10
+
+
 def _client_cache_key(
     provider: str, *, async_mode: bool, base_url: Optional[str] = None,
     api_key: Optional[str] = None, api_mode: Optional[str] = None,
@@ -5877,6 +5914,10 @@ def _get_cached_client(
         provider, async_mode=async_mode, base_url=base_url, api_key=api_key, api_mode=api_mode,
         main_runtime=main_runtime, is_vision=is_vision, task=task, model=model,
     )
+    # An auto route keeps the requested model unless the main provider is marked usage-limited for it;
+    # then the model the route resolved (a fallback entry's own) is the one to send.
+    compat_request = None if str(provider or "").strip().lower() == "auto" and _auto_request_model_limited(
+        runtime, task, model) else model
     with _client_cache_lock:
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]
@@ -5884,7 +5925,7 @@ def _get_cached_client(
                 cached_loop is not None and cached_loop is current_loop and not cached_loop.is_closed()
             )
             if loop_ok:
-                return cached_client, _compat_model(cached_client, model, cached_default)
+                return cached_client, _compat_model(cached_client, compat_request, cached_default)
             # Stale async entry — evict. Only a closed owner loop may be awaited here; a live
             # foreign loop stays force-neutered.
             _close_cached_client(cached_client, close_async=cached_loop is not None and cached_loop.is_closed())
@@ -5921,7 +5962,7 @@ def _get_cached_client(
                 client, default_model, _ = _client_cache[cache_key]
                 # Race loser was never exposed to a caller — safe to close now.
                 _close_cached_client(built_client, close_async=async_mode)
-    return client, _compat_model(client, model, default_model)
+    return client, _compat_model(client, compat_request, default_model)
 
 
 # MoA virtual provider: an *explicit* `provider: moa` override (either the caller-passed `provider` arg or
@@ -7731,15 +7772,26 @@ def _ladder_provider_fallback(failure: aux_errors.Failure, route: _LadderRoute, 
     )
     if reason is None or not (is_auto or is_capacity_error or explicit_auth_with_task_chain):
         return None
+    # One verdict for the whole ladder: a usage window is one model's, so mark and walk both scope to it.
+    usage_limit = reason == "payment error" and aux_errors.is_usage_limit(failure)
     if reason == "payment error":
         # Mark the concrete backend (not the "auto" label) that sent the failed request unhealthy, so later aux
         # calls skip it instead of paying another doomed RTT: a rebuilt retry may have reached another backend.
         sender = _failure_sender(route, failure)
         failed_provider = _recoverable_pool_provider(resolved_provider, sender, route.main_runtime, same_path=True)
         sender_url = "" if sender is route.client else str(getattr(sender, "base_url", "") or "")
+        # The model the failed request was sent with (the verdict records it); the route's model otherwise.
+        failed_model = failure.verdict.model or route.final_model or ""
+        scoped = usage_limit and bool(failed_model)
         _mark_provider_unhealthy(
-            failed_provider or _classification_provider(sender, resolved_provider, route.main_runtime),
-            base_url=sender_url or route.base_info)
+            _mark_label(failed_provider or _classification_provider(sender, resolved_provider, route.main_runtime), route),
+            base_url=sender_url or route.base_info,
+            reason=aux_errors.USAGE_LIMIT_REASON if scoped else _AUX_UNHEALTHY_PAYMENT_REASON,
+            model=failed_model if scoped else None)
+        if scoped:
+            # Drop the cached auto clients keyed on the limited model so the next call re-reads the mark;
+            # auto clients for other models keep their entries.
+            _evict_cached_clients("auto", failed_model)
     if reason == "request timed out":
         # WARNING, naming the endpoint, the budget and the knob: the only other trace of a slow
         # local model is the fallback provider's complaint about a model it never had (#89445).
@@ -7752,15 +7804,17 @@ def _ladder_provider_fallback(failure: aux_errors.Failure, route: _LadderRoute, 
         logger.info("Auxiliary %s%s: %s on %s (%s), trying fallback",
                     task or "call", tag, reason, resolved_provider, first_err)
     # Skip only the failed model for model-specific failures; 401/402 are provider-wide, so
-    # auth keeps skipping the credential surface, while billing is scoped to the endpoint:
-    # separate custom URLs can carry separate credentials (or no billing relationship at all).
-    _chain_failed_model = None if reason in ("auth error", "payment error") else route.final_model
+    # auth keeps skipping the credential surface, while a confirmed bill is scoped to the endpoint:
+    # separate custom URLs can carry separate credentials. A usage limit is one model's window.
     from agent.backend_identity import FailureScope
-    _chain_failure_scope = (
-        FailureScope.ENDPOINT
-        if reason == "payment error" and _custom_health_base_url(resolved_provider, route.base_info)
-        else None
-    )
+    _chain_failed_model = route.final_model
+    _chain_failure_scope = None
+    if reason in ("auth error", "payment error") and not usage_limit:
+        _chain_failed_model = None
+    if reason == "payment error" and not usage_limit and _custom_health_base_url(resolved_provider, route.base_info):
+        _chain_failure_scope = FailureScope.ENDPOINT
+    if usage_limit and failed_model:
+        _chain_failed_model = failed_model
     fb_client, fb_model, fb_label = _try_configured_fallback_chain(
         task, resolved_provider or "auto", reason=reason, failed_model=_chain_failed_model,
         failed_base_url=route.base_info, failure_scope=_chain_failure_scope)

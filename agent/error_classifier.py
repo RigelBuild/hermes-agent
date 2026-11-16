@@ -137,6 +137,9 @@ _QUOTA_WINDOW_PATTERNS = _LONG_QUOTA_WINDOW_PATTERNS + ("quota exceeded", "quota
 _ACCOUNT_WALL_PATTERNS = _BILLING_PATTERNS + _QUOTA_WINDOW_PATTERNS + (
     "key limit exceeded", "spending limit", "budget limit", "requires a subscription", "upgrade for access")
 _WALL_WORDS = _ACCOUNT_WALL_PATTERNS + ("quota", "billing", "free tier", "free-tier")
+# One usage-window token list, for structured codes and for message text alike. Shared with the
+# aux policy and the agent's 429 rotation, so the two cannot drift.
+USAGE_LIMIT_TEXT = ("usage_limit_reached", "gousagelimit", "usage limit reached", "usage limit has been reached")
 _RESOURCE_EXHAUSTED_PATTERNS = ("resource exhausted", "resource_exhausted", "resource-exhausted", "resourceexhausted")
 _403_404_WALL_PATTERNS = _ACCOUNT_WALL_PATTERNS + _RESOURCE_EXHAUSTED_PATTERNS
 
@@ -1179,6 +1182,11 @@ def _shape_context(c: _Ctx, verdict: Verdict, *, hooked: bool) -> dict[str, Any]
             and reason is not _R.upstream_rate_limit and reason not in POLICY_REFUSAL_REASONS
             and any(p in c.msg for p in _QUOTA_WINDOW_PATTERNS)):
         extra["quota_exhausted"] = True
+    # A usage window's own structured code, and a structured billing code: the aux layer reads both.
+    if c.code == "usage_limit_reached":
+        extra["usage_limit_code"] = c.code
+    elif c.code in _BILLING_ERROR_CODES:
+        extra["billing_code"] = c.code
     if (c.status_code in (None, 400) and reason in (_R.format_error, _R.unknown)
             and any(p in c.msg for p in _ROUTE_MODEL_REJECTION_PATTERNS)
             and not any(p in c.msg for p in _WALL_WORDS)):

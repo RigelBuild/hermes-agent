@@ -10,12 +10,14 @@ from typing import Any, NamedTuple, Optional
 
 from agent.auxiliary_call_outcome import is_cancellation
 from agent.error_classifier import (
-    POLICY_REFUSAL_REASONS, TRANSIENT_REASONS, ClassifiedError, FailoverReason, classify_api_error,
+    POLICY_REFUSAL_REASONS, TRANSIENT_REASONS, USAGE_LIMIT_TEXT, ClassifiedError, FailoverReason, classify_api_error,
 )
 
 _R = FailoverReason
 AUTH_ERROR, PAYMENT_ERROR, MODEL_INCOMPATIBLE = "auth error", "payment error", "model incompatible with route"
 MODEL_NOT_FOUND = "model not found"
+# A usage window spent on one model (Codex ``usage_limit_reached``), not a bill on the whole account.
+USAGE_LIMIT_REASON = "usage limit"
 # The request's own shape failed: another provider only helps once a parameter rung changed the request.
 _REQUEST_SHAPE = frozenset({
     _R.format_error, _R.role_alternation, _R.multimodal_tool_content_unsupported, _R.reasoning_mandatory,
@@ -76,6 +78,20 @@ def resend_cannot_help(verdict: ClassifiedError) -> bool:
 
 def benches_provider(verdict: ClassifiedError) -> bool:
     return verdict.reason is _R.billing or bool(verdict.error_context.get("quota_exhausted"))
+
+def is_usage_limit(failure: Failure) -> bool:
+    """A spent usage window on the model that was sent (Codex ``usage_limit_reached``), not a billing wall.
+    The classifier's structured codes decide: a billing code is never a usage window. Text is only the
+    fallback for a verdict that carries no structured code."""
+    verdict = failure.verdict
+    if verdict.error_context.get("usage_limit_code"):
+        return True
+    if verdict.error_context.get("billing_code"):
+        return False
+    if not benches_provider(verdict):
+        return False
+    text = str(failure.error).lower()
+    return any(token in text for token in USAGE_LIMIT_TEXT)
 
 
 def fallback_label(failure: Failure, *, rung_spent: bool = False) -> Optional[str]:
