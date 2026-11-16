@@ -108,7 +108,7 @@ orchestrator subagent (depth > 0) is synchronous.
 2. Merge and dedupe on the parent; note the agreement count per claim.
 3. Refuters: a second batch told to BREAK each claim with counter-evidence,
    emitting `claim_idx|survives|counter_evidence`. Give them the sources, not the
-   attempts' reasoning.
+   attempts' rationale.
 4. Surface only survivors; drop refuted claims with a one-line reason.
 5. Feed new claims from round 2 through one more refutation; stop when a round
    adds no survivors, cap at 3 rounds.

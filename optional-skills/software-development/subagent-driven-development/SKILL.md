@@ -241,7 +241,7 @@ git add -A && git commit -m "feat: complete [feature name] implementation"
 **Why fresh subagent per task:**
 - Prevents context pollution from accumulated state
 - Each subagent gets clean, focused context
-- No confusion from prior tasks' code or reasoning
+- No confusion from prior tasks' code or notes
 
 **Why two-stage review:**
 - Spec review catches under/over-building early

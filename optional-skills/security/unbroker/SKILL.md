@@ -148,7 +148,7 @@ For anything past a couple of brokers, run this as **map → reduce → act**, n
   what unlocks cluster dedup and prioritization below. **Default: the parent drives `web_extract`
   probes directly** - most people-search sites render name/phone/address results as static HTML that
   `web_extract` reads in seconds. Escalate to `browser_exec` only for the few JS-only sites, and to
-  `delegate_task` subagents only for genuinely *reasoning*-heavy work (large-scale namesake/relative
+  `delegate_task` subagents only for genuinely *judgment*-heavy work (large-scale namesake/relative
   disambiguation). **Do NOT hand a browser-toolset subagent a big list of brokers to crawl** - in the
   field this timed out repeatedly (600s, ~5-6 brokers each, no summary) because browser navigation is
   heavy; the ledger writes that survived came at 10x the cost of parent `web_extract`. A `blocked`

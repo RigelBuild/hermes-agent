@@ -216,7 +216,7 @@ AAAI reviewers evaluate along similar axes to NeurIPS/ICML but with some differe
 
 ### AAAI-Specific Considerations
 
-- **Broader AI scope**: AAAI covers all of AI, not just ML. Papers on planning, reasoning, knowledge representation, NLP, vision, robotics, and multi-agent systems are all in scope. Reviewers may not be deep ML specialists.
+- **Broader AI scope**: AAAI covers all of AI, not just ML. Papers on planning, inference, knowledge representation, NLP, vision, robotics, and multi-agent systems are all in scope. Reviewers may not be deep ML specialists.
 - **Formatting strictness**: AAAI reviewers are instructed to flag formatting violations. Non-compliant papers may be desk-rejected before review.
 - **Application papers**: AAAI is more receptive to application-focused work than NeurIPS/ICML. Framing a strong application contribution is viable.
 - **Senior Program Committee**: AAAI uses SPCs (Senior Program Committee members) who mediate between reviewers and make accept/reject recommendations.
@@ -301,7 +301,7 @@ Minor Issues (optional):
 - Formatting issues
 
 Overall Assessment:
-- Clear recommendation with reasoning
+- Clear recommendation with a stated rationale
 ```
 
 ---

@@ -158,7 +158,7 @@ def render_notepad_section(job_id: str) -> str:
     lines = [f"- {note['key']}: {note['value']}" for note in notes]
     return (
         "## Job notepad (persistent across runs)\n"
-        "This durable scratchpad survives between scheduled runs of this "
+        "This durable notepad survives between scheduled runs of this "
         "job. Update it via the CLI, e.g.:\n"
         f"`hermes cron notepad {job_id} set <key> <value>` "
         f"(also: get/delete/list; `hermes cron notepad {job_id} delete "

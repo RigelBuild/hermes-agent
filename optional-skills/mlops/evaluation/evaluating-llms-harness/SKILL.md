@@ -59,10 +59,10 @@ Benchmark Evaluation:
 
 **Step 1: Choose benchmark suite**
 
-**Core reasoning benchmarks**:
+**Core inference benchmarks**:
 - **MMLU** (Massive Multitask Language Understanding) - 57 subjects, multiple choice
 - **GSM8K** - Grade school math word problems
-- **HellaSwag** - Common sense reasoning
+- **HellaSwag** - Common sense inference
 - **TruthfulQA** - Truthfulness and factuality
 - **ARC** (AI2 Reasoning Challenge) - Science questions
 

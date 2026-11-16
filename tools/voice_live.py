@@ -58,7 +58,7 @@ LIVE_PERSONA = (
     "browse the web, search, remember things across sessions, schedule tasks, and reason "
     "carefully about anything. It is the one who actually does work and knows facts.\n\n"
     "Delegate to the backend when:\n"
-    "- The user asks a question that needs facts, current information, or careful reasoning.\n"
+    "- The user asks a question that needs facts, current information, or careful analysis.\n"
     "- The user asks you to do, check, find, make, fix, run or remember anything.\n"
     "- A correction changes work already requested.\n\n"
     "Do not delegate to the backend when:\n"

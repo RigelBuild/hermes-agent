@@ -314,6 +314,11 @@ def test_background_process_notifications_do_not_become_compaction_anchors(
             id="codex_incomplete_nudge",
         ),
         pytest.param(
+            "[System: Your previous response produced no visible answer or tool call. "
+            "Produce your final answer as plain text now (or make the tool call you were planning).]",
+            id="current_codex_incomplete_nudge",
+        ),
+        pytest.param(
             "[System: Continue now. Execute the required tool calls and only "
             "send your final answer after completing the task.]",
             id="codex_ack_continuation_nudge",

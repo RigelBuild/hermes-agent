@@ -114,7 +114,7 @@ obliteratus recommend <model_name> --insights  # global cross-architecture ranki
 | Quick test / prototyping          | `basic`            | Fast, simple, good enough to evaluate    |
 | Dense model (Llama, Mistral)      | `advanced`         | Multi-direction, norm-preserving         |
 | MoE model (DeepSeek, Mixtral)     | `nuclear`          | Expert-granular, handles MoE complexity  |
-| Reasoning model (R1 distills)     | `surgical`         | CoT-aware, preserves chain-of-thought    |
+| Thinking-style model (R1 distills)| `surgical`         | CoT-aware, keeps intermediate-step traces intact |
 | Stubborn refusals persist         | `aggressive`       | Whitened SVD + head surgery + jailbreak   |
 | Want reversible changes           | Use steering vectors (see Analysis section) |
 | Maximum quality, time no object   | `optimized`        | Bayesian search for best parameters      |
@@ -126,7 +126,7 @@ obliteratus recommend <model_name> --insights  # global cross-architecture ranki
 - **aggressive** — Whitened SVD + jailbreak-contrastive + attention head surgery. Higher risk of coherence damage.
 - **spectral_cascade** — DCT frequency-domain decomposition. Research/novel approach.
 - **informed** — Runs analysis DURING abliteration to auto-configure. Experimental — slower and less predictable than advanced.
-- **surgical** — SAE features + neuron masking + head surgery + per-expert. Very slow (~1-2 hrs). Best for reasoning models.
+- **surgical** — SAE features + neuron masking + head surgery + per-expert. Very slow (~1-2 hrs). Best for thinking-style models.
 - **optimized** — Bayesian hyperparameter search (Optuna TPE). Longest runtime but finds optimal parameters.
 - **inverted** — Flips the refusal direction. Model becomes actively willing.
 - **nuclear** — Maximum force combo for stubborn MoE models. Expert-granular.
@@ -329,7 +329,7 @@ Enable with `--contribute` flag. No personal data is collected — only model na
 5. **MoE models need special handling** — use `nuclear` method for Mixtral, DeepSeek-MoE, etc.
 6. **Quantized models can't be re-quantized** — abliterate the full-precision model, then quantize the output.
 7. **VRAM estimation is approximate** — 4-bit quant helps but peak usage can spike during extraction.
-8. **Reasoning models are sensitive** — use `surgical` for R1 distills to preserve chain-of-thought.
+8. **Thinking-style models are sensitive** — use `surgical` for R1 distills to keep their intermediate-step traces intact.
 9. **Check `obliteratus recommend`** — telemetry data may have better parameters than defaults.
 10. **AGPL license** — never `import obliteratus` in MIT/Apache projects. CLI invocation only.
 11. **Large models (70B+)** — always use `--large-model` flag for conservative defaults.

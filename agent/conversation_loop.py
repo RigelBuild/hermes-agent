@@ -1022,10 +1022,18 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[list
 # Codex/Responses turns that returned only internal reasoning: a bare retry would be
 # byte-identical, so the model repeats it.
 _CODEX_INCOMPLETE_NUDGE = (
-    "[System: Your previous response contained only internal reasoning and never produced a "
-    "visible answer or tool call. Do not keep thinking. Produce your final answer as plain text "
-    "now (or make the tool call you were planning).]"
+    "[System: Your previous response produced no visible answer or tool call. "
+    "Produce your final answer as plain text now (or make the tool call you were planning).]"
 )
+_LEGACY_CODEX_INCOMPLETE_NUDGE = (
+    "[System: Your previous response contained only internal reasoning and "
+    "never produced a visible answer or tool call. Do not keep thinking. "
+    "Produce your final answer as plain text now (or make the tool call you were planning).]"
+)
+
+
+def _is_codex_incomplete_nudge(content):
+    return content in (_CODEX_INCOMPLETE_NUDGE, _LEGACY_CODEX_INCOMPLETE_NUDGE)
 
 
 # Re-prompt after an acknowledgment-only Codex/Responses reply.

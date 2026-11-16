@@ -23,7 +23,7 @@ Vertical scrolling comic (竖版条漫)
 
 ## Best For
 
-Ohmsha-style tutorials, mobile reading, step-by-step guides
+Ohmsha-style tutorials, mobile reading, guides that go one step at a time
 
 ## Best Style Pairings
 

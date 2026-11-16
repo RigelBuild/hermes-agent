@@ -112,7 +112,7 @@ def assemble_api_request(
     are injected only after whitespace normalization, the orphan sweep, thinking-only drop /
     user merge and surrogate stripping, so the same row's bytes never vary across turns."""
     from agent.conversation_loop import (
-        _CODEX_INCOMPLETE_NUDGE, _apply_context_engine_selection, _canonicalize_api_tool_calls,
+        _CODEX_INCOMPLETE_NUDGE, _LEGACY_CODEX_INCOMPLETE_NUDGE, _apply_context_engine_selection, _canonicalize_api_tool_calls,
         _clone_message_for_send, _midturn_request_pressure_tokens, _pressure_with_real_floor,
     )
     from agent.model_metadata import (
@@ -151,6 +151,11 @@ def assemble_api_request(
     from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
 
     apply_rejected_thinking_suppression(agent, api_messages)
+    # Rewrite the legacy control message before sanitization can merge adjacent user rows.
+    if agent.api_mode == "codex_responses":
+        for message in api_messages:
+            if message.get("role") == "user" and isinstance(message.get("content"), str):
+                message["content"] = message["content"].replace(_LEGACY_CODEX_INCOMPLETE_NUDGE, _CODEX_INCOMPLETE_NUDGE)
 
     # Runs unconditionally (not gated on context_compressor) so orphaned tool
     # results from session loading or manual message edits are always caught.

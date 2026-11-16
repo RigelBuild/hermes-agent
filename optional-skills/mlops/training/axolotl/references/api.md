@@ -2015,7 +2015,7 @@ prompt_strategies.stepwise_supervised
 
 Module for stepwise datasets, typically including a prompt and reasoning traces, and (optionally) per-step, or per-prompt-trace labels for reward modelling.
 
-Tokenizing strategy for supervised stepwise datasets, typically used for COT-reasoning. These datasets should include the following columns: - prompt: the prompt text - completions: a list of n completion steps - labels: a list of n labels indicating the “correctness” of each step
+Tokenizing strategy for supervised stepwise datasets, typically used for COT-style multi-step training. These datasets should include the following columns: - prompt: the prompt text - completions: a list of n completion steps - labels: a list of n labels indicating the “correctness” of each step
 
 **Examples:**
 

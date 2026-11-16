@@ -425,7 +425,7 @@ def _convert_assistant_message(m: dict[str, Any]) -> dict[str, Any]:
     # Kimi's /coding endpoint requires reasoning_content on replayed tool-call turns — even ""
     # (injected as a fallback upstream). Prepend, since thinking must precede text/tool_use. Skip
     # when reasoning_details already supplied (signed) thinking blocks: a duplicate unsigned one
-    # would be downgraded to a spurious text block on the last assistant message.
+    # would be dropped on the last assistant message.
     # See hermes-agent#13848. Accept empty string "" — _copy_reasoning_content_for_api() injects "" as a
     # tier-3 fallback for Kimi tool-call messages that had no reasoning.
     reasoning_content = m.get("reasoning_content")
@@ -511,7 +511,7 @@ def _strip_orphaned_tool_blocks(result: list[dict[str, Any]]) -> None:
         kept = [b for b in m["content"] if not (_block_type(b) == "tool_use" and b.get("id") in orphaned)]
         # A signed thinking block on this turn was signed against the ORIGINAL content and is now
         # dead (400 "thinking blocks in the latest assistant message cannot be modified"). Flag so
-        # _manage_thinking_signatures demotes it.
+        # _manage_thinking_signatures drops its thinking.
         if len(kept) != len(m["content"]) and _has_block_type(m["content"], _THINKING_TYPES):
             m["_thinking_signature_invalidated"] = True
         m["content"] = kept if kept else [_text_block("(tool call removed)")]

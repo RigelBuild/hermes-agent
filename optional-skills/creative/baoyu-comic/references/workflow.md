@@ -125,7 +125,7 @@ options:
   - "Biography/life story — Follow a person's journey through key life events"
   - "Concept explanation — Break down complex ideas visually"
   - "Historical event — Dramatize important historical moments"
-  - "Tutorial/how-to — Step-by-step educational guide"
+  - "Tutorial/how-to — Educational guide that goes one step at a time"
 ```
 
 ### Question 3: Target Audience

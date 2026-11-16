@@ -544,7 +544,7 @@ Git commits track what happened, but not the **exploration tree** — the decisi
 }
 ```
 
-**Why a journal, not just git?** Git tracks file changes. The journal tracks the reasoning: why you tried X, what you learned, and what that implies for the next experiment. When writing the paper, this tree is invaluable for the Methods section ("we observed X, which motivated Y") and for honest failure reporting.
+**Why a journal, not just git?** Git tracks file changes. The journal tracks the rationale: why you tried X, what you learned, and what that implies for the next experiment. When writing the paper, this tree is invaluable for the Methods section ("we observed X, which motivated Y") and for honest failure reporting.
 
 **Selecting the best path**: When the journal shows a branching tree (exp_001 → exp_002a, exp_002b, exp_003), identify the path that best supports the paper's claims. Document dead-end branches in the appendix as ablations or negative results.
 
@@ -1257,7 +1257,7 @@ If awarded an oral or spotlight presentation:
 **Slide design rules:**
 - One idea per slide
 - Minimize text — speak the details, don't project them
-- Animate key figures to build understanding step-by-step
+- Animate key figures to build understanding one step at a time
 - Include a "takeaway" slide at the end (single sentence contribution)
 - Prepare backup slides for anticipated questions
 

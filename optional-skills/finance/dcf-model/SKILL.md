@@ -37,7 +37,7 @@ These constraints apply throughout all DCF model building. Review before startin
 - The only hardcoded numbers permitted are: (1) raw historical inputs, (2) assumption drivers (growth rates, WACC inputs, terminal g), (3) current market data (share price, debt balance)
 - If you catch yourself computing something in Python and writing the result — STOP. The model must flex when the user changes an assumption.
 
-**Verify Step-by-Step With the User (DO NOT build end-to-end):**
+**Verify in Stages With the User (DO NOT build end-to-end):**
 - After data retrieval → show the user the raw inputs block (revenue, margins, shares, net debt) and confirm before projecting
 - After revenue projections → show the projected top line and growth rates, confirm before building margin build
 - After FCF build → show the full FCF schedule, confirm logic before computing WACC
@@ -1137,7 +1137,7 @@ This approach centralizes scenario logic, making the model easier to audit and m
 5. **Build in checks**: Sum checks and balance checks where applicable
 
 ### Documentation
-1. **Document all assumptions**: Explain reasoning behind key inputs
+1. **Document all assumptions**: Explain the rationale behind key inputs
 2. **Cite data sources**: Note where each data point came from
 3. **Explain methodology**: Describe any non-standard approaches
 4. **Flag uncertainties**: Highlight areas with limited visibility

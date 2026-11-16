@@ -19,7 +19,7 @@ A preset expands to a type + style + optional palette combination. Users can ove
 |----------|------|-------|---------|----------|
 | `knowledge-base` | `infographic` | `vector-illustration` | — | Concept explainers, tutorials, how-to |
 | `saas-guide` | `infographic` | `notion` | — | Product guides, SaaS docs, tool walkthroughs |
-| `tutorial` | `flowchart` | `vector-illustration` | — | Step-by-step tutorials, setup guides |
+| `tutorial` | `flowchart` | `vector-illustration` | — | Tutorials with ordered steps, setup guides |
 | `process-flow` | `flowchart` | `notion` | — | Workflow documentation, onboarding flows |
 | `warm-knowledge` | `infographic` | `vector-illustration` | `warm` | Product showcases, team intros, feature cards, brand content |
 | `edu-visual` | `infographic` | `vector-illustration` | `macaron` | Knowledge summaries, concept explainers, educational articles |

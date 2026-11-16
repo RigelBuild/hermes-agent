@@ -548,7 +548,7 @@ Bradley-Terry chat templates expect single-turn conversations in the following f
 
 Check out our PRM blog.
 
-Process reward models are trained using data which contains preference annotations for each step in a series of interactions. Typically, PRMs are trained to provide reward signals over each step of a reasoning trace and are used for downstream reinforcement learning.
+Process reward models are trained using data which contains preference annotations for each step in a series of interactions. Typically, PRMs are trained to provide reward signals over each step of a multi-step trace and are used for downstream reinforcement learning.
 
 Please see stepwise_supervised for more details on the dataset format.
 

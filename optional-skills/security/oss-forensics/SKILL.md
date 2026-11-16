@@ -97,7 +97,7 @@ Read these before every investigation step. Violating them invalidates the repor
   - Provided Indicators of Compromise: commit SHAs, file paths, package names, IP addresses, domains, API keys/tokens, malicious URLs
   - Any linked vendor security reports or blog posts
 
-**Tools**: Reasoning only, or `execute_code` for regex extraction from large text blocks.
+**Tools**: Analysis only, or `execute_code` for regex extraction from large text blocks.
 
 **Output**: Populate `iocs.md` with extracted IOCs. Each IOC must have:
 - Type (from: COMMIT_SHA, FILE_PATH, API_KEY, SECRET, IP_ADDRESS, DOMAIN, PACKAGE_NAME, ACTOR_USERNAME, MALICIOUS_URL, OTHER)

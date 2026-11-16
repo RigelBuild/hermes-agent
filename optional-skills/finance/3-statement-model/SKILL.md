@@ -30,7 +30,7 @@ Complete and populate integrated financial model templates with proper linkages 
 - If you find yourself computing a value in Python and writing the result to a cell — STOP. Write the formula instead.
 - Why: the model must flex when scenarios toggle or assumptions change. Hardcodes break every downstream integrity check silently.
 
-**Verify step-by-step with the user:**
+**Verify one step at a time with the user:**
 1. **After mapping the template** → show the user which tabs/sections you've identified and confirm before touching any cells
 2. **After populating historicals** → show the user the historical block and confirm values/periods match source data
 3. **After building IS projections** → run the subtotal checks, show the user the projected IS, confirm before moving to BS

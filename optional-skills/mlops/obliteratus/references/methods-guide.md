@@ -67,8 +67,8 @@ Before projecting, OBLITERATUS extracts refusal directions using one of three me
 ### surgical
 - **Speed:** Very slow (~1-2 hrs for 8B model)
 - **Risk:** Low (very precise)
-- **Use case:** Reasoning models (R1 distills, QwQ, etc.) where chain-of-thought must be preserved.
-- **How it works:** Uses SAE (Sparse Autoencoder) features + individual neuron masking + attention head surgery + per-expert decomposition (for MoE). CoT-aware — identifies and protects reasoning-critical directions before projecting.
+- **Use case:** Thinking-style models (R1 distills, QwQ, etc.) where intermediate-step traces must be preserved.
+- **How it works:** Uses SAE (Sparse Autoencoder) features + individual neuron masking + attention head surgery + per-expert decomposition (for MoE). CoT-aware — identifies and protects directions critical to multi-step answers before projecting.
 
 ### optimized
 - **Speed:** Very slow (hours — runs many trials)
@@ -101,7 +101,7 @@ Is it an MoE model (Mixtral, DeepSeek-MoE)?
   → YES: nuclear
   → NO: continue
 
-Is it a reasoning model (R1, QwQ, CoT-focused)?
+Is it a thinking-style model (R1, QwQ, CoT-focused)?
   → YES: surgical
   → NO: continue
 
@@ -137,5 +137,5 @@ Did advanced leave > 10% refusals?
 | Perplexity spike > 20% | Over-aggressive removal | Reduce `--n-directions`, increase `--regularization` |
 | Repetitive output | Weight matrix damage | Use `basic` with fewer directions, check norm preservation |
 | MoE model still refuses | Non-expert-aware method | Switch to `nuclear` |
-| Reasoning degraded | CoT directions damaged | Use `surgical` method |
+| Multi-step answers degraded | CoT directions damaged | Use `surgical` method |
 | OOM during extraction | Insufficient VRAM | Add `--quantization 4bit` and/or `--large-model` |

@@ -109,7 +109,7 @@ Recon changes what you write in the commit-sheet, especially field 6:
 - The stacks and mechanics you saw five times ARE the first-order reflex (6a) for this category. If
   your peak is the fifth pinned-WebGL-hero of the day, you found the mode, not an idea.
 - The type and palette columns give you a real, dated map of what the category currently looks like
-  — much sharper than reasoning about it from memory.
+  — much sharper than working it out from memory.
 - Any mechanic you take goes into the motion budget (field 5) as one of the ≤3 families, not on top
   of it.
 

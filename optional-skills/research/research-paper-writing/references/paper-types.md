@@ -229,9 +229,9 @@ The taxonomy is the core intellectual contribution of a survey. It should:
 - **Be visualized**: A figure showing the taxonomy is almost always helpful
 
 **Example taxonomy axes for "LLM Reasoning" survey:**
-- By technique: chain-of-thought, tree-of-thought, self-consistency, tool use
+- By technique: worked-steps prompting, tree search over thoughts, self-consistency, tool use
 - By training requirement: prompting-only, fine-tuned, RLHF
-- By reasoning type: mathematical, commonsense, logical, causal
+- By inference type: mathematical, commonsense, logical, causal
 
 ### Writing Standards
 

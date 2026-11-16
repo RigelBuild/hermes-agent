@@ -6,7 +6,7 @@ In this register the page is a film: the viewport is the frame, scroll is the ti
 
 ## Phase 0a — Intake (one message)
 
-Ask once, compactly: product & what it does · audience · the ONE feeling a visitor should leave with (awe / calm / hunger / trust / momentum...) · brand constraints (colors, fonts, logo — if any) · assets that already exist (photos, video, 3D, none) · where it will be hosted (static vs framework). If working autonomously, derive answers from available materials and write every derived answer into the STORYBOARD header's `Assumptions made` field — not into your own reasoning, where the next session cannot see it.
+Ask once, compactly: product & what it does · audience · the ONE feeling a visitor should leave with (awe / calm / hunger / trust / momentum...) · brand constraints (colors, fonts, logo — if any) · assets that already exist (photos, video, 3D, none) · where it will be hosted (static vs framework). If working autonomously, derive answers from available materials and write every derived answer into the STORYBOARD header's `Assumptions made` field — not into your own working notes, where the next session cannot see it.
 
 ## Phase 0a.5 — Recon (steal like a director)
 

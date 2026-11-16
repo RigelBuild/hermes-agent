@@ -54,7 +54,7 @@ Do NOT use for simple questions with one obvious answer, debugging sessions, or 
 
 - Response has exactly one Problem sentence.
 - Response has exactly three Options (A, B, C) with pros and cons for each.
-- Response has a single Recommendation that picks one option with reasoning.
+- Response has a single Recommendation that picks one option with its rationale.
 - Definition of Done and Implementation Plan align with the recommended option.
 - If the user selects a different option, Recommendation, DoD, and Implementation Plan update accordingly.
 
