@@ -694,8 +694,8 @@ _REASONING_CARRIER_ROUTES: tuple = (
 
 # Model-gated rows, checked before the host/provider table. Each row is (carriers, model substrings
 # (lowered), hosts): it applies only when the host matches AND the model name contains a substring.
-# Anthropic refuses replayed reasoning text through the Rigel LiteLLM gateway, so only Claude models
-# on that host are stripped. The same host also serves OpenRouter and GPT lanes, which keep their carriers.
+# Anthropic refuses replayed reasoning text on this gateway: only ids containing `claude` (OpenRouter
+# Claude ids too) are stripped. Non-Claude OpenRouter and GPT lanes keep their carriers.
 _REASONING_CARRIER_MODEL_ROUTES: tuple = (
     (frozenset(), ("claude",), ("llm-gateway.internal.rigel.build",)),
 )
