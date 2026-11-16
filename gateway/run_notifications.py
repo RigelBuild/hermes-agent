@@ -67,11 +67,14 @@ _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 _SELF_CLEARING_STORAGE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease"})
 # Watch callers drop source/principal refusals; durable callers spend a bounded attempt.
 _FINAL_WAKE_REFUSALS = frozenset({"admission_conflict", "invalid_params", "permission_denied", "profile_mismatch"})
+# Process-watcher retries of a refused completion: ~5 min at the default 5 s check interval.
 _MAX_COMPLETION_INJECTION_ATTEMPTS = 8
 _COMPLETION_INJECTION_RETRY_MAX_DELAY = 60.0
-_MAX_RECOVERY_NOTICE_ATTEMPTS = _MAX_COMPLETION_INJECTION_ATTEMPTS
+# Same-boot retry budget is about two minutes; exhausted notices stay checkpointed for next boot.
 _RECOVERY_NOTICE_RETRY_BASE_DELAY = 1.0
 _RECOVERY_NOTICE_RETRY_MAX_DELAY = 60.0
+_MAX_RECOVERY_NOTICE_ATTEMPTS = _MAX_COMPLETION_INJECTION_ATTEMPTS
+# Drain retries of a refused watch event follow the same bounded-backoff policy, keyed to the
 # 2 s drain cadence instead of the watcher's check interval (#140899).
 _WATCH_INJECTION_RETRY_BASE_DELAY = 4.0
 

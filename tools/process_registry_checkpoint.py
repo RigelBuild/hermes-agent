@@ -12,6 +12,22 @@ logger = logging.getLogger("tools.process_registry")
 
 
 class ProcessCheckpointMixin:
+    def _pending_attempt_owner_is_live(self, pid, expected_start):
+        from gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
+
+        if not pid or not _pid_exists(pid):
+            return False
+        if expected_start is None:
+            # Without a baseline, a live PID is the original owner until it exits.
+            return True
+        current_start = get_process_start_time(pid)
+        if current_start is None:
+            return True
+        try:
+            return start_time_fingerprints_match(expected_start, current_start)
+        except (TypeError, ValueError):
+            return False
+
     def _detached_host_fate(self, pid: Optional[int], expected_start: Optional[int]) -> str:
         """Subclass supplies the live PID decision. See ProcessRegistry."""
         raise NotImplementedError
@@ -166,8 +182,10 @@ class ProcessCheckpointMixin:
                 if pid and self._detached_host_fate(pid, entry.get('host_start_time')) == 'running':
                     continue
                 if status == 'pending' and entry.get('attempt_owner_pid'):
-                    if self._detached_host_fate(
-                            entry['attempt_owner_pid'], entry.get('attempt_owner_started_at')) == 'running':
+                    # Without a baseline, retain the old wait-for-PID-death behavior.
+                    owner_pid = entry['attempt_owner_pid']
+                    if self._pending_attempt_owner_is_live(
+                            owner_pid, entry.get('attempt_owner_started_at')):
                         continue
                 if status != 'unknown':
                     entry['attempt_status'] = 'unknown'

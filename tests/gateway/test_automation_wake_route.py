@@ -34,30 +34,50 @@ async def test_wake_admits_as_the_committed_turn_when_the_origin_drifted(tmp_pat
 
 @pytest.mark.asyncio
 async def test_recovery_notice_routes_to_its_persisted_session(tmp_path, monkeypatch):
+    import json
+    from unittest.mock import AsyncMock
+
+    from tools import process_registry as process_registry_module
+    from tools.process_registry import ProcessRegistry
+    from gateway.run_notifications import GatewayNotificationsMixin
+
     runner, authority, _adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    path = tmp_path / 'processes.json'
+    monkeypatch.setattr(process_registry_module, 'CHECKPOINT_PATH', path)
+    registry = ProcessRegistry()
+    monkeypatch.setattr(process_registry_module, 'process_registry', registry)
+    route, sid = metadata['gateway_session_key'], metadata['gateway_session_id']
+    path.write_text(json.dumps([{
+        'session_id': 'proc_recovered', 'attempt_token': 'attempt', 'attempt_status': 'pending',
+        'session_key': route, 'parent_session_id': sid, 'watcher_platform': 'discord',
+        'watcher_chat_id': '42', 'watcher_user_id': '42', 'started_at': 1.0,
+    }]))
+    registry.recover_from_checkpoint()
+    watcher = registry.pending_watchers[0]
+    assert json.loads(path.read_text())[0]['attempt_status'] == 'unknown'
+
+    async def no_sleep(_delay):
+        pass
+
+    monkeypatch.setattr(asyncio, 'sleep', no_sleep)
+    refuse = AsyncMock(return_value=False)
+    runner._enqueue_process_completion_notification = refuse
     try:
-        route, sid = metadata['gateway_session_key'], metadata['gateway_session_id']
-        event = {
-            'type': 'completion', 'session_id': 'proc_recovered', 'session_key': route,
-            'parent_session_id': sid, 'attempt_token': 'attempt',
-            'recovery_notice': 'outcome UNKNOWN, verify before retrying',
-            'platform': 'discord', 'chat_type': 'dm', 'chat_id': '42', 'user_id': '42',
-            'exit_code': None, 'completion_reason': 'unknown',
-            'output': 'outcome UNKNOWN, verify before retrying', 'started_at': 1.0,
-        }
-        assert await runner._inject_watch_notification(
-            'Background job proc_recovered: outcome UNKNOWN, verify before retrying', event,
-        ) is True
-        rows = list_session_admissions(authority.db, session_id=authority.logical_owner(sid), pending_only=False)
-        assert len(rows) == 2
-        wake = rows[-1]['payload']['native_text_v1']
-        assert wake['source'] == {key: value for key, value in rows[0]['payload']['native_text_v1']['source'].items()
-                                  if key != 'message_id'}
-        assert rows[-1]['payload']['text'].startswith('Background job proc_recovered:')
+        await GatewayNotificationsMixin._watch_process(runner, watcher)
+        assert refuse.await_count == 8
+        assert json.loads(path.read_text())[0]['attempt_status'] == 'unknown'
+
+        accept = AsyncMock(return_value=True)
+        runner._enqueue_process_completion_notification = accept
+        await GatewayNotificationsMixin._watch_process(runner, watcher)
+        assert accept.await_count == 1
+        text, event = accept.await_args.args
+        assert text.startswith('Background job proc_recovered:')
+        assert event['session_key'] == route
         assert route == runner.session_store._generate_session_key(source)
+        assert json.loads(path.read_text()) == []
     finally:
         authority.db.close()
-
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('thread_id', [None, '9'])

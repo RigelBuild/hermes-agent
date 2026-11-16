@@ -4,6 +4,7 @@ import shlex
 import threading
 from types import SimpleNamespace
 
+import pytest
 from tools.process_resumable import resumable_chat_argv
 from tools.process_registry import ProcessRegistry
 
@@ -111,6 +112,34 @@ def test_live_foreign_owner_pending_attempt_is_not_classified_as_interrupted(mon
         if owner.poll() is None:
             owner.terminate()
             owner.wait(timeout=5)
+
+
+@pytest.mark.parametrize('start_delta,expected_status,expected_notices', [
+    (0, 'pending', 0), (1000, 'unknown', 1),
+])
+def test_pending_owner_start_time_distinguishes_live_pid_reuse(
+        monkeypatch, tmp_path, start_delta, expected_status, expected_notices):
+    from tools import process_registry as module
+    from gateway import status
+
+    path = tmp_path / 'processes.json'
+    monkeypatch.setattr(module, 'CHECKPOINT_PATH', path)
+    owner_pid = os.getpid()
+    owner_start = ProcessRegistry._safe_host_start_time(owner_pid)
+    assert owner_start is not None
+    actual_owner_start = owner_start - start_delta
+    monkeypatch.setattr(status, 'get_process_start_time', lambda pid: owner_start if pid == owner_pid else None)
+    monkeypatch.setattr(status, '_pid_exists', lambda pid: pid == owner_pid)
+    registry = ProcessRegistry()
+    path.write_text(json.dumps([{
+        'session_id': 'pending', 'attempt_token': 'token', 'attempt_status': 'pending',
+        'attempt_owner_pid': owner_pid, 'attempt_owner_started_at': actual_owner_start,
+    }]))
+
+    registry.recover_from_checkpoint()
+
+    entry = json.loads(path.read_text())[0]
+    assert entry['attempt_status'] == expected_status
 
 
 def test_spawn_records_pending_before_launch(monkeypatch, tmp_path):

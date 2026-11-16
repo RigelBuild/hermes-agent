@@ -1229,9 +1229,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 session.request_id = request_id
                 session.attempt_token = attempt["attempt_token"]
                 session.attempt_status = "pending"
-                session.attempt_owner_pid = attempt.get("attempt_owner_pid") or os.getpid()
-                session.attempt_owner_started_at = (
-                    attempt.get("attempt_owner_started_at") or self._safe_host_start_time(os.getpid()))
+                session.attempt_owner_pid = attempt["attempt_owner_pid"]
+                session.attempt_owner_started_at = attempt["attempt_owner_started_at"]
                 safe_command = _append_dropped_path_entries(shlex.join(argv), self._spawn_env(env_vars).get("PATH", "") if restore_login_path else "")
         try:
             return self._spawn_local_admitted(session, safe_command, env_vars, use_pty, persist_on_release)
