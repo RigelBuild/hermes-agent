@@ -915,6 +915,9 @@ gateway:
     no_resume: "لا يوجد نبض لاستئنافه."
     resumed: "▶ استُؤنف النبض (كل {interval}): {prompt}"
     cleared: "✓ تم مسح النبض."
+    usage: 'الاستخدام: /heartbeat every <interval> <prompt> | /heartbeat status | pause | resume | clear; /heartbeat at "<cron>" [tz <IANA>] <prompt>'
+    set_scheduled: '♥ Heartbeat set (on schedule {schedule}): {prompt}'
+    resumed_scheduled: '▶ Heartbeat resumed (on schedule {schedule}): {prompt}'
     interval_too_small: "الفاصل الزمني صغير جدًا — الحد الأدنى {min_seconds} ثانية."
     prompt_required: "الاستخدام: /heartbeat every <interval> <prompt> — المطالبة مطلوبة."
     invalid_prefix: "نبض غير صالح"
@@ -3086,6 +3089,9 @@ cli:
       resumed: "▶ تم استئناف النبض (كل {interval}): {prompt}"
       cleared: "✓ تم مسح النبض."
       usage: "الاستخدام: /heartbeat every <interval> <prompt>   (مثال: /heartbeat every 10m تحقّق من CI)"
+      usage_also: 'أيضًا: /heartbeat status | pause | resume | clear; /heartbeat at "<cron>" [tz <IANA>] <prompt>'
+      set_scheduled: '♥ Heartbeat set (on schedule {schedule}): {prompt}'
+      resumed_scheduled: '▶ Heartbeat resumed (on schedule {schedule}): {prompt}'
       interval_too_small: "الفاصل الزمني قصير جدًا — الحد الأدنى {min_seconds} ثانية."
       prompt_required: "الاستخدام: /heartbeat every <interval> <prompt> — المطالبة مطلوبة."
       invalid_label: "نبض غير صالح"

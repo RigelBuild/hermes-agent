@@ -63,7 +63,7 @@ async def restore_heartbeat_watches(runner) -> None:
                                 state = HeartbeatState.from_json(raw)
                                 before = state.last_error
                                 if state.schedule and state.next_fire_or_none() is None and state.last_error != before:
-                                    db.set_meta(meta_key, state.to_json())
+                                    HeartbeatManager('', route_key=meta_key[len('heartbeat:route:'):], db=db).record_error(state.last_error)
                             except (ValueError, TypeError, AttributeError):
                                 pass
                             continue
@@ -75,8 +75,11 @@ async def restore_heartbeat_watches(runner) -> None:
                             state = HeartbeatState.from_json(raw)
                             if not state.prompt.strip():
                                 continue
+                            before = state.last_error
                             if not state.valid_cadence():
-                                db.set_meta(meta_key, state.to_json())
+                                if state.last_error != before:
+                                    HeartbeatManager(session_id, db=db, routing_db=store._routing_db,
+                                                     routing_scope=store._routing_scope()).record_error(state.last_error)
                                 continue
                             route, archived = _legacy_route(session_id, db, store._routing_db, store._routing_scope())
                             if route and not archived:

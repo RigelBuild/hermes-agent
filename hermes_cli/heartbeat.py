@@ -141,16 +141,23 @@ class HeartbeatState:
         return self.next_fire_or_none() is not None
 
     def cadence_label(self) -> str:
-        return f'on schedule "{self.schedule}" ({self.timezone or "profile timezone"})' if self.schedule else f'every {format_interval(self.interval_seconds)}'
+        return f'"{self.schedule}" ({self.timezone or "profile timezone"})' if self.schedule else format_interval(self.interval_seconds)
+
+    def cadence_description(self) -> str:
+        return f"on schedule {self.cadence_label()}" if self.schedule else f"every {self.cadence_label()}"
 
     def is_due(self, now: Optional[float] = None) -> bool:
         if self.status != "active" or not self.prompt:
             return False
-        next_fire = self.next_fire_or_none()
-        return next_fire is not None and (time.time() if now is None else now) >= next_fire
+        try:
+            if bool(self.schedule) == bool(self.interval_seconds) or (not self.schedule and self.interval_seconds < MIN_INTERVAL_SECONDS):
+                return False
+            return (time.time() if now is None else now) >= self.next_fire()
+        except Exception:
+            return False
 
     def render_prompt(self) -> str:
-        return HEARTBEAT_PROMPT_TEMPLATE.format(interval=self.cadence_label(), prompt=self.prompt)
+        return HEARTBEAT_PROMPT_TEMPLATE.format(interval=self.cadence_description(), prompt=self.prompt)
 
 
 def _get_session_db() -> Optional[Any]:
@@ -165,7 +172,7 @@ def _get_session_db() -> Optional[Any]:
 
 _META_PREFIX = "heartbeat:"
 _ROUTE_PREFIX = _META_PREFIX + "route:"
-_CLAIM_LOCK = threading.Lock()  # every driver of a session's heartbeat runs in its owning gateway process
+_CLAIM_LOCK = threading.RLock()  # every driver of a session's heartbeat runs in its owning gateway process
 
 
 _ROUTING_SCOPE_CACHE: dict[str, str] = {}
@@ -443,7 +450,7 @@ class HeartbeatManager:
         s = self._state
         if s is None:
             return 'No heartbeat. Use /heartbeat every <interval> <prompt> or /heartbeat at "<cron>" [tz <IANA>] <prompt>.'
-        every = s.cadence_label()
+        every = s.cadence_description()
         mode = "steer (gateway only)" if s.delivery_mode == "steer" else s.delivery_mode
         fired = f", fired {s.fire_count}×" if s.fire_count else ""
         if s.status == "active":
@@ -518,8 +525,9 @@ class HeartbeatManager:
                 return None
             previous_error = s.last_error
             if not s.is_due(now):
+                s.next_fire_or_none()
                 if s.last_error != previous_error:
-                    self._save(s)
+                    self.record_error(s.last_error)
                 return None
             # Compare-and-set on the stored row: the gateway poller and a viewer's due_prompt RPC each hold
             # their own manager over it, and only one may take the tick. A row cleared or paused since is lost too.

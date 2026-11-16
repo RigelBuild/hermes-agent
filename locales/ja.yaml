@@ -915,6 +915,9 @@ gateway:
     no_resume: "再開するハートビートがありません。"
     resumed: "▶ ハートビートを再開しました ({interval} ごと): {prompt}"
     cleared: "✓ ハートビートをクリアしました。"
+    usage: '使い方: /heartbeat every <間隔> <プロンプト> | /heartbeat status | pause | resume | clear; /heartbeat at "<cron>" [tz <IANA>] <prompt>'
+    set_scheduled: '♥ Heartbeat set (on schedule {schedule}): {prompt}'
+    resumed_scheduled: '▶ Heartbeat resumed (on schedule {schedule}): {prompt}'
     interval_too_small: "間隔が短すぎます — 最小は {min_seconds} 秒です。"
     prompt_required: "使い方: /heartbeat every <間隔> <プロンプト> — プロンプトは必須です。"
     invalid_prefix: "無効なハートビート"
@@ -3086,6 +3089,9 @@ cli:
       resumed: "▶ ハートビートを再開しました ({interval} ごと): {prompt}"
       cleared: "✓ ハートビートを解除しました。"
       usage: "使い方: /heartbeat every <interval> <prompt>   (例: /heartbeat every 10m Check CI)"
+      usage_also: 'その他: /heartbeat status | pause | resume | clear; /heartbeat at "<cron>" [tz <IANA>] <prompt>'
+      set_scheduled: '♥ Heartbeat set (on schedule {schedule}): {prompt}'
+      resumed_scheduled: '▶ Heartbeat resumed (on schedule {schedule}): {prompt}'
       interval_too_small: "間隔が短すぎます — 最小は {min_seconds} 秒です。"
       prompt_required: "使い方: /heartbeat every <interval> <prompt> — プロンプトは必須です。"
       invalid_label: "無効なハートビート"

@@ -388,7 +388,7 @@ def _execute_heartbeat_action(session_key: str, action: str) -> dict:
     elif action == "heartbeat.resume":
         state = manager.resume()
         output = (
-            f"▶ Heartbeat resumed ({state.cadence_label()}): {state.prompt}"
+            f"▶ Heartbeat resumed ({state.cadence_description()}): {state.prompt}"
             if state else "No heartbeat to resume."
         )
     elif action == "heartbeat.clear":

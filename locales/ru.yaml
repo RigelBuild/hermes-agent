@@ -915,6 +915,9 @@ gateway:
     no_resume: "Нет heartbeat для возобновления."
     resumed: "▶ Heartbeat возобновлён (каждые {interval}): {prompt}"
     cleared: "✓ Heartbeat удалён."
+    usage: 'Использование: /heartbeat every <интервал> <промпт> | /heartbeat status | pause | resume | clear; /heartbeat at "<cron>" [tz <IANA>] <prompt>'
+    set_scheduled: '♥ Heartbeat set (on schedule {schedule}): {prompt}'
+    resumed_scheduled: '▶ Heartbeat resumed (on schedule {schedule}): {prompt}'
     interval_too_small: "Интервал слишком мал — минимум {min_seconds} с."
     prompt_required: "Использование: /heartbeat every <интервал> <промпт> — промпт обязателен."
     invalid_prefix: "Недопустимый heartbeat"
@@ -3086,6 +3089,9 @@ cli:
       resumed: "▶ Heartbeat возобновлён (каждые {interval}): {prompt}"
       cleared: "✓ Heartbeat очищен."
       usage: "Использование: /heartbeat every <интервал> <промпт>   (например, /heartbeat every 10m Проверь CI)"
+      usage_also: 'Также: /heartbeat status | pause | resume | clear; /heartbeat at "<cron>" [tz <IANA>] <prompt>'
+      set_scheduled: '♥ Heartbeat set (on schedule {schedule}): {prompt}'
+      resumed_scheduled: '▶ Heartbeat resumed (on schedule {schedule}): {prompt}'
       interval_too_small: "Интервал слишком мал — минимум {min_seconds}с."
       prompt_required: "Использование: /heartbeat every <интервал> <промпт> — промпт обязателен."
       invalid_label: "Недопустимый heartbeat"

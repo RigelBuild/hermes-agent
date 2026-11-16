@@ -915,6 +915,9 @@ gateway:
     no_resume: "沒有可恢復的心跳。"
     resumed: "▶ 心跳已恢復（每 {interval}）：{prompt}"
     cleared: "✓ 心跳已清除。"
+    usage: '用法：/heartbeat every <interval> <prompt> | /heartbeat status | pause | resume | clear; /heartbeat at "<cron>" [tz <IANA>] <prompt>'
+    set_scheduled: '♥ Heartbeat set (on schedule {schedule}): {prompt}'
+    resumed_scheduled: '▶ Heartbeat resumed (on schedule {schedule}): {prompt}'
     interval_too_small: "間隔太短 — 最小為 {min_seconds} 秒。"
     prompt_required: "用法：/heartbeat every <interval> <prompt> — 必須提供提示。"
     invalid_prefix: "無效的心跳"
@@ -3086,6 +3089,9 @@ cli:
       resumed: "▶ 心跳已恢復（每 {interval}）：{prompt}"
       cleared: "✓ 心跳已清除。"
       usage: "用法：/heartbeat every <interval> <prompt>   （例如 /heartbeat every 10m Check CI）"
+      usage_also: '另有：/heartbeat status | pause | resume | clear; /heartbeat at "<cron>" [tz <IANA>] <prompt>'
+      set_scheduled: '♥ Heartbeat set (on schedule {schedule}): {prompt}'
+      resumed_scheduled: '▶ Heartbeat resumed (on schedule {schedule}): {prompt}'
       interval_too_small: "間隔太短 — 最小為 {min_seconds}s。"
       prompt_required: "用法：/heartbeat every <interval> <prompt> — 必須提供提示。"
       invalid_label: "無效的心跳"

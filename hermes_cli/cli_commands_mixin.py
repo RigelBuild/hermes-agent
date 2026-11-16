@@ -1632,7 +1632,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                 _cp(_dim_line(_t("heartbeat.none_to_resume")))
             else:
                 self._start_heartbeat_watchdog()
-                _cp(f"  {_t('heartbeat.resumed', interval=state.cadence_label(), prompt=state.prompt)}")
+                _cp(f"  {_t('heartbeat.resumed_scheduled' if state.schedule else 'heartbeat.resumed', interval=state.cadence_label(), schedule=state.cadence_label(), prompt=state.prompt)}")
         elif lower in {"clear", "stop", "off"}:
             cleared = _attempt(_t("heartbeat.invalid_label"), RuntimeError, mgr.clear)
             if cleared is _FAILED:
@@ -1657,7 +1657,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         if state is _FAILED or state is None:
             return
         self._start_heartbeat_watchdog()
-        _cp(f"  {_t('heartbeat.set', interval=state.cadence_label(), prompt=state.prompt)}",
+        _cp(f"  {_t('heartbeat.set_scheduled' if state.schedule else 'heartbeat.set', interval=state.cadence_label(), schedule=state.cadence_label(), prompt=state.prompt)}",
             _dim_line(_t('heartbeat.set_note')))
 
     def _handle_refine_command(self, cmd: str) -> None:

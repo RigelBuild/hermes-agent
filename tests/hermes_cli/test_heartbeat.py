@@ -148,6 +148,41 @@ def test_old_gateway_rejects_schedule_with_clear_error():
     with pytest.raises(RuntimeError, match="gateway does not support scheduled heartbeats; update the gateway"):
         manager.set("check", schedule="30 7 * * *")
 
+def test_gateway_interval_uses_legacy_kwargs():
+    from hermes_cli.gateway_automation import GatewayHeartbeatManager
+
+    class Connection:
+        def call(self, method, **params):
+            assert params['kwargs'] == {'delivery_mode': 'steer'}
+            return {'state': None, 'value': None}
+
+    GatewayHeartbeatManager('old', Connection(), load=False).set('check', 60)
+
+
+def test_gateway_transport_error_suggests_upgrade_for_schedule():
+    from hermes_cli.gateway_automation import GatewayHeartbeatManager
+    from hermes_cli.gateway_client import GatewayClientError
+
+    class Connection:
+        def call(self, method, **params):
+            raise GatewayClientError('old gateway')
+
+    with pytest.raises(RuntimeError, match='update the gateway'):
+        GatewayHeartbeatManager('old', Connection(), load=False).set('check', schedule='30 7 * * *')
+
+def test_all_locales_receive_neutral_interval():
+    from agent.i18n import SUPPORTED_LANGUAGES, t
+
+    state = HeartbeatState(prompt='check', interval_seconds=600)
+    assert state.cadence_label() == '10m'
+    for lang in SUPPORTED_LANGUAGES:
+        for key in ('gateway.heartbeat.set', 'gateway.heartbeat.resumed',
+                    'cli.commands.heartbeat.set', 'cli.commands.heartbeat.resumed'):
+            rendered = t(key, lang=lang, interval=state.cadence_label(), prompt='check')
+            assert 'every every' not in rendered
+            if lang != 'en':
+                assert 'every 10m' not in rendered
+
 @pytest.mark.parametrize(
     ("start", "expected"),
     [

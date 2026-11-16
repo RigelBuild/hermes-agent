@@ -1098,6 +1098,9 @@ gateway:
     no_resume: "Aucun heartbeat à reprendre."
     resumed: "▶ Heartbeat repris (toutes les {interval}) : {prompt}"
     cleared: "✓ Heartbeat supprimé."
+    usage: 'Usage : /heartbeat every <interval> <prompt> | /heartbeat status | pause | resume | clear; /heartbeat at "<cron>" [tz <IANA>] <prompt>'
+    set_scheduled: '♥ Heartbeat set (on schedule {schedule}): {prompt}'
+    resumed_scheduled: '▶ Heartbeat resumed (on schedule {schedule}): {prompt}'
     interval_too_small: "Intervalle trop court — le minimum est de {min_seconds} s."
     prompt_required: "Usage : /heartbeat every <interval> <prompt> — le prompt est obligatoire."
     invalid_prefix: "Heartbeat invalide"
@@ -3389,6 +3392,9 @@ cli:
       resumed: "▶ Heartbeat repris (toutes les {interval}) : {prompt}"
       cleared: "✓ Heartbeat supprimé."
       usage: "Usage : /heartbeat every <interval> <prompt>   (ex. /heartbeat every 10m Vérifie la CI)"
+      usage_also: 'Aussi : /heartbeat status | pause | resume | clear; /heartbeat at "<cron>" [tz <IANA>] <prompt>'
+      set_scheduled: '♥ Heartbeat set (on schedule {schedule}): {prompt}'
+      resumed_scheduled: '▶ Heartbeat resumed (on schedule {schedule}): {prompt}'
       interval_too_small: "Intervalle trop court — le minimum est de {min_seconds}s."
       prompt_required: "Usage : /heartbeat every <interval> <prompt> — le prompt est obligatoire."
       invalid_label: "Heartbeat invalide"

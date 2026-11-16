@@ -915,6 +915,9 @@ gateway:
     no_resume: "Níl aon bhuille croí le hatosú."
     resumed: "▶ Buille croí atosaithe (gach {interval}): {prompt}"
     cleared: "✓ Buille croí glanta."
+    usage: 'Úsáid: /heartbeat every <interval> <prompt> | /heartbeat status | pause | resume | clear; /heartbeat at "<cron>" [tz <IANA>] <prompt>'
+    set_scheduled: '♥ Heartbeat set (on schedule {schedule}): {prompt}'
+    resumed_scheduled: '▶ Heartbeat resumed (on schedule {schedule}): {prompt}'
     interval_too_small: "Eatramh róbheag — is é {min_seconds}s an t-íosmhéid."
     prompt_required: "Úsáid: /heartbeat every <interval> <leid> — tá an leid riachtanach."
     invalid_prefix: "Buille croí neamhbhailí"
@@ -3086,6 +3089,9 @@ cli:
       resumed: "▶ Buille croí atosaithe (gach {interval}): {prompt}"
       cleared: "✓ Buille croí glanta."
       usage: "Úsáid: /heartbeat every <interval> <prompt>   (m.sh. /heartbeat every 10m Seiceáil CI)"
+      usage_also: 'Chomh maith: /heartbeat status | pause | resume | clear; /heartbeat at "<cron>" [tz <IANA>] <prompt>'
+      set_scheduled: '♥ Heartbeat set (on schedule {schedule}): {prompt}'
+      resumed_scheduled: '▶ Heartbeat resumed (on schedule {schedule}): {prompt}'
       interval_too_small: "Eatramh róbheag — is é {min_seconds}s an t-íosmhéid."
       prompt_required: "Úsáid: /heartbeat every <interval> <prompt> — tá an leid riachtanach."
       invalid_label: "Buille croí neamhbhailí"
