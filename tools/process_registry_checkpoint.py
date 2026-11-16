@@ -54,7 +54,9 @@ class ProcessCheckpointMixin:
             # its own table; a worker's output-log handoff is its only path to the next one, so a
             # writer keeps the handoffs it does not track (read-merge-write under one file lock).
             with _FileLock(path.with_name(path.name + ".lock")):
-                entries.extend(self._foreign_handoffs(path, known))
+                emitted = {entry.get('session_id') for entry in entries}
+                entries.extend(entry for entry in self._foreign_handoffs(path, known)
+                               if entry.get('session_id') not in emitted)
                 atomic_json_write(path, entries)
         except Exception as e:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
@@ -109,6 +111,17 @@ class ProcessCheckpointMixin:
                 return
             entries = [entry for entry in entries if not (isinstance(entry, dict)
                        and entry.get("session_id") == session_id and entry.get("attempt_token") == attempt_token)]
+            atomic_json_write(path, entries)
+
+    def _mark_adopted_attempt_running(self, path, session_id, token):
+        from hermes_cli.active_sessions import _FileLock
+        from utils import atomic_json_write
+        with _FileLock(path.with_name(path.name + '.lock')):
+            entries = json.loads(path.read_text(encoding='utf-8-sig'))
+            for entry in entries:
+                if (isinstance(entry, dict) and entry.get('session_id') == session_id
+                        and entry.get('attempt_token') == token and entry.get('attempt_status') == 'unknown'):
+                    entry['attempt_status'] = 'running'
             atomic_json_write(path, entries)
 
     def _recover_interrupted_attempts(self, only_session_id=None, checkpoint_path=None):
@@ -250,6 +263,9 @@ class ProcessCheckpointMixin:
             # (and recorded exit) outlives its spawner, so tail it from the start.
             fields["output_log"] = log
             session = ProcessSession(id=entry["session_id"], detached=True, **fields)
+            if session.attempt_status == 'unknown':
+                self._mark_adopted_attempt_running(checkpoint_path, session.id, session.attempt_token)
+                session.attempt_status = 'running'
             session.recovered_checkpoint_path = str(checkpoint_path)
             if session.output_log:
                 self._track_started(session, self._log_reader_loop, f"proc-log-reader-{session.id}")

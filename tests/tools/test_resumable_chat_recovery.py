@@ -8,6 +8,27 @@ import pytest
 from tools.process_registry import ProcessRegistry
 
 
+def test_adopted_unknown_stays_single_running_entry(monkeypatch, tmp_path):
+    from tools import process_registry as module
+    path = tmp_path / 'processes.json'
+    monkeypatch.setattr(module, 'CHECKPOINT_PATH', path)
+    child = subprocess.Popen(['sleep', '30'])
+    try:
+        registry = ProcessRegistry()
+        path.write_text(json.dumps([{'session_id': 'proc_live', 'attempt_token': 'token',
+            'attempt_status': 'unknown', 'pid': child.pid,
+            'host_start_time': registry._safe_host_start_time(child.pid)}]))
+        assert registry.recover_from_checkpoint() == 1
+        for _ in range(3):
+            registry._write_checkpoint()
+        entries = json.loads(path.read_text())
+        assert len(entries) == 1
+        assert entries[0]['attempt_status'] == 'running'
+    finally:
+        child.terminate()
+        child.wait()
+
+
 def test_live_child_is_adopted(monkeypatch, tmp_path):
     from tools import process_registry as module
     path = tmp_path / 'processes.json'
