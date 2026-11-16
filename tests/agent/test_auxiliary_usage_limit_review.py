@@ -162,6 +162,30 @@ def test_second_auto_call_skips_the_limited_main_model(monkeypatch):
     )
 
 
+def test_auto_task_with_explicit_model_sends_that_model():
+    """Task config ``provider: auto, model: X`` sends X, not the main model (the per-task override wins)."""
+    sent = []
+
+    def create(*, model, **_kwargs):
+        sent.append(model)
+        return _ok_response("OK")
+
+    def construct(*, api_key, base_url, **_kwargs):
+        client = _client(base_url, MagicMock(side_effect=create))
+        client.api_key = api_key
+        return client
+
+    runtime = {"provider": "custom", "model": "gpt-6-luna", "base_url": LITELLM_URL, "api_key": "sk-test"}
+
+    with patch("agent.auxiliary_client._create_openai_client", side_effect=construct), \
+         patch("agent.auxiliary_client._get_auxiliary_task_config",
+               return_value={"provider": "auto", "model": "cheap-model-x"}), \
+         patch("agent.auxiliary_client._transient_retry_count", return_value=0):
+        call_llm(task="compression", messages=[{"role": "user", "content": "hi"}], main_runtime=runtime)
+
+    assert sent == ["cheap-model-x"]
+
+
 # ── M3: parametrised over a custom primary and sync/async ─────────────────────────
 
 

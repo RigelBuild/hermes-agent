@@ -3366,7 +3366,7 @@ def _should_skip_same_provider_retry(task: Optional[str], failure: aux_errors.Fa
             and "no-progress timeout" not in str(failure.error))
 
 
-def _evict_cached_clients(provider: str) -> None:
+def _evict_cached_clients(provider: str, model: Optional[str] = None) -> None:
     """Drop this profile's cached auxiliary clients for a provider so fresh creds are used.
 
     Scoped to the calling profile (``hermes_home_key()`` is the first key slot): a rotation in
@@ -3374,13 +3374,15 @@ def _evict_cached_clients(provider: str) -> None:
     gateway, since that profile's credentials did not change. Entries are popped, not closed:
     a concurrent caller may be mid-request on the shared client (closing it raises ReadError /
     "client has been closed" for them); the dropped client is retired by GC like the FIFO
-    overflow path in ``_get_cached_client``.
+    overflow path in ``_get_cached_client``. ``model`` narrows the drop to entries keyed on that
+    model (the key's model slot: the requested model, else the runtime's).
     """
     normalized = _normalize_aux_provider(provider)
     home = hermes_home_key()
     with _client_cache_lock:
         for key in [key for key in _client_cache
-                    if key[0] == home and _normalize_aux_provider(str(key[1])) == normalized]:
+                    if key[0] == home and _normalize_aux_provider(str(key[1])) == normalized
+                    and (model is None or key[10] == model)]:
             _client_cache.pop(key, None)
 
 
@@ -4416,6 +4418,16 @@ def _main_route_target(runtime: dict[str, Any], task: Optional[str]) -> tuple[st
     return main_provider, main_model, runtime_base_url, runtime_api_key, runtime_api_mode
 
 
+def _auto_request_model_limited(main_runtime: Optional[dict[str, Any]], task: Optional[str], model: Optional[str]) -> bool:
+    """True when the main provider is marked usage-limited for an auto route's requested model. Only then
+    does the route's own model replace the requested one; any other explicit model still wins."""
+    if not model:
+        return False
+    main_provider, _main_model, base_url, _key, _mode = _main_route_target(_normalize_main_runtime(main_runtime), task)
+    label = _normalize_chain_label(main_provider)
+    return bool(label) and _is_provider_unhealthy(label, _custom_health_base_url(main_provider, base_url), model)
+
+
 def _try_main_provider_route(
     main_provider: str, main_model: str, runtime_base_url: str, runtime_api_key: Any, runtime_api_mode: str,
 ) -> Optional[tuple[Any, str, str]]:
@@ -4851,8 +4863,8 @@ def _resolve_auto_branch(req: _ResolveRequest) -> _ResolveResult:
     client, route_model, effective_provider = _resolve_auto_route(main_runtime=req.main_runtime, task=req.task)
     if client is None:
         return None, None
-    # The route knows which model the client was built for (a fallback keeps its own); the request model is not it.
-    model = route_model or req.model
+    # An explicit requested model wins, unless it is the model the main route skipped as usage-limited.
+    model = None if _auto_request_model_limited(req.main_runtime, req.task, req.model) else req.model
     # An OpenRouter-format model override won't work on a non-OpenRouter provider (e.g. local
     # server); drop it for the provider's default.
     if model and "/" in model and route_model and "/" not in route_model:
@@ -5890,9 +5902,10 @@ def _get_cached_client(
         provider, async_mode=async_mode, base_url=base_url, api_key=api_key, api_mode=api_mode,
         main_runtime=main_runtime, is_vision=is_vision, task=task, model=model,
     )
-    # An auto route resolves its own model (it may skip a usage-limited main model for a fallback
-    # entry), so the requested model must not override the one the route returned.
-    compat_request = None if str(provider or "").strip().lower() == "auto" else model
+    # An auto route keeps the requested model unless the main provider is marked usage-limited for it;
+    # then the model the route resolved (a fallback entry's own) is the one to send.
+    compat_request = None if str(provider or "").strip().lower() == "auto" and _auto_request_model_limited(
+        runtime, task, model) else model
     with _client_cache_lock:
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]
@@ -7764,8 +7777,9 @@ def _ladder_provider_fallback(failure: aux_errors.Failure, route: _LadderRoute, 
             reason=aux_errors.USAGE_LIMIT_REASON if scoped else _AUX_UNHEALTHY_PAYMENT_REASON,
             model=failed_model if scoped else None)
         if scoped:
-            # A cached auto client was built on the limited model; drop it so the next call re-reads the mark.
-            _evict_cached_clients("auto")
+            # Drop the cached auto clients keyed on the limited model so the next call re-reads the mark;
+            # auto clients for other models keep their entries.
+            _evict_cached_clients("auto", failed_model)
     if reason == "request timed out":
         # WARNING, naming the endpoint, the budget and the knob: the only other trace of a slow
         # local model is the fallback provider's complaint about a model it never had (#89445).
