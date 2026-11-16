@@ -5,6 +5,7 @@ M2: ``is_usage_limit`` reads the structured code first; a billing code stays end
 M3: the scope rules hold on a ``custom`` base_url primary, on sync and async, and for a billing 402.
 """
 import asyncio
+import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -160,6 +161,67 @@ def test_second_auto_call_skips_the_limited_main_model(monkeypatch):
     assert len(limited_sends) == sends_after_first, (
         "the second auto call re-sent to the limited main model"
     )
+
+
+def _two_auto_calls_count_limited_sends(*, runtime, request_model, extra_patches, task_config):
+    """Run two auto calls with only the OpenAI constructor stubbed; return limited sends after each."""
+    limited_sends = []
+
+    def create(*, model, **_kwargs):
+        if model == "gpt-6-luna":
+            limited_sends.append(model)
+            raise _usage_limit_429()
+        return _ok_response("HAIKU")
+
+    def construct(*, api_key, base_url, **_kwargs):
+        client = _client(base_url, MagicMock(side_effect=create))
+        client.api_key = api_key
+        return client
+
+    ac._client_cache.clear()
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch("agent.auxiliary_client._create_openai_client", side_effect=construct))
+        stack.enter_context(patch("agent.auxiliary_client._resolve_task_provider_model",
+                                  return_value=("auto", request_model, None, None, None)))
+        stack.enter_context(patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config))
+        stack.enter_context(patch("agent.auxiliary_client._transient_retry_count", return_value=0))
+        for target, value in extra_patches.items():
+            stack.enter_context(patch(target, return_value=value))
+        call_llm(task="title_generation", messages=[{"role": "user", "content": "one"}], main_runtime=runtime)
+        first = len(limited_sends)
+        call_llm(task="title_generation", messages=[{"role": "user", "content": "two"}], main_runtime=runtime)
+    ac._client_cache.clear()
+    return first, len(limited_sends)
+
+
+def test_second_auto_call_skips_the_limited_main_model_without_a_runtime(monkeypatch):
+    """No main_runtime and no request model: the main model comes from config, so the cache key's model
+    slot is empty. Eviction must still drop the client that sent the limited model."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    chain = [{"provider": "custom", "model": "claude-haiku-5-5", "base_url": LITELLM_URL}]
+    first, second = _two_auto_calls_count_limited_sends(
+        runtime=None, request_model=None, task_config={"fallback_chain": chain},
+        extra_patches={
+            "agent.auxiliary_client._read_main_provider": "custom",
+            "agent.auxiliary_client._read_main_model": "gpt-6-luna",
+            "agent.auxiliary_client._resolve_custom_runtime": (LITELLM_URL, "sk-test", None),
+        })
+    assert first == 1, "the first auto call must reach the limited model to mark it"
+    assert second == first, "the second auto call re-sent to the limited main model"
+
+
+def test_second_auto_call_skips_the_limited_fast_model(monkeypatch):
+    """prefer_fast_model: the main route sends the fast model, while the cache key holds the runtime model.
+    Eviction must match the stored default model."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    chain = [{"provider": "custom", "model": "claude-haiku-5-5", "base_url": LITELLM_URL}]
+    runtime = {"provider": "custom", "model": "gpt-6-big", "base_url": LITELLM_URL, "api_key": "sk-test"}
+    first, second = _two_auto_calls_count_limited_sends(
+        runtime=runtime, request_model=None,
+        task_config={"fallback_chain": chain, "prefer_fast_model": True},
+        extra_patches={"agent.auxiliary_client._get_aux_model_for_provider": "gpt-6-luna"})
+    assert first == 1, "the first auto call must reach the limited fast model to mark it"
+    assert second == first, "the second auto call re-sent to the limited fast model"
 
 
 def test_auto_task_with_explicit_model_sends_that_model():

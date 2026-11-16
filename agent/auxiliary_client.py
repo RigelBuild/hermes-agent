@@ -3374,16 +3374,24 @@ def _evict_cached_clients(provider: str, model: Optional[str] = None) -> None:
     gateway, since that profile's credentials did not change. Entries are popped, not closed:
     a concurrent caller may be mid-request on the shared client (closing it raises ReadError /
     "client has been closed" for them); the dropped client is retired by GC like the FIFO
-    overflow path in ``_get_cached_client``. ``model`` narrows the drop to entries keyed on that
-    model (the key's model slot: the requested model, else the runtime's).
+    overflow path in ``_get_cached_client``. ``model`` narrows the drop to entries for that model: the
+    key's model slot (requested or runtime model) or the stored default the client sends (the main
+    model read from config, a fast model, a normalized id), compared without a vendor prefix.
     """
     normalized = _normalize_aux_provider(provider)
     home = hermes_home_key()
+    wanted = _bare_model_id(model)
     with _client_cache_lock:
-        for key in [key for key in _client_cache
+        for key in [key for key, entry in _client_cache.items()
                     if key[0] == home and _normalize_aux_provider(str(key[1])) == normalized
-                    and (model is None or key[10] == model)]:
+                    and (model is None or wanted in {_bare_model_id(key[_CACHE_KEY_MODEL_SLOT]),
+                                                     _bare_model_id(entry[1])})]:
             _client_cache.pop(key, None)
+
+
+def _bare_model_id(model: Any) -> str:
+    """A model id without its ``vendor/`` prefix, for matching ids that one path normalized."""
+    return str(model or "").rsplit("/", 1)[-1]
 
 
 def _evict_cached_client_instance(target: Any) -> bool:
@@ -5647,6 +5655,10 @@ def _runtime_cache_discriminator(field: str, value: Any) -> Any:
     if field == "api_key" and isinstance(value, str) and value:
         return ("api-key-digest", hashlib.blake2b(value.encode("utf-8"), digest_size=16).digest())
     return value
+
+
+# Index of ``model_key`` in the tuple _client_cache_key returns; _evict_cached_clients reads it.
+_CACHE_KEY_MODEL_SLOT = 10
 
 
 def _client_cache_key(
