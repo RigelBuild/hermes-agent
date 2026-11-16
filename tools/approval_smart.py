@@ -254,11 +254,12 @@ def _smart_approve(command: str, description: str) -> str:
 
 
 def _rotate_if_large(path) -> None:
-    """Roll ``path`` to ``path.1`` once it passes the size cap. One generation kept."""
+    """Roll ``path`` to ``path.1`` once it passes the size cap. One generation kept. Never raises:
+    a failed rotation must not drop the record that follows it."""
     try:
         if path.stat().st_size > _ESCALATIONS_MAX_BYTES:
             os.replace(path, path.with_name(path.name + ".1"))
-    except FileNotFoundError:
+    except OSError:
         pass
 
 
@@ -278,7 +279,11 @@ def _append_escalation(command: str, description: str, session_key: str, reason:
         }
         path = mkdir_under_hermes_home(get_hermes_home() / "logs") / _ESCALATIONS_FILE
         _rotate_if_large(path)
-        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        from hermes_cli.config import is_managed
+        managed = is_managed()
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o660 if managed else 0o600)
+        if managed:
+            os.chmod(path, 0o660)  # the umask strips group write from the create mode
         with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception as exc:

@@ -6,6 +6,7 @@ the command. Only a model reply of ``ESCALATE`` is a real uncertainty and reache
 """
 
 import json
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -200,3 +201,73 @@ def test_system_prompt_keeps_policy_and_manipulation_escalate_rules():
     assert "ESCALATE when the operator policy names ESCALATE for the command" in prompt
     assert "APPROVE and DENY are the default answers" not in prompt
 
+
+
+def _escalate_once(command="bash x.sh"):
+    with patch("agent.auxiliary_client.call_llm", return_value=_response("ESCALATE\nruns a script")):
+        return approval_smart._smart_verdict(command, "secret use", "bash", ["bash"], "sess-1")
+
+
+def test_escalation_file_is_0600_when_unmanaged(hermes_home, monkeypatch):
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+    _escalate_once()
+    path = hermes_home / "logs" / "approval-escalations.jsonl"
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_escalation_file_is_0660_when_managed(hermes_home, monkeypatch):
+    for sub in ("cron", "sessions", "logs", "memories"):
+        (hermes_home / sub).mkdir(exist_ok=True)
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: True)
+    _escalate_once()
+    path = hermes_home / "logs" / "approval-escalations.jsonl"
+    assert path.stat().st_mode & 0o777 == 0o660
+
+
+def test_file_over_cap_rolls_to_dot_one_and_new_record_lands_in_fresh_file(hermes_home, monkeypatch):
+    monkeypatch.setattr(approval_smart, "_ESCALATIONS_MAX_BYTES", 10)
+    logs = hermes_home / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    live = logs / "approval-escalations.jsonl"
+    live.write_text("OLD RECORD THAT IS OVER THE CAP\n")
+
+    _escalate_once("bash new.sh")
+
+    rolled = logs / "approval-escalations.jsonl.1"
+    assert rolled.read_text() == "OLD RECORD THAT IS OVER THE CAP\n"
+    lines = live.read_text().splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["command"] == "bash new.sh"
+
+
+def test_rotation_overwrites_an_existing_dot_one(hermes_home, monkeypatch):
+    monkeypatch.setattr(approval_smart, "_ESCALATIONS_MAX_BYTES", 10)
+    logs = hermes_home / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / "approval-escalations.jsonl.1").write_text("previous generation\n")
+    (logs / "approval-escalations.jsonl").write_text("CURRENT OVER CAP\n")
+
+    _escalate_once()
+
+    assert (logs / "approval-escalations.jsonl.1").read_text() == "CURRENT OVER CAP\n"
+
+
+def test_failed_rotation_still_appends_the_record(hermes_home, monkeypatch, caplog):
+    monkeypatch.setattr(approval_smart, "_ESCALATIONS_MAX_BYTES", 10)
+    logs = hermes_home / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    live = logs / "approval-escalations.jsonl"
+    live.write_text("OVER THE CAP\n")
+
+    real_replace = os.replace
+
+    def refuse_rotation(src, dst):
+        if str(src).endswith("approval-escalations.jsonl"):
+            raise PermissionError("rotation refused")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(approval_smart.os, "replace", refuse_rotation)
+    _escalate_once("bash kept.sh")
+
+    records = [json.loads(line) for line in live.read_text().splitlines() if line.startswith("{")]
+    assert [r["command"] for r in records] == ["bash kept.sh"]
