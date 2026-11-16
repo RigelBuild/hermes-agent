@@ -68,11 +68,13 @@ class ProcessCheckpointMixin:
             on_disk = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             return []
-        return [entry for entry in on_disk if isinstance(entry, dict) and entry.get("session_id") not in known
-                and ((entry.get("attempt_token") and entry.get("attempt_status") in {"pending", "running", "claimed", "unknown"})
-                     or ((log := adoptable_log(entry.get("output_log"))) and Path(log).exists()
-                         and (_exit_path(log).exists() or self._detached_host_fate(
-                             entry.get("pid"), entry.get("host_start_time")) == "running")))]
+        return [entry for entry in on_disk if isinstance(entry, dict)
+                and ((entry.get('attempt_token') and entry.get('attempt_status') == 'unknown')
+                     or (entry.get('session_id') not in known
+                         and ((entry.get('attempt_token') and entry.get('attempt_status') in {'pending', 'running', 'claimed'})
+                              or ((log := adoptable_log(entry.get('output_log'))) and Path(log).exists()
+                                  and (_exit_path(log).exists() or self._detached_host_fate(
+                                      entry.get('pid'), entry.get('host_start_time')) == 'running')))))]
 
     def _write_resumable_entry(self, entry):
         """Persist an admitted attempt; corrupt checkpoint data disables admission."""
@@ -263,6 +265,7 @@ class ProcessCheckpointMixin:
                     "session_key": session.session_key,
                     **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
                     "notify_on_complete": session.notify_on_complete,
+                    "death_only": session.watcher_interval <= 0,
                     "parent_session_id": session.parent_session_id,
                 })
         self._write_checkpoint(extra_entries=unresolved_scope_entries)

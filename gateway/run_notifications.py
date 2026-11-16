@@ -1919,7 +1919,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         notify_mode = self._load_background_notifications_mode()  # the owning profile's (scope bound above)
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
-        silent = notify_mode == "off" and not agent_notify
+        silent = watcher.get('death_only', False) or (notify_mode == "off" and not agent_notify)
         last_output_len = 0
         completion_attempts = 0
         retry_interval = interval
@@ -1927,6 +1927,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             await asyncio.sleep(retry_interval)
             session = process_registry.get(session_id)
             if session is None:
+                break
+            if getattr(session, 'attempt_unknown', False):
                 break
             surface = should_surface_notification({
                 "owner_task_id": getattr(session, "owner_task_id", ""),

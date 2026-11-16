@@ -47,10 +47,61 @@ def test_adopted_child_death_queues_unknown(monkeypatch, tmp_path, systemd_unit)
         assert (result is not None) == bool(systemd_unit)
         assert json.loads(path.read_text())[0]['attempt_status'] == 'unknown'
         assert len(registry.pending_watchers) == 1
+        registry._write_checkpoint()
+        assert json.loads(path.read_text())[0]['attempt_status'] == 'unknown'
     finally:
         if child.poll() is None:
             child.terminate()
             child.wait()
+
+
+@pytest.mark.asyncio
+async def test_scoped_adoption_watcher_only_delivers_unknown(monkeypatch, tmp_path):
+    from tools import process_registry as module
+    from gateway.run_notifications import GatewayNotificationsMixin
+    path = tmp_path / 'processes.json'
+    monkeypatch.setattr(module, 'CHECKPOINT_PATH', path)
+    registry = ProcessRegistry()
+    monkeypatch.setattr(module, 'process_registry', registry)
+    child = subprocess.Popen(['sleep', '30'])  # noqa: ASYNC220 - test owns and reaps this fixture
+    try:
+        path.write_text(json.dumps([{'session_id': 'proc_live', 'attempt_token': 'token',
+            'attempt_status': 'running', 'pid': child.pid, 'systemd_unit': 'hermes-worker-test.scope',
+            'host_start_time': registry._safe_host_start_time(child.pid), 'notify_on_complete': True,
+            'watcher_interval': 1}]))
+        assert registry.recover_from_checkpoint() == 1
+        watcher = registry.pending_watchers.pop()
+        watcher['check_interval'] = 0
+        child.terminate()
+        child.wait()
+        runner = SimpleNamespace(_load_background_notifications_mode=lambda: 'concise',
+            _enqueue_process_completion_notification=AsyncMock(return_value=True),
+            _send_watcher_message=AsyncMock(), _launching_turn_active=AsyncMock(return_value=False),
+            _build_process_completion_event=lambda *args: {},
+            _format_process_final_message=lambda *args: 'finished')
+        await GatewayNotificationsMixin._watch_process(runner, watcher)
+        assert runner._enqueue_process_completion_notification.await_count == 0
+        assert runner._send_watcher_message.await_count == 0
+        assert len(registry.pending_watchers) == 1
+        assert registry.pending_watchers[0]['recovery_notice']
+    finally:
+        if child.poll() is None:
+            child.terminate()
+            child.wait()
+
+
+@pytest.mark.asyncio
+async def test_death_only_watcher_suppresses_normal_completion(monkeypatch):
+    from tools import process_registry as module
+    from gateway.run_notifications import GatewayNotificationsMixin
+    session = SimpleNamespace(exited=True, attempt_unknown=False, owner_task_id='', task_id='')
+    monkeypatch.setattr(module.process_registry, 'get', lambda _sid: session)
+    runner = SimpleNamespace(_load_background_notifications_mode=lambda: 'concise',
+        _enqueue_process_completion_notification=AsyncMock(), _send_watcher_message=AsyncMock())
+    await GatewayNotificationsMixin._watch_process(
+        runner, {'session_id': 'proc_a', 'check_interval': 0, 'death_only': True})
+    assert runner._enqueue_process_completion_notification.await_count == 0
+    assert runner._send_watcher_message.await_count == 0
 
 
 @pytest.mark.parametrize('status,pid,fate', [
