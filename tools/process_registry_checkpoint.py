@@ -11,6 +11,47 @@ from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger("tools.process_registry")
 
+SHUTDOWN_RESUME_REASON = "gateway_shutdown"
+SHUTDOWN_RESUME_CAP = 3
+RESUME_NOTE = ("The gateway restarted while this run was in progress. "
+               "Check what is already done, then continue the task.")
+_QUERY_FLAGS = ("-q", "--query", "--query-file")
+
+
+def checkpoint_entry(s) -> dict[str, Any]:
+    """The checkpoint projection of one session (attempt fields only for an admitted attempt)."""
+    from tools.process_registry import _CHECKPOINT_FIELDS
+    entry = {"session_id": s.id, **{f: getattr(s, f) for f in _CHECKPOINT_FIELDS}}
+    if not s.attempt_token:
+        for field in ("argv", "request_id", "attempt_token", "resume_count", "resume_session_id", "attempt_status"):
+            entry.pop(field, None)
+    # Redact inline credentials before persisting (~/.hermes/processes.json). Recovery uses
+    # command only for display (adoption re-validates the PID, never re-runs it). See #77484.
+    entry["command"] = redact_sensitive_text(s.command, code_file=True)
+    entry["owner_task_id"] = s.owner_task_id or s.task_id
+    return entry
+
+
+def _without_request_id(argv: list[str]) -> list[str]:
+    """Spawn admits the command before it appends --request-id, so admit the same shape."""
+    if "--request-id" not in argv:
+        return []
+    at = argv.index("--request-id")
+    return argv[:at] + argv[at + 2:]
+
+
+def resume_launch_argv(argv: list[str], chat_session_id: str) -> list[str]:
+    """The stored argv with its query source swapped for the continuation note, resuming the chat."""
+    out, skip = [], False
+    for arg in argv:
+        if skip:
+            skip = False
+        elif arg in _QUERY_FLAGS:
+            skip = True
+        elif not (arg.startswith(("--query=", "--query-file=")) or (arg.startswith("-q") and len(arg) > 2)):
+            out.append(arg)
+    return [*out, "--resume", chat_session_id, "--discard-unknown", "--query", RESUME_NOTE]
+
 
 class ProcessCheckpointMixin:
     def _pending_attempt_owner_is_live(self, pid, expected_start):
@@ -49,17 +90,7 @@ class ProcessCheckpointMixin:
                     # even for sessions spawned before this field existed.
                     if s.host_start_time is None and s.pid_scope == "host" and s.pid:
                         s.host_start_time = self._safe_host_start_time(s.pid)
-                    entry = {"session_id": s.id, **{f: getattr(s, f) for f in _CHECKPOINT_FIELDS}}
-                    if not s.attempt_token:
-                        for field in ("argv", "request_id", "attempt_token", "resume_count", "attempt_status"):
-                            entry.pop(field, None)
-                    # Redact inline credentials before persisting (~/.hermes/processes.json).
-                    # Recovery uses command only for display (adoption re-validates the
-                    # PID, never re-runs it), so masking is lossless.
-                    # See #77484.
-                    entry["command"] = redact_sensitive_text(s.command, code_file=True)
-                    entry["owner_task_id"] = s.owner_task_id or s.task_id
-                    entries.append(entry)
+                    entries.append(checkpoint_entry(s))
                 if extra_entries:
                     tracked_ids = {item.get("session_id") for item in entries}
                     entries.extend(item for item in extra_entries if item.get("session_id") not in tracked_ids)
@@ -213,85 +244,156 @@ class ProcessCheckpointMixin:
             for notice in notices:
                 if runner is None or not runner.arm_process_watcher(notice):
                     self.pending_watchers.append(notice)
-    _SHUTDOWN_RESUME_CAP = 3
 
-    def _chat_session_id_for_request(self, checkpoint_path, request_id) -> Optional[str]:
-        """The chat session id stored in this profile's creation receipt for request_id, else None."""
+    @staticmethod
+    def _chat_session_lookup(checkpoint_path):
+        """A request-id -> chat-session-id lookup over this profile's state.db, opened once on first use."""
         from pathlib import Path
         from hermes_state import SessionDB
         from hermes_state_local import POLICY_PREFIX
 
         home_db = Path(checkpoint_path).parent / "state.db"
-        if not home_db.is_file():
-            return None
-        db = SessionDB(db_path=home_db, read_only=True)
-        try:
-            for key, raw in db.list_meta_prefix(POLICY_PREFIX):
-                try:
-                    receipt = json.loads(raw)
-                except (TypeError, ValueError):
-                    continue
-                if isinstance(receipt, dict) and receipt.get("request_id") == request_id:
-                    return key[len(POLICY_PREFIX):]
-            return None
-        finally:
-            db.close()
+        opened: list = []
 
-    def _relaunch_shutdown_killed(self, entry: dict[str, Any], checkpoint_path) -> bool:
-        """Resume a dead, shutdown-killed admitted chat attempt with --resume, up to the cap.
-        Returns True when a relaunch was spawned; otherwise the notice path still applies."""
-        from tools.process_resumable import resumable_chat_argv
-        from tools.process_registry import ProcessSession, _CHECKPOINT_FIELDS, _CHECKPOINT_DEFAULTS
+        def lookup(request_id) -> Optional[str]:
+            if not request_id or not home_db.is_file():
+                return None
+            if not opened:
+                opened.append(SessionDB(db_path=home_db, read_only=True))
+            rows = opened[0]._read_all(
+                "SELECT key FROM state_meta WHERE key GLOB ? AND json_valid(value) "
+                "AND json_extract(value, '$.request_id') = ? LIMIT 1", (POLICY_PREFIX + "*", request_id))
+            return rows[0][0][len(POLICY_PREFIX):] if rows else None
 
-        argv = entry.get("argv") or []
-        if not argv or int(entry.get("resume_count") or 0) >= self._SHUTDOWN_RESUME_CAP:
-            return False
-        # Spawn admits the command before it appends --request-id, so admit the same shape here.
-        if "--request-id" not in argv:
-            return False
-        rid_at = argv.index("--request-id")
-        admitted = argv[:rid_at] + argv[rid_at + 2:]
-        if resumable_chat_argv(" ".join(admitted)) is None:
-            return False
-        sid = self._chat_session_id_for_request(checkpoint_path, entry.get("request_id"))
-        if not sid:
-            logger.warning("Not resuming background chat %s: no chat session for its request", entry.get("session_id"))
-            return False
-        fields = {f: entry.get(f, _CHECKPOINT_DEFAULTS[f]) for f in _CHECKPOINT_FIELDS}
-        fields.update(command=entry.get("command", "unknown"), argv=[*argv, "--resume", sid],
-                      owner_task_id=entry.get("owner_task_id", "") or entry.get("task_id", ""),
-                      started_at=entry.get("started_at", time.time()), attempt_status="pending",
-                      resume_count=int(entry.get("resume_count") or 0) + 1, pid=None, pid_scope="host",
-                      host_start_time=None, output_log="")
-        session = ProcessSession(id=entry["session_id"], **fields)
-        session.recovered_checkpoint_path = str(checkpoint_path)
-        self._persist_resume_count(checkpoint_path, session.id, session.attempt_token, session.resume_count)
-        self._spawn_local_admitted(session, shlex.join(session.argv), None, False, False)
-        return True
+        def close():
+            for db in opened:
+                db.close()
+        return lookup, close
 
-    def _persist_resume_count(self, checkpoint_path, session_id, attempt_token, resume_count) -> None:
+    def _update_attempt(self, checkpoint_path, entry, decide) -> Optional[dict[str, Any]]:
+        """Under the checkpoint lock, apply ``decide`` to this attempt's on-disk entry; returns the
+        updated entry, or None when the entry is gone or ``decide`` refuses it."""
+        from pathlib import Path
         from hermes_cli.active_sessions import _FileLock
         from utils import atomic_json_write
-        from pathlib import Path
         path = Path(checkpoint_path)
         with _FileLock(path.with_name(path.name + ".lock")):
             entries = json.loads(path.read_text(encoding="utf-8-sig"))
             for item in entries:
-                if (isinstance(item, dict) and item.get("session_id") == session_id
-                        and item.get("attempt_token") == attempt_token):
-                    item["resume_count"] = resume_count
-                    item["attempt_status"] = "pending"
-            atomic_json_write(path, entries)
+                if (isinstance(item, dict) and item.get("session_id") == entry.get("session_id")
+                        and item.get("attempt_token") == entry.get("attempt_token")):
+                    if not decide(item):
+                        return None
+                    atomic_json_write(path, entries)
+                    return dict(item)
+        return None
+
+    def _claim_shutdown_resume(self, checkpoint_path, entry, chat_session_id) -> Optional[dict[str, Any]]:
+        """Claim one marked attempt for relaunch: only the claimer that moves it to pending spawns."""
+        owner_pid = os.getpid()
+        owner_started = self._safe_host_start_time(owner_pid)
+
+        def claim(item):
+            count = int(item.get("resume_count") or 0)
+            if (item.get("resume_reason") != SHUTDOWN_RESUME_REASON or item.get("attempt_status") != "unknown"
+                    or count >= SHUTDOWN_RESUME_CAP):
+                return False
+            item.pop("resume_reason")
+            item.update(attempt_status="pending", resume_count=count + 1, resume_session_id=chat_session_id,
+                        attempt_owner_pid=owner_pid, attempt_owner_started_at=owner_started)
+            return True
+        return self._update_attempt(checkpoint_path, entry, claim)
+
+    def _give_back_shutdown_resume(self, checkpoint_path, claimed) -> None:
+        """Undo a claim whose spawn failed, so the next boot can try again."""
+        def give_back(item):
+            if item.get("attempt_status") != "pending" or item.get("resume_count") != claimed["resume_count"]:
+                return False
+            item.update(attempt_status="unknown", resume_count=claimed["resume_count"] - 1,
+                        resume_reason=SHUTDOWN_RESUME_REASON)
+            return True
+        self._update_attempt(checkpoint_path, claimed, give_back)
+
+    def _relaunch_shutdown_killed(self, entry: dict[str, Any], checkpoint_path, lookup) -> Optional[Any]:
+        """Resume a dead attempt the gateway killed at shutdown, up to the cap; returns the new
+        session, or None when it was not relaunched (the unknown notice then applies)."""
+        from tools.process_resumable import resumable_chat_argv
+        from tools.process_registry import ProcessSession, _CHECKPOINT_FIELDS, _CHECKPOINT_DEFAULTS
+        from tools.environments.local import _append_dropped_path_entries
+
+        if (entry.get("resume_reason") != SHUTDOWN_RESUME_REASON
+                or int(entry.get("resume_count") or 0) >= SHUTDOWN_RESUME_CAP):
+            return None
+        argv = list(entry.get("argv") or [])
+        admitted = _without_request_id(argv)
+        if not admitted or resumable_chat_argv(shlex.join(admitted)) is None:
+            return None
+        sid = entry.get("resume_session_id") or lookup(entry.get("request_id"))
+        if not sid:
+            logger.warning("Not resuming background chat %s: no chat session for its request", entry.get("session_id"))
+            return None
+        claimed = self._claim_shutdown_resume(checkpoint_path, entry, sid)
+        if claimed is None:
+            return None
+        try:
+            fields = {f: claimed.get(f, _CHECKPOINT_DEFAULTS[f]) for f in _CHECKPOINT_FIELDS}
+            fields.update(command=claimed.get("command", "unknown"), argv=argv,
+                          owner_task_id=claimed.get("owner_task_id", "") or claimed.get("task_id", ""),
+                          started_at=claimed.get("started_at", time.time()), pid=None, pid_scope="host",
+                          host_start_time=None, systemd_unit="", output_log="")
+            session = ProcessSession(id=claimed["session_id"], **fields)
+            session.recovered_checkpoint_path = str(checkpoint_path)
+            # Same login-PATH fix-up as the original terminal spawn.
+            command = _append_dropped_path_entries(
+                shlex.join(resume_launch_argv(argv, sid)), self._spawn_env(None).get("PATH", ""))
+            return self._spawn_local_admitted(session, command, None, False, session.persist_on_release)
+        except Exception:
+            logger.exception("Could not resume background chat %s; leaving it for the next boot", claimed["session_id"])
+            try:
+                self._give_back_shutdown_resume(checkpoint_path, claimed)
+            except Exception:
+                logger.exception("Could not restore background chat %s after a failed resume", claimed["session_id"])
+            return None
+
+    def _announce_resumed(self, session, checkpoint_path) -> None:
+        """Swap the queued unknown notice for a resumed one that leaves the new entry in place."""
+        self.pending_watchers = [
+            w for w in self.pending_watchers
+            if not (w.get("recovery_notice") and w.get("session_id") == session.id
+                    and w.get("attempt_token") == session.attempt_token)]
+        from tools.process_registry import _WATCHER_ROUTE_KEYS
+        self.pending_watchers.append({
+            "session_id": session.id, "session_key": session.session_key,
+            "parent_session_id": session.parent_session_id, "attempt_token": session.attempt_token,
+            "checkpoint_path": str(checkpoint_path), "task_id": session.task_id,
+            "owner_task_id": session.owner_task_id, "command": session.command, "started_at": session.started_at,
+            "recovery_notice": f"resumed after gateway restart ({session.resume_count}/{SHUTDOWN_RESUME_CAP})",
+            "keep_entry": True,
+            **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
+        })
+        self._queue_recovered_watcher(session)
+
+    def _queue_recovered_watcher(self, session) -> None:
+        """Re-enqueue the watcher so the gateway resumes this session's notifications."""
+        from tools.process_registry import _WATCHER_ROUTE_KEYS
+        if session.watcher_interval > 0 or session.attempt_token:
+            self.pending_watchers.append({
+                "session_id": session.id,
+                "check_interval": session.watcher_interval or 5,
+                "session_key": session.session_key,
+                **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
+                "notify_on_complete": session.notify_on_complete,
+                "death_only": session.watcher_interval <= 0,
+                "parent_session_id": session.parent_session_id,
+            })
 
 
-    def recover_from_checkpoint(self) -> int:
+
+    def recover_from_checkpoint(self, *, resume_shutdown_killed: bool = False) -> int:
         """On gateway startup, probe PIDs from the checkpoint file; returns how many
-        were recovered as detached sessions."""
-        from tools.process_registry import (
-            ProcessSession, _CHECKPOINT_FIELDS, _checkpoint_path,
-            _CHECKPOINT_DEFAULTS, _WATCHER_ROUTE_KEYS, _stop_systemd_unit,
-        )
-        from tools.process_registry_output_log import adoptable_log
+        were recovered as detached sessions. Only the gateway boot path passes
+        ``resume_shutdown_killed`` to relaunch jobs its own shutdown killed."""
+        from tools.process_registry import _checkpoint_path
 
         # This host adopts what a crashed predecessor left running, so the jobs it starts must
         # survive its own crash for the next one: they stay out of the owner-death supervisor.
@@ -309,6 +411,21 @@ class ProcessCheckpointMixin:
             return 0
         recovered = 0
         unresolved_scope_entries: list[dict[str, Any]] = []
+        lookup, close_lookup = self._chat_session_lookup(checkpoint_path)
+        try:
+            recovered = self._recover_entries(
+                entries, checkpoint_path, unresolved_scope_entries, lookup if resume_shutdown_killed else None)
+        finally:
+            close_lookup()
+        self._write_checkpoint(extra_entries=unresolved_scope_entries)
+        return recovered
+
+    def _recover_entries(self, entries, checkpoint_path, unresolved_scope_entries, lookup) -> int:
+        from tools.process_registry import (
+            ProcessSession, _CHECKPOINT_FIELDS, _CHECKPOINT_DEFAULTS, _stop_systemd_unit,
+        )
+        from tools.process_registry_output_log import adoptable_log
+        recovered = 0
         for entry in entries:
             if entry.get('attempt_status') == 'unknown':
                 from tools.process_registry_output_log import _exit_path
@@ -316,8 +433,15 @@ class ProcessCheckpointMixin:
                 pid = entry.get('pid')
                 if not ((log and _exit_path(log).exists()) or
                         (pid and self._detached_host_fate(pid, entry.get('host_start_time')) == 'running')):
-                    if self._relaunch_shutdown_killed(entry, checkpoint_path):
-                        recovered += 1
+                    if lookup is not None:
+                        try:
+                            session = self._relaunch_shutdown_killed(entry, checkpoint_path, lookup)
+                        except Exception:
+                            logger.exception('Could not resume background chat %s', entry.get('session_id'))
+                            session = None
+                        if session is not None:
+                            self._announce_resumed(session, checkpoint_path)
+                            recovered += 1
                     continue
             pid, pid_scope = entry.get("pid"), entry.get("pid_scope", "host")
             if not pid:
@@ -383,16 +507,5 @@ class ProcessCheckpointMixin:
                     self._running[session.id] = session
             recovered += 1
             logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
-            # Re-enqueue watcher so gateway can resume notifications
-            if session.watcher_interval > 0 or session.attempt_token:
-                self.pending_watchers.append({
-                    "session_id": session.id,
-                    "check_interval": session.watcher_interval or 5,
-                    "session_key": session.session_key,
-                    **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
-                    "notify_on_complete": session.notify_on_complete,
-                    "death_only": session.watcher_interval <= 0,
-                    "parent_session_id": session.parent_session_id,
-                })
-        self._write_checkpoint(extra_entries=unresolved_scope_entries)
+            self._queue_recovered_watcher(session)
         return recovered

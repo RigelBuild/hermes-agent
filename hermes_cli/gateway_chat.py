@@ -159,6 +159,15 @@ async def _resume_latest(client, args):
                                  "or list sessions with `hermes sessions list`.") from None
 
 
+async def _discard_unknown(client, args, snapshot):
+    """Acknowledge the turns a gateway restart lost so the continuation note can run; never replays them."""
+    unknown = [row for row in snapshot.get("pending", []) if row.get("status") == "unknown"]
+    for row in unknown:
+        await client.rpc("prompt.resolve_unknown", session_id=snapshot["stored_session_id"],
+                         admission_id=row["admission_id"], execution_generation=row["execution_generation"])
+    return await _resume(client, args, session_id=snapshot["stored_session_id"]) if unknown else snapshot
+
+
 async def run_gateway_chat(args, emitter=None):
     from hermes_cli.gateway_chat_view import GatewayChatView
     query = getattr(args, "query", None) or getattr(args, "q", None)
@@ -194,6 +203,8 @@ async def run_gateway_chat(args, emitter=None):
                         f"No session found matching '{name}'. Use 'hermes sessions list' to see available "
                         "sessions, or pass -c <name> --create-if-missing to start a new session with that title.")
             check_resume_policy(args, snapshot)
+            if getattr(args, "discard_unknown", False):
+                snapshot = await _discard_unknown(client, args, snapshot)
         else:
             contract = description.get("session_create", {})
             # Finite runs are stored as ``oneshot`` (hidden from human pickers, still CLI history);

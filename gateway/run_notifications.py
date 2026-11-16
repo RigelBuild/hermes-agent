@@ -1909,6 +1909,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             for attempt in range(1, _MAX_RECOVERY_NOTICE_ATTEMPTS + 1):
                 delivered = await self._enqueue_process_completion_notification(text, event)
                 if delivered is not False:
+                    if watcher.get('keep_entry'):
+                        return  # a resumed job's live entry stays; its own watcher settles it
                     try:
                         process_registry._remove_resumable_entry(
                             watcher['session_id'], watcher['attempt_token'], watcher.get('checkpoint_path'))

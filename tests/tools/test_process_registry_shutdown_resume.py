@@ -1,12 +1,16 @@
-"""Shutdown-killed resumable chat jobs survive the kill and resume on the next boot (RIG-10319)."""
+"""Shutdown-killed resumable chat jobs survive the kill and resume on the next boot."""
 
 import json
+import shlex
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 from tools import process_registry as module
 from tools.process_registry import ProcessRegistry, ProcessSession
+from tools.process_registry_checkpoint import RESUME_NOTE, SHUTDOWN_RESUME_REASON
 
 REQUEST_ID = "req-10319"
 ARGV = ["hermes", "chat", "-Q", "--provider", "litellm", "-m", "m", "--yolo",
@@ -34,8 +38,12 @@ def _stub_signal(monkeypatch, registry):
     monkeypatch.setattr(registry, "_post_kill_survivors", lambda _session: [])
 
 
-# (a) Shutdown kill keeps the attempt's checkpoint entry as unknown.
-def test_shutdown_killed_attempt_keeps_unknown_entry(monkeypatch, checkpoint):
+def _boot(registry):
+    return registry.recover_from_checkpoint(resume_shutdown_killed=True)
+
+
+# (a) Shutdown kill keeps the attempt's checkpoint entry, marked as a gateway shutdown kill.
+def test_shutdown_killed_attempt_keeps_marked_entry(monkeypatch, checkpoint):
     registry = ProcessRegistry()
     session = _attempt()
     registry._running[session.id] = session
@@ -47,6 +55,7 @@ def test_shutdown_killed_attempt_keeps_unknown_entry(monkeypatch, checkpoint):
     entries = json.loads(checkpoint.read_text())
     assert [e["session_id"] for e in entries] == ["proc_att"]
     assert entries[0]["attempt_status"] == "unknown"
+    assert entries[0]["resume_reason"] == SHUTDOWN_RESUME_REASON
     assert entries[0]["argv"] == ARGV
 
 
@@ -76,14 +85,23 @@ def chat_home(monkeypatch, tmp_path):
     db.set_meta("gateway.local_policy.v1:" + sid, json.dumps({
         "profile_id": "profile", "principal_id": "principal", "request_id": REQUEST_ID,
         "session_id": sid, "route": "route"}))
+    db.close()
     return sid
 
 
-def _boot_entry(*, resume_count=0, argv=None):
-    return {"session_id": "proc_att", "attempt_token": "tok", "attempt_status": "unknown",
-            "argv": list(ARGV if argv is None else argv), "request_id": REQUEST_ID,
-            "resume_count": resume_count, "command": "hermes chat -Q --yolo",
-            "owner_task_id": "t", "task_id": "t", "session_key": "route", "started_at": 1.0}
+def _boot_entry(*, resume_count=0, argv=None, marked=True, status="unknown"):
+    entry = {"session_id": "proc_att", "attempt_token": "tok", "attempt_status": status,
+             "argv": list(ARGV if argv is None else argv), "request_id": REQUEST_ID,
+             "resume_count": resume_count, "command": "hermes chat -Q --yolo",
+             "owner_task_id": "t", "task_id": "t", "session_key": "route", "started_at": 1.0}
+    if marked:
+        entry["resume_reason"] = SHUTDOWN_RESUME_REASON
+    return entry
+
+
+def _launched(scope_argv):
+    """The chat argv inside the login-shell wrapper (after the PATH prelude)."""
+    return shlex.split(scope_argv[-1].splitlines()[-1].removeprefix("set +m; "))
 
 
 def _spawn_recorder(monkeypatch, registry, spawned):
@@ -93,38 +111,184 @@ def _spawn_recorder(monkeypatch, registry, spawned):
     monkeypatch.setattr(registry, "_reader_loop", lambda session: None)
 
 
-def test_boot_relaunches_unknown_entry_with_resume(monkeypatch, checkpoint, chat_home):
+def _forbid_spawn(monkeypatch, registry, why):
+    monkeypatch.setattr(registry, "_spawn_job", lambda *a, **kw: pytest.fail(why))
+
+
+def _notices(registry):
+    return [n["recovery_notice"] for n in registry.pending_watchers if n.get("recovery_notice")]
+
+
+def test_boot_relaunches_marked_entry_with_resume(monkeypatch, checkpoint, chat_home):
     checkpoint.write_text(json.dumps([_boot_entry()]))
     spawned = []
     registry = ProcessRegistry()
     _spawn_recorder(monkeypatch, registry, spawned)
 
-    registry.recover_from_checkpoint()
+    assert _boot(registry) == 1
 
-    assert f"--resume {chat_home}" in spawned[0][-1]
-    assert json.loads(checkpoint.read_text())[0]["resume_count"] == 1
-    assert [n["session_id"] for n in registry.pending_watchers] == ["proc_att"]
+    argv = _launched(spawned[0])
+    assert argv[argv.index("--resume") + 1] == chat_home
+    entry = json.loads(checkpoint.read_text())[0]
+    assert entry["resume_count"] == 1 and entry["argv"] == ARGV and "resume_reason" not in entry
+    assert entry["resume_session_id"] == chat_home
+    assert _notices(registry) == ["resumed after gateway restart (1/3)"]
+
+
+def test_relaunch_swaps_query_source_for_continuation_note(monkeypatch, checkpoint, chat_home):
+    checkpoint.write_text(json.dumps([_boot_entry()]))
+    spawned = []
+    registry = ProcessRegistry()
+    _spawn_recorder(monkeypatch, registry, spawned)
+
+    _boot(registry)
+
+    argv = _launched(spawned[0])
+    assert "--query-file" not in argv and "prompt.md" not in argv
+    assert argv[argv.index("--query") + 1] == RESUME_NOTE
+    assert "--discard-unknown" in argv
+
+
+def test_second_shutdown_and_boot_resumes_again_with_one_resume_flag(monkeypatch, checkpoint, chat_home):
+    checkpoint.write_text(json.dumps([_boot_entry()]))
+    first = ProcessRegistry()
+    _spawn_recorder(monkeypatch, first, [])
+    _boot(first)
+    session = first.get("proc_att")
+    session.process = None
+
+    gateway = ProcessRegistry()
+    gateway._running[session.id] = session
+    _stub_signal(monkeypatch, gateway)
+    gateway.kill_all(source="gateway_shutdown")
+
+    spawned = []
+    second = ProcessRegistry()
+    _spawn_recorder(monkeypatch, second, spawned)
+    monkeypatch.setattr(second, "_detached_host_fate", lambda *_a: "gone")
+    assert _boot(second) == 1
+
+    entry = json.loads(checkpoint.read_text())[0]
+    assert entry["resume_count"] == 2 and entry["argv"] == ARGV
+    assert _launched(spawned[0]).count("--resume") == 1
 
 
 def test_boot_at_resume_cap_only_notices(monkeypatch, checkpoint, chat_home):
     checkpoint.write_text(json.dumps([_boot_entry(resume_count=3)]))
     registry = ProcessRegistry()
-    _spawn_recorder(monkeypatch, registry, [])
-    monkeypatch.setattr(registry, "_spawn_job",
-                        lambda *a, **kw: pytest.fail("relaunched past the cap"))
+    _forbid_spawn(monkeypatch, registry, "relaunched past the cap")
 
-    registry.recover_from_checkpoint()
+    _boot(registry)
 
-    assert [n["session_id"] for n in registry.pending_watchers] == ["proc_att"]
+    assert _notices(registry) == ["outcome UNKNOWN, verify before retrying"]
     assert json.loads(checkpoint.read_text())[0]["resume_count"] == 3
 
 
-def test_boot_never_relaunches_unadmitted_argv(monkeypatch, checkpoint, chat_home):
-    checkpoint.write_text(json.dumps([_boot_entry(argv=["sh", "-c", "hermes chat -Q"])]))
+def test_dead_running_entry_without_marker_is_not_relaunched(monkeypatch, checkpoint, chat_home):
+    entry = _boot_entry(marked=False, status="running")
+    entry["pid"] = 999999
+    checkpoint.write_text(json.dumps([entry]))
     registry = ProcessRegistry()
-    monkeypatch.setattr(registry, "_spawn_job",
-                        lambda *a, **kw: pytest.fail("relaunched an unadmitted argv"))
+    monkeypatch.setattr(registry, "_detached_host_fate", lambda *_a: "gone")
+    _forbid_spawn(monkeypatch, registry, "relaunched an unmarked entry")
+
+    _boot(registry)
+
+    assert _notices(registry) == ["outcome UNKNOWN, verify before retrying"]
+
+
+def test_boot_never_relaunches_unadmitted_argv(monkeypatch, checkpoint, chat_home):
+    argv = [*ARGV[:-2], "--api-key", "sk-inline", "--request-id", REQUEST_ID]
+    checkpoint.write_text(json.dumps([_boot_entry(argv=argv)]))
+    registry = ProcessRegistry()
+    _forbid_spawn(monkeypatch, registry, "relaunched an unadmitted argv")
+
+    _boot(registry)
+
+    assert _notices(registry) == ["outcome UNKNOWN, verify before retrying"]
+
+
+def test_no_receipt_means_no_spawn(monkeypatch, checkpoint):
+    checkpoint.write_text(json.dumps([_boot_entry()]))
+    registry = ProcessRegistry()
+    _forbid_spawn(monkeypatch, registry, "relaunched without a chat session")
+
+    _boot(registry)
+
+    entry = json.loads(checkpoint.read_text())[0]
+    assert entry["resume_reason"] == SHUTDOWN_RESUME_REASON and entry["resume_count"] == 0
+
+
+def test_managed_worker_recover_does_not_relaunch(monkeypatch, checkpoint, chat_home):
+    checkpoint.write_text(json.dumps([_boot_entry()]))
+    registry = ProcessRegistry()
+    _forbid_spawn(monkeypatch, registry, "a managed worker relaunched")
 
     registry.recover_from_checkpoint()
 
-    assert [n["session_id"] for n in registry.pending_watchers] == ["proc_att"]
+    assert json.loads(checkpoint.read_text())[0]["resume_reason"] == SHUTDOWN_RESUME_REASON
+
+
+def test_racing_recoverers_spawn_once(monkeypatch, checkpoint, chat_home):
+    checkpoint.write_text(json.dumps([_boot_entry()]))
+    first, rival = ProcessRegistry(), ProcessRegistry()
+    _forbid_spawn(monkeypatch, rival, "the second recoverer relaunched too")
+    spawns = []
+
+    def spawn(session, argv, *a, **kw):
+        _boot(rival)  # the rival reads the checkpoint after this recoverer's claim
+        spawns.append(argv)
+        return SimpleNamespace(pid=5150)
+
+    monkeypatch.setattr(first, "_spawn_job", spawn)
+    monkeypatch.setattr(first, "_reader_loop", lambda session: None)
+    _boot(first)
+
+    assert len(spawns) == 1
+
+
+def test_spawn_failure_restores_entry_and_keeps_recovering(monkeypatch, checkpoint, chat_home):
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        registry = ProcessRegistry()
+        live = {"session_id": "proc_live", "pid": child.pid, "pid_scope": "host", "command": "sleep",
+                "host_start_time": registry._safe_host_start_time(child.pid), "started_at": 1.0}
+        checkpoint.write_text(json.dumps([_boot_entry(), live]))
+
+        def boom(*_a, **_kw):
+            raise OSError("hermes not found")
+
+        monkeypatch.setattr(registry, "_spawn_job", boom)
+        assert _boot(registry) == 1
+
+        assert registry.get("proc_live") is not None
+        entry = next(e for e in json.loads(checkpoint.read_text()) if e["session_id"] == "proc_att")
+        assert entry["attempt_status"] == "unknown" and entry["resume_count"] == 0
+        assert entry["resume_reason"] == SHUTDOWN_RESUME_REASON
+        assert "outcome UNKNOWN, verify before retrying" in _notices(registry)
+    finally:
+        child.kill()
+        child.wait()
+
+
+@pytest.mark.asyncio
+async def test_resumed_notice_keeps_the_relaunched_entry(monkeypatch, checkpoint, chat_home):
+    from gateway.run_notifications import GatewayNotificationsMixin
+
+    checkpoint.write_text(json.dumps([_boot_entry()]))
+    registry = ProcessRegistry()
+    _spawn_recorder(monkeypatch, registry, [])
+    monkeypatch.setattr(module, "process_registry", registry)
+    _boot(registry)
+    notice = next(n for n in registry.pending_watchers if n.get("recovery_notice"))
+    sent = []
+
+    async def enqueue(text, _event):
+        sent.append(text)
+        return True
+
+    await GatewayNotificationsMixin._watch_process(
+        SimpleNamespace(_enqueue_process_completion_notification=enqueue), notice)
+
+    assert sent == ["Background job proc_att: resumed after gateway restart (1/3)"]
+    assert [e["session_id"] for e in json.loads(checkpoint.read_text())] == ["proc_att"]

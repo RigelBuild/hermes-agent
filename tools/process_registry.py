@@ -575,6 +575,7 @@ class ProcessSession:
     request_id: str = ""
     attempt_token: str = ""
     resume_count: int = 0
+    resume_session_id: str = ""                  # chat session a shutdown-killed attempt resumes
     attempt_status: str = ""                    # pending, running, or claimed attempt
     attempt_owner_pid: Optional[int] = None      # process writing the initial resumable checkpoint
     attempt_owner_started_at: Optional[int] = None
@@ -669,7 +670,8 @@ _CHECKPOINT_FIELDS = (
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
     "heartbeat_seconds", "persist_on_release", "output_log", "argv", "request_id",
-    "attempt_token", "resume_count", "attempt_status", "attempt_owner_pid", "attempt_owner_started_at")
+    "attempt_token", "resume_count", "resume_session_id", "attempt_status", "attempt_owner_pid",
+    "attempt_owner_started_at")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -2177,13 +2179,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     @staticmethod
     def _shutdown_resume_entries(session: ProcessSession, source: str) -> list[dict[str, Any]]:
-        """Keep an admitted attempt killed by gateway shutdown as ``unknown`` so boot can resume it."""
-        from agent.redact import redact_sensitive_text
+        """Keep an admitted attempt killed by gateway shutdown, marked so boot can resume it."""
+        from tools.process_registry_checkpoint import SHUTDOWN_RESUME_REASON, checkpoint_entry
         if source != "gateway_shutdown" or not session.attempt_token or not session.argv:
             return []
-        entry = {"session_id": session.id, **{f: getattr(session, f) for f in _CHECKPOINT_FIELDS}}
-        entry.update(attempt_status="unknown", command=redact_sensitive_text(session.command, code_file=True),
-                     owner_task_id=session.owner_task_id or session.task_id)
+        entry = checkpoint_entry(session)
+        entry.update(attempt_status="unknown", resume_reason=SHUTDOWN_RESUME_REASON)
         return [entry]
 
     def kill_process(
