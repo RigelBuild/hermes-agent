@@ -88,3 +88,42 @@ async def test_resume_displays_unknown_and_queue_then_discards_with_refreshed_ge
             "execution_generation": refreshed["pending"][0]["execution_generation"],
         }),
     ]
+
+
+@pytest.mark.asyncio
+async def test_discard_unknown_settles_the_lost_turn_before_the_oneshot_note(monkeypatch):
+    """A gateway relaunch resumes with --discard-unknown: the lost turn is acknowledged first,
+    so the finite continuation note is submitted instead of refused."""
+    from contextlib import asynccontextmanager
+
+    from hermes_cli import gateway_chat
+    from hermes_cli.gateway_chat_view import GatewayChatView
+
+    lost = {"admission_id": "admission-lost", "status": "unknown", "execution_generation": 4}
+    snapshots = [{"stored_session_id": "stored", "execution_generation": 4, "pending": [lost], "info": {}},
+                 {"stored_session_id": "stored", "execution_generation": 5, "pending": [], "info": {}}]
+    calls, ran = [], []
+
+    class Peer:
+        async def rpc(self, method, **params):
+            calls.append((method, params))
+            if method == "session.resume":
+                return snapshots.pop(0)
+            return {}
+
+    @asynccontextmanager
+    async def connected():
+        yield Peer()
+
+    async def run(self, query, *, oneshot):
+        ran.append((query, oneshot, self.unknown_admissions()))
+        return 0
+
+    monkeypatch.setattr(gateway_chat, "connect_gateway", connected)
+    monkeypatch.setattr(GatewayChatView, "run", run)
+    args = argparse.Namespace(resume="stored", discard_unknown=True, query="continue", quiet=True)
+    assert await gateway_chat.run_gateway_chat(args) == 0
+
+    assert ("prompt.resolve_unknown", {"session_id": "stored", "admission_id": "admission-lost",
+                                       "execution_generation": 4}) in calls
+    assert ran == [("continue", True, [])]

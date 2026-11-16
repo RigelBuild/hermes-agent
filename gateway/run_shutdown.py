@@ -1680,6 +1680,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         self._restart_task_started = True
         # Refuse new turns; keep ``_running`` True so the active turn can still deliver its final response.
         self._draining = True
+        # The restart wait ends in stop(): an admitted chat that loses its gateway now is kept resumable.
+        from tools.process_registry import process_registry
+        process_registry.shutting_down = True
         from gateway.drain_control import open_restart_wait
         open_restart_wait(self)  # clients may still answer a turn parked on approval/clarify (#139041)
         # The restart's after-turn wait is a drain window too: pollers of GET /v1/runs/{id} must see
@@ -1826,6 +1829,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         self._running = False
         self._clear_plugin_message_injector()
         self._draining = True
+        # Before the drain: an admitted chat that loses its gateway now is kept resumable.
+        from tools.process_registry import process_registry
+        process_registry.shutting_down = True
         from gateway.run_runtime import drain_gateway_runtime
         await drain_gateway_runtime(self)
         self._mark_api_runs_shutdown_requested()

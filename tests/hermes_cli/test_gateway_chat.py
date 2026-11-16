@@ -351,3 +351,24 @@ async def test_oneshot_z_writes_no_session_lines_to_stderr_like_main(monkeypatch
     assert await gateway_chat.run_gateway_chat(argparse.Namespace(query="q", quiet=True)) == 0
     err = capsys.readouterr().err
     assert "Session: stored-z" in err and "session_id: stored-z" in err
+
+
+@pytest.mark.parametrize("lost", ["DISCONNECTED", "NOT_SENT"])
+def test_lost_gateway_exits_with_its_own_code(monkeypatch, lost):
+    """A supervisor tells a lost gateway from a task failure by the exit code alone."""
+    from hermes_cli import gateway_chat, gateway_client
+
+    async def run(_args, emitter=None):
+        raise gateway_client.GatewayClientError(getattr(gateway_client, lost))
+
+    monkeypatch.setattr(gateway_chat, "validate_options", lambda _args: None)
+    monkeypatch.setattr(gateway_chat, "_register_terminal_process", lambda: None)
+    monkeypatch.setattr("hermes_cli.gateway_chat_startup.ensure_launch_provider", lambda _args: True)
+    monkeypatch.setattr(gateway_chat, "run_gateway_chat", run)
+    assert gateway_chat.launch_from_args(argparse.Namespace(query="q")) == gateway_client.GATEWAY_LOST_EXIT_CODE
+
+    async def failed(_args, emitter=None):
+        raise gateway_client.GatewayClientError("model refused the request")
+
+    monkeypatch.setattr(gateway_chat, "run_gateway_chat", failed)
+    assert gateway_chat.launch_from_args(argparse.Namespace(query="q")) == 1

@@ -86,7 +86,8 @@ _INTERRUPTED_EXIT_CODE = 130
 def _oneshot_exit_code(response: Optional[str], result: dict) -> int:
     """Map a finished ``-z`` turn onto its exit code: ``0`` only when the turn completed;
     ``130`` interrupted; ``2`` failed or stopped partway (``partial``, ``completed: False`` such
-    as the iteration budget); ``1`` a completed turn that produced no text at all.
+    as the iteration budget); ``1`` a completed turn that produced no text at all. Through the
+    gateway, ``76`` means the gateway stopped the turn or was lost, so the run may be resumed.
 
     The outcome is judged from the result, not from whether text was printed: a partial or
     failed turn usually leaves an explanation on stdout, and exiting 0 for it made scripts treat

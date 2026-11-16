@@ -7,6 +7,10 @@ JsonObject = Mapping[str, object]
 
 # Authenticated local WebSocket family, separate from the legacy Desktop API contract.
 CANONICAL_GATEWAY_PROTOCOL = 'hermes-gateway-v1'
+# A turn the gateway stops for its own shutdown carries one of these as its interrupt_message.
+GATEWAY_SHUTDOWN_CAUSE = 'Gateway shutting down'
+GATEWAY_RESTART_CAUSE = 'Gateway restarting'
+GATEWAY_STOP_CAUSES = frozenset({GATEWAY_SHUTDOWN_CAUSE, GATEWAY_RESTART_CAUSE})
 
 
 @dataclass(frozen=True)

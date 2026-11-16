@@ -1,6 +1,7 @@
 """Process startup phases; diagnostics remain in the gateway facade."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -728,11 +729,37 @@ def _start_gateway_early_environment_probe() -> None:
         logger.debug("early environment probe did not start", exc_info=True)
 
 
+async def _spawn_pending_relaunches() -> None:
+    """Relaunch shutdown-killed chats only now: their clients attach to a READY owner. Never raises."""
+    try:
+        from tools.process_registry import process_registry
+        # A lock, a checkpoint write and a Popen per claim stay off the event loop.
+        spawned, notices = await asyncio.to_thread(process_registry.spawn_queued_relaunches)
+        for notice in notices:
+            process_registry._arm_watcher(notice)
+        if spawned:
+            logger.info("Resumed %s background chat(s) killed by the last shutdown", spawned)
+    except Exception:
+        logger.warning("Resuming shutdown-killed background chats failed", exc_info=True)
+
+
+def _give_back_pending_relaunches() -> None:
+    """A startup that never reached READY leaves its claims for the next boot. Never raises."""
+    try:
+        from tools.process_registry import process_registry
+        if returned := process_registry.give_back_pending_relaunches():
+            logger.info("Returned %s unspawned background chat resume(s) for the next boot", returned)
+    except Exception:
+        logger.warning("Returning unspawned background chat resumes failed", exc_info=True)
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False,
                         verbosity: Optional[int] = 0, force: bool = False, idle_exit: bool = False) -> bool:
     """Run the gateway without ever turning an inherited daemon TTY (tmux respawn loop, hidden
     Windows console) into a lazy-install ``input()`` prompt that blocks the event loop (#125607)."""
     from pm.extras import suppress_interactive_install_prompts
+    from tools.process_registry import process_registry
+    process_registry.shutting_down = False  # an in-process restart must not inherit the last stop's flag
     with suppress_interactive_install_prompts():
         return await _start_gateway_runtime(config, replace, verbosity, force, idle_exit)
 
@@ -922,6 +949,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
             await await_session_socket_preload(ws_preload)
             # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
             publish_gateway_runtime_ready(runner)
+            await _spawn_pending_relaunches()
             runner._start_systemd_watchdog()
             if idle_exit:
                 from gateway.run_idle_exit import arm_unmanaged_idle_exit
@@ -944,6 +972,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
 
     finally:
         try:
+            _give_back_pending_relaunches()
             if runner is not None:
                 from gateway.run_runtime import drain_gateway_runtime
                 await drain_gateway_runtime(runner)

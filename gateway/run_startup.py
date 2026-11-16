@@ -1220,7 +1220,7 @@ class GatewayStartupMixin:
                 continue
             try:
                 with _profile_runtime_scope(Path(profile_home), {}):
-                    recovered += process_registry.recover_from_checkpoint()
+                    recovered += process_registry.recover_from_checkpoint(resume_shutdown_killed=True)
             except Exception:
                 logger.warning("Process checkpoint recovery for profile %r failed", profile_name, exc_info=True)
         return recovered
@@ -1240,7 +1240,7 @@ class GatewayStartupMixin:
         # served profile's file under its scope or those processes are never re-adopted.
         with _log_suppressed(logging.WARNING, "Process checkpoint recovery: %s"):
             from tools.process_registry import process_registry
-            recovered = process_registry.recover_from_checkpoint()
+            recovered = process_registry.recover_from_checkpoint(resume_shutdown_killed=True)
             recovered += self._recover_secondary_process_checkpoints(process_registry)
             if recovered:
                 logger.info("Recovered %s background process(es) from previous run", recovered)

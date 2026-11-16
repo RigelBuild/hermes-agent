@@ -9,7 +9,9 @@ from pathlib import Path
 import sys
 import uuid
 
-from hermes_cli.gateway_client import RESUME_KEY_MISMATCH, GatewayClientError, connect_gateway
+from hermes_cli.gateway_client import (
+    DISCONNECTED, GATEWAY_LOST_EXIT_CODE, NOT_SENT, RESUME_KEY_MISMATCH, GatewayClientError, connect_gateway,
+)
 from hermes_cli.gateway_connection import RESUME_REFUSALS
 
 # These options change execution or require frontend facilities not yet exposed by
@@ -159,6 +161,15 @@ async def _resume_latest(client, args):
                                  "or list sessions with `hermes sessions list`.") from None
 
 
+async def _discard_unknown(client, args, snapshot):
+    """Acknowledge the turns a gateway restart lost so the continuation note can run; never replays them."""
+    unknown = [row for row in snapshot.get("pending", []) if row.get("status") == "unknown"]
+    for row in unknown:
+        await client.rpc("prompt.resolve_unknown", session_id=snapshot["stored_session_id"],
+                         admission_id=row["admission_id"], execution_generation=row["execution_generation"])
+    return await _resume(client, args, session_id=snapshot["stored_session_id"]) if unknown else snapshot
+
+
 async def run_gateway_chat(args, emitter=None):
     from hermes_cli.gateway_chat_view import GatewayChatView
     query = getattr(args, "query", None) or getattr(args, "q", None)
@@ -194,6 +205,8 @@ async def run_gateway_chat(args, emitter=None):
                         f"No session found matching '{name}'. Use 'hermes sessions list' to see available "
                         "sessions, or pass -c <name> --create-if-missing to start a new session with that title.")
             check_resume_policy(args, snapshot)
+            if getattr(args, "discard_unknown", False):
+                snapshot = await _discard_unknown(client, args, snapshot)
         else:
             contract = description.get("session_create", {})
             # Finite runs are stored as ``oneshot`` (hidden from human pickers, still CLI history);
@@ -391,6 +404,8 @@ def launch_from_args(args) -> int:
     except (GatewayClientError, OSError, TimeoutError, WebSocketException) as exc:
         # WebSocket errors can embed credential URLs/remote bodies.
         message = str(exc) if isinstance(exc, GatewayClientError) else "Gateway connection/read failed; no local fallback"
+        if message in (DISCONNECTED, NOT_SENT):
+            return failed(message, GATEWAY_LOST_EXIT_CODE)
         return failed(message, 2 if isinstance(exc, GatewayClientError) and ("Unsupported" in message or "unsupported" in message) else 1)
     except KeyboardInterrupt:
         print("Detached; accepted work continues at the gateway.", file=sys.stderr)

@@ -575,6 +575,7 @@ class ProcessSession:
     request_id: str = ""
     attempt_token: str = ""
     resume_count: int = 0
+    resume_session_id: str = ""                  # chat session a shutdown-killed attempt resumes
     attempt_status: str = ""                    # pending, running, or claimed attempt
     attempt_owner_pid: Optional[int] = None      # process writing the initial resumable checkpoint
     attempt_owner_started_at: Optional[int] = None
@@ -669,7 +670,8 @@ _CHECKPOINT_FIELDS = (
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
     "heartbeat_seconds", "persist_on_release", "output_log", "argv", "request_id",
-    "attempt_token", "resume_count", "attempt_status", "attempt_owner_pid", "attempt_owner_started_at")
+    "attempt_token", "resume_count", "resume_session_id", "attempt_status", "attempt_owner_pid",
+    "attempt_owner_started_at")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -700,6 +702,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         self._running: dict[str, ProcessSession] = {}
         self._finished: dict[str, ProcessSession] = {}
         self._lock = threading.Lock()
+        # Relaunches boot recovery claimed, spawned once the gateway is READY.
+        self.pending_relaunches: list = []
+        # Set when the gateway starts stopping: an admitted chat that fails then is resumable.
+        self.shutting_down = False
         # Side-channel for check_interval watchers (gateway reads after agent run)
         self.pending_watchers: list[dict[str, Any]] = []
         # Unified queue for all background events (distinguished by "type"); the CLI
@@ -1636,7 +1642,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     def _publish_finished(self, session: ProcessSession, was_running: bool) -> None:
         self._release_finished_handles(session)
-        self._write_checkpoint()
+        # A chat that exits because it lost its gateway during a stop lost the gateway, not its task.
+        from hermes_cli.gateway_client import GATEWAY_LOST_EXIT_CODE
+        failed_in_shutdown = (self.shutting_down and session.completion_reason != "killed"
+                              and session.exit_code == GATEWAY_LOST_EXIT_CODE)
+        self._write_checkpoint(extra_entries=self._shutdown_resume_entries(
+            session, "gateway_shutdown" if failed_in_shutdown else ""))
         if was_running and session.notify_on_complete:
             notification = {
                 "type": "completion",
@@ -2175,6 +2186,16 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             "status": status, "command": session.command,
             **ProcessRegistry._exit_fields(session), **_completion_output(session)}
 
+    @staticmethod
+    def _shutdown_resume_entries(session: ProcessSession, source: str) -> list[dict[str, Any]]:
+        """Keep an admitted attempt killed by gateway shutdown, marked so boot can resume it."""
+        from tools.process_registry_checkpoint import SHUTDOWN_RESUME_REASON, checkpoint_entry
+        if source != "gateway_shutdown" or not session.attempt_token or not session.argv:
+            return []
+        entry = checkpoint_entry(session)
+        entry.update(attempt_status="unknown", resume_reason=SHUTDOWN_RESUME_REASON)
+        return [entry]
+
     def kill_process(
         self, session_id: str, *, source: str = "process.kill", consume_output: bool = True,
     ) -> dict:
@@ -2264,7 +2285,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # so the durable record matches what the caller was told.
             if not self._move_to_finished(session):
                 save_completed_result(session)
-            self._write_checkpoint()
+            self._write_checkpoint(extra_entries=self._shutdown_resume_entries(session, source))
             return {
                 "status": "killed", "session_id": session.id, "completion_reason": session.completion_reason,
                 "termination_source": session.termination_source, **output}
