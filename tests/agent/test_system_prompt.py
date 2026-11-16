@@ -976,11 +976,12 @@ class TestChildProcessGuidanceCarriage:
         text = CHILD_PROCESS_GUIDANCE.lower()
         # 1. evidence and results only
         assert "evidence" in text and "results" in text
-        # 2. no request to describe or explain internal process or the work
+        # 2. no request to describe or explain internal process
         assert "internal process" in text
-        assert "how they did the work" in text
-        # 3. no raw transcripts or hidden blocks; the final answer only
-        assert "raw transcript" in text and "hidden" in text and "final answer" in text
+        # The work-process clause conflicts with "commands run" and the delegate's "What you did".
+        assert "how they did the work" not in text
+        # 3. no raw transcripts or hidden or private message blocks; the final answer only
+        assert "raw transcript" in text and "hidden or private message blocks" in text and "final answer" in text
         # RIG-10290: these words never appear in prompt prose
-        for banned in ("reasoning", "thinking process", "chain of thought", "step by step", "explain your"):
+        for banned in ("reasoning", "thinking", "chain of thought", "step by step", "explain your"):
             assert banned not in text
