@@ -192,6 +192,46 @@ def test_recorded_exit_is_adopted(monkeypatch, tmp_path, status):
 
 
 @pytest.mark.asyncio
+async def test_recorded_exit_delivered_once_and_not_readopted(monkeypatch, tmp_path):
+    from tools import process_registry as module
+    from tools import process_registry_output_log as output_log
+    from gateway.run_notifications import GatewayNotificationsMixin
+    path = tmp_path / 'processes.json'
+    monkeypatch.setattr(module, 'CHECKPOINT_PATH', path)
+    monkeypatch.setattr(output_log, 'output_dir', lambda: tmp_path)
+    log = tmp_path / 'proc_finished.log'
+    log.write_text('done')
+    log.with_suffix('.exit').write_text('0')
+    path.write_text(json.dumps([{'session_id': 'proc_finished', 'attempt_token': 'token',
+        'attempt_status': 'unknown', 'output_log': str(log), 'pid': 99999999,
+        'notify_on_complete': True, 'watcher_interval': 5}]))
+    registry = ProcessRegistry()
+    monkeypatch.setattr(module, 'process_registry', registry)
+    assert registry.recover_from_checkpoint() == 1
+    session = registry.get('proc_finished')
+    session._reader_thread.join(timeout=5)
+    assert session.exited and session.exit_code == 0
+    watcher = registry.pending_watchers.pop()
+    watcher['check_interval'] = 0
+    assert not watcher['death_only']
+    runner = SimpleNamespace(_load_background_notifications_mode=lambda: 'concise',
+        _enqueue_process_completion_notification=AsyncMock(return_value=True),
+        _send_watcher_message=AsyncMock(), _launching_turn_active=AsyncMock(return_value=False),
+        _build_process_completion_event=lambda watcher, session, session_id: {
+            'type': 'completion', 'session_id': session_id, 'exit_code': session.exit_code,
+            'completion_reason': 'exited', 'output': 'done'},
+        _format_process_final_message=lambda *args: 'finished')
+    await GatewayNotificationsMixin._watch_process(runner, watcher)
+    assert runner._enqueue_process_completion_notification.await_count == 1
+    event = runner._enqueue_process_completion_notification.await_args.args[1]
+    assert event['exit_code'] == 0 and 'recovery_notice' not in event
+    registry._write_checkpoint()
+    successor = ProcessRegistry()
+    assert successor.recover_from_checkpoint() == 0
+    assert not successor.pending_watchers
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('delivery,remaining', [(False, True), (True, False), (None, False)])
 async def test_notice_settles_only_on_delivery(monkeypatch, tmp_path, delivery, remaining):
     from tools import process_registry as module

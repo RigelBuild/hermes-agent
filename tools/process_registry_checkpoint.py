@@ -69,7 +69,8 @@ class ProcessCheckpointMixin:
         except (OSError, ValueError):
             return []
         return [entry for entry in on_disk if isinstance(entry, dict)
-                and ((entry.get('attempt_token') and entry.get('attempt_status') == 'unknown')
+                and ((entry.get('attempt_token') and entry.get('attempt_status') == 'unknown'
+                      and not ((log := adoptable_log(entry.get('output_log'))) and _exit_path(log).exists()))
                      or (entry.get('session_id') not in known
                          and ((entry.get('attempt_token') and entry.get('attempt_status') in {'pending', 'running', 'claimed'})
                               or ((log := adoptable_log(entry.get('output_log'))) and Path(log).exists()
