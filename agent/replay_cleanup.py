@@ -145,11 +145,36 @@ def strip_dangling_tool_call_tail(agent_history: list[dict[str, Any]]) -> list[d
     return agent_history[:-1]
 
 
+def _recover_partial_tool_tail(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep recorded results and close unanswered calls without executing them again."""
+    end = len(history)
+    start = end
+    while start and history[start - 1].get("role") == "tool":
+        start -= 1
+    if start == end or not start:
+        return history
+    assistant = history[start - 1]
+    if assistant.get("role") != "assistant" or not assistant.get("tool_calls"):
+        return history
+    answered = {str(result.get("tool_call_id") or "") for result in history[start:end]}
+    missing = [call for call in assistant["tool_calls"] if _call_id(call) not in answered]
+    if not missing:
+        return history
+    return history + [
+        make_tool_result_message(
+            _call_name(call) or "unknown",
+            "interrupted by gateway restart; outcome unknown — verify before retrying",
+            _call_id(call), effect_disposition="unknown",
+        )
+        for call in missing
+    ]
+
+
 def sanitize_replay_history(agent_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Both strippers in canonical order (interrupted blocks, then dangling tail); same list object when nothing strips."""
     if not agent_history:
         return agent_history
-    return strip_dangling_tool_call_tail(strip_interrupted_tool_tails(agent_history))
+    return _recover_partial_tool_tail(strip_dangling_tool_call_tail(strip_interrupted_tool_tails(agent_history)))
 
 
 def canonicalize_replay_history(

@@ -88,6 +88,18 @@ def test_sanitize_replay_history_noop_on_clean_history():
     history = [_user("hi"), {"role": "assistant", "content": "hello"}]
     assert sanitize_replay_history(history) == history
 
+def test_partial_tool_batch_keeps_recorded_result_and_marks_unanswered_unknown():
+    assistant = {"role": "assistant", "tool_calls": [
+        {"id": "done", "function": {"name": "terminal", "arguments": "{}"}},
+        {"id": "pending", "function": {"name": "write_file", "arguments": "{}"}},
+    ]}
+    recorded = {"role": "tool", "tool_call_id": "done", "content": "side effect completed"}
+    recovered = sanitize_replay_history([_user("work"), assistant, recorded])
+    assert recovered[2] == recorded
+    assert recovered[3]["tool_call_id"] == "pending"
+    assert recovered[3]["content"] == "interrupted by gateway restart; outcome unknown — verify before retrying"
+    assert sanitize_replay_history(recovered) == recovered
+
 
 
 
