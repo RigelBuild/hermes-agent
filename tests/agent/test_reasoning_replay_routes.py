@@ -8,7 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from agent.message_sanitization import (
-    apply_reasoning_content_policy, reapply_reasoning_echo, reasoning_replay_route, rejected_reasoning_carriers,
+    apply_reasoning_content_policy, reapply_reasoning_echo, reasoning_replay_route,
+    rejected_reasoning_carriers,
 )
 from agent.transports.chat_completions import ChatCompletionsTransport
 
@@ -47,10 +48,13 @@ def _wire(provider, base_url, model="m", rejected=()):
     # everyone else: the de-facto standard alias
     ("zai", "https://api.z.ai/api/paas/v4", "glm-5.3", {"reasoning_content"}),
     ("openai-api", "https://api.openai.com/v1", "gpt-5", {"reasoning_content"}),
-    # Anthropic refuses replayed reasoning text sent through this gateway: the host is what
-    # identifies the route, so a generic provider name is not matched.
+    # Anthropic refuses replayed reasoning text sent through this gateway, so only Claude models on
+    # the gateway host are stripped. Other models served there keep the carriers and pad they had.
     ("litellm", "https://llm-gateway.internal.rigel.build/v1", "claude-opus-5-5", set()),
     ("custom", "https://llm-gateway.internal.rigel.build/v1", "claude-opus-5-5", set()),
+    ("custom", "https://llm-gateway.internal.rigel.build/v1", "openrouter/deepseek/deepseek-v4", {"reasoning_content", "reasoning"}),
+    ("custom", "https://llm-gateway.internal.rigel.build/v1", "gpt-6-luna", {"reasoning_content", "reasoning"}),
+    (None, "https://llm-gateway.internal.rigel.build/v1", "claude-opus-5-5", set()),
 ])
 def test_each_route_gets_exactly_the_carriers_it_reads(provider, base_url, model, expected):
     turn, bare = _wire(provider, base_url, model)
@@ -58,8 +62,10 @@ def test_each_route_gets_exactly_the_carriers_it_reads(provider, base_url, model
     if "reasoning_content" in expected:
         assert turn["reasoning_content"] == "thought"
     assert "extra_content" not in turn["tool_calls"][0]  # Gemini routes only
-    # A reasoning-less turn is never padded outside the must-echo tier.
-    assert "reasoning_content" not in bare
+    # A reasoning-less turn is padded only when the route reads reasoning_content and the model is
+    # must-echo (DeepSeek/Kimi/MiMo). A strict route never gets the pad (#45655).
+    route = reasoning_replay_route("chat_completions", provider, model, base_url)
+    assert (bare.get("reasoning_content") == " ") is (route.pad and "reasoning_content" in route.carriers)
     assert _TURN["reasoning_details"] is _DETAILS and "reasoning" in _TURN  # history untouched
 
 
@@ -70,16 +76,20 @@ def test_must_echo_pads_and_aliased_gemini_keeps_its_signature():
     assert gemini_alias["tool_calls"][0]["extra_content"] == {"google": {"thought_signature": "sig"}}
 
 
-def test_litellm_gateway_sends_no_replayed_reasoning_on_any_assistant_turn():
-    """The final chat_completions body for the Rigel LiteLLM gateway carries no reasoning
-    key on any assistant turn. The check runs the real replay path (policy, shape_wire_carriers,
-    transport build_kwargs) on stored history that carries reasoning on every assistant turn."""
+@pytest.mark.parametrize("provider", ["custom", "litellm"])
+def test_litellm_gateway_sends_no_replayed_reasoning_on_any_assistant_turn(provider):
+    """The final chat_completions body for the Rigel LiteLLM gateway carries no reasoning key on
+    any Claude assistant turn. The runtime names a configured LiteLLM entry ``custom``, so that
+    provider runs first. The check drives the copy helper and the route the agent would use."""
+    from agent.agent_runtime_helpers import copy_reasoning_content_for_api
     from agent.reasoning_carriers import shape_wire_carriers
 
     url = "https://llm-gateway.internal.rigel.build/v1"
     model = "claude-opus-5-5"
-    route = reasoning_replay_route("chat_completions", "litellm", model, url)
-    assert route.carriers == frozenset() and route.pad is False
+    agent = SimpleNamespace(provider=provider, model=model, base_url=url, api_mode="chat_completions")
+    agent._reasoning_replay_route = lambda: reasoning_replay_route(
+        agent.api_mode, agent.provider, agent.model, agent.base_url)
+    assert agent._reasoning_replay_route().carriers == frozenset()
     stored = [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "go"},
@@ -89,11 +99,11 @@ def test_litellm_gateway_sends_no_replayed_reasoning_on_any_assistant_turn():
     api = []
     for source in stored:
         msg = deepcopy(source)
-        apply_reasoning_content_policy(source, msg, route.pad, route.carriers)
+        copy_reasoning_content_for_api(agent, source, msg)
         api.append(msg)
     wire = shape_wire_carriers(api, model=model, base_url=url)
     kwargs = ChatCompletionsTransport().build_kwargs(
-        model=model, messages=wire, tools=None, base_url=url, provider_name="litellm",
+        model=model, messages=wire, tools=None, base_url=url, provider_name=provider,
         supports_reasoning=True, reasoning_config={"enabled": True, "effort": "high"},
     )
     assistant = [m for m in kwargs["messages"] if m.get("role") == "assistant"]
