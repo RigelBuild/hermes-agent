@@ -289,7 +289,8 @@ class TestCliApprovalUi:
         assert seen["approval"].__self__ is cli
         from agent.delegation_prompt import CHILD_PROCESS_GUIDANCE
 
-        assert CHILD_PROCESS_GUIDANCE in seen["system_prompt"]
+        # The base system prompt carries the rule; /bg must not append a second copy.
+        assert CHILD_PROCESS_GUIDANCE not in (seen["system_prompt"] or "")
         assert seen["approval"].__func__ is HermesCLI._approval_callback
         assert seen["sudo"].__self__ is cli
         assert seen["sudo"].__func__ is HermesCLI._sudo_password_callback

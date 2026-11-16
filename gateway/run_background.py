@@ -41,7 +41,6 @@ class GatewayBackgroundMixin:
             _checkpoint_agent_kwargs, _current_max_iterations, _load_gateway_config,
             _platform_config_key,
         )
-        from agent.delegation_prompt import CHILD_PROCESS_GUIDANCE
         from run_agent import AIAgent
         media_urls = media_urls or []
         media_types = media_types or []
@@ -87,7 +86,6 @@ class GatewayBackgroundMixin:
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     **_checkpoint_agent_kwargs(user_config),
-                    ephemeral_system_prompt=CHILD_PROCESS_GUIDANCE,
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,

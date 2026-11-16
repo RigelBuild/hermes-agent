@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.delegation_context import owned_kanban_task
+from agent.delegation_prompt import CHILD_PROCESS_GUIDANCE
 from agent.prompt_cache_scope import conversation_id
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
@@ -571,7 +572,8 @@ def _identity_parts(agent: Any, ctx_len: Optional[int]) -> tuple[list[str], bool
 
 def _guidance_parts(agent: Any) -> list[str]:
     """Universal + tool-aware + model-gated guidance blocks, each gated by its config.yaml key."""
-    parts: list[str] = []
+    # Every session (chat, delegate child, /bg) carries the evidence-only rule exactly once.
+    parts: list[str] = [CHILD_PROCESS_GUIDANCE]
     if agent.valid_tool_names:
         parts += [
             text for flag, text in (

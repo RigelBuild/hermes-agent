@@ -490,6 +490,7 @@ def test_build_system_prompt_records_stable_prefix():
 
 def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
     """Keep workspace guidance intact after the shared context."""
+    from agent.delegation_prompt import CHILD_PROCESS_GUIDANCE
     from agent import system_prompt
 
     agent = _make_agent(
@@ -516,6 +517,7 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
     expected = "\n\n".join((
         "IDENTITY",
         "HELP",
+        CHILD_PROCESS_GUIDANCE,
         "STEER",
         "CODING_STABLE",
         "SYSTEM_MESSAGE",
@@ -544,7 +546,7 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
         prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
 
     assert prompt == expected
-    assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:4])
+    assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:5])
 
 
 class TestTelegramRichMessagesHint:
@@ -956,3 +958,30 @@ class TestConversationStartedTwoLine:
         vol = self._volatile(agent)
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
+
+
+class TestChildProcessGuidanceCarriage:
+    """RIG-10290: the evidence-only rule rides in every session's base system prompt."""
+
+    def test_plain_chat_prompt_carries_guidance_exactly_once(self, monkeypatch, tmp_path):
+        from agent.delegation_prompt import CHILD_PROCESS_GUIDANCE
+
+        monkeypatch.chdir(tmp_path)
+        prompt = _build(build_system_prompt, platform="cli", skip_context_files=True)
+        assert prompt.count(CHILD_PROCESS_GUIDANCE) == 1
+
+    def test_guidance_covers_all_three_rules(self):
+        from agent.delegation_prompt import CHILD_PROCESS_GUIDANCE
+
+        text = CHILD_PROCESS_GUIDANCE.lower()
+        # 1. evidence and results only
+        assert "evidence" in text and "results" in text
+        # 2. no request to describe or explain internal process
+        assert "internal process" in text
+        # The work-process clause conflicts with "commands run" and the delegate's "What you did".
+        assert "how they did the work" not in text
+        # 3. no raw transcripts or hidden or private message blocks; the final answer only
+        assert "raw transcript" in text and "hidden or private message blocks" in text and "final answer" in text
+        # RIG-10290: these words never appear in prompt prose
+        for banned in ("reasoning", "thinking", "chain of thought", "step by step", "explain your"):
+            assert banned not in text

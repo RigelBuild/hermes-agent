@@ -168,7 +168,7 @@ class TestStripBlockedTools(unittest.TestCase):
 
 
 class TestChildProcessGuidance(unittest.TestCase):
-    def test_delegated_child_system_prompt_includes_shared_rule(self):
+    def test_delegated_child_system_prompt_has_no_duplicate_guidance(self):
         from agent.delegation_prompt import CHILD_PROCESS_GUIDANCE
 
         parent = _make_mock_parent(depth=0)
@@ -186,7 +186,8 @@ class TestChildProcessGuidance(unittest.TestCase):
             )
 
         _, kwargs = MockAgent.call_args
-        assert CHILD_PROCESS_GUIDANCE in kwargs["ephemeral_system_prompt"]
+        # The base system prompt carries the rule; the child must not append a second copy.
+        assert CHILD_PROCESS_GUIDANCE not in kwargs["ephemeral_system_prompt"]
 
 
 class TestDelegateTask(unittest.TestCase):

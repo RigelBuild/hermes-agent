@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.delegation_prompt import CHILD_PROCESS_GUIDANCE
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
@@ -152,7 +151,7 @@ class TestRunBackgroundTask:
         assert agent_kwargs["checkpoint_max_snapshots"] == 8
         assert agent_kwargs["checkpoint_max_total_size_mb"] == 222
         assert agent_kwargs["checkpoint_max_file_size_mb"] == 3
-        assert CHILD_PROCESS_GUIDANCE in agent_kwargs["ephemeral_system_prompt"]
+        assert "ephemeral_system_prompt" not in agent_kwargs or not agent_kwargs["ephemeral_system_prompt"]
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
 

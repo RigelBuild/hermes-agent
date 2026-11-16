@@ -1350,7 +1350,6 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                 f"  {_t('background.task_id', task_id=task_id)}", f"  {_t('background.keep_chatting')}\n")
             return self._start_background_worker(task_id, task_num, preview, wait)
         from cli import set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
-        from agent.delegation_prompt import CHILD_PROCESS_GUIDANCE
         from run_agent import AIAgent
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
         if not self._ensure_runtime_credentials():
@@ -1377,7 +1376,6 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                     acp_args=runtime.get("args"), max_iterations=self.max_turns,
                     **{k: runtime.get(k) for k in ("api_key", "base_url", "provider", "api_mode",
                                                    "max_tokens")}, enabled_toolsets=self.enabled_toolsets,
-                    ephemeral_system_prompt=CHILD_PROCESS_GUIDANCE,
                     quiet_mode=True, verbose_logging=False, session_id=task_id, platform="cli",
                     side_agent=True,
                     session_db=self._session_db, reasoning_config=self.reasoning_config,
