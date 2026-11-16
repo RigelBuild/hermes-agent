@@ -335,7 +335,7 @@ class ProcessCheckpointMixin:
 
     def _relaunch_shutdown_killed(self, entry: dict[str, Any], checkpoint_path, lookup) -> bool:
         """Claim a dead attempt the gateway killed at shutdown, up to the cap, and queue its relaunch
-        for spawn_pending_relaunches; False when it was not claimed (the unknown notice then applies)."""
+        for spawn_queued_relaunches; False when it was not claimed (the unknown notice then applies)."""
         import contextvars
         from tools.process_resumable import resumable_chat_argv
 
@@ -360,13 +360,6 @@ class ProcessCheckpointMixin:
         # The spawn runs after READY, in this profile's scope captured now.
         self.pending_relaunches.append((contextvars.copy_context(), claimed, str(checkpoint_path), unknown))
         return True
-
-    def spawn_pending_relaunches(self) -> int:
-        """Spawn the relaunches boot recovery claimed and arm their notices; synchronous form."""
-        spawned, notices = self.spawn_queued_relaunches()
-        for notice in notices:
-            self._arm_watcher(notice)
-        return spawned
 
     def spawn_queued_relaunches(self) -> tuple[int, list[dict[str, Any]]]:
         """Spawn the claimed relaunches without touching the event loop; returns the notices to arm."""

@@ -135,3 +135,23 @@ async def test_ack_during_the_reattach_settles_against_its_snapshot(capsys):
         renderer.cancel()
         await asyncio.gather(renderer, return_exceptions=True)
     assert capsys.readouterr().out == "Hello\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cause, code", [("Gateway restarting", 76), ("Gateway shutting down", 76), (None, 130)])
+async def test_gateway_stop_interrupt_exits_lost_and_a_user_stop_stays_130(cause, code):
+    """A turn the gateway ended for its own stop exits GATEWAY_LOST_EXIT_CODE; a user Stop has no cause."""
+    from gateway.session_contract import GATEWAY_STOP_CAUSES
+    from hermes_cli.gateway_client import GATEWAY_LOST_EXIT_CODE
+    assert cause is None or cause in GATEWAY_STOP_CAUSES
+    assert code in (130, GATEWAY_LOST_EXIT_CODE)
+
+    async def answer(method, params):
+        if method == "prompt.submit":
+            return {"admission_id": "a", "status": "queued"}
+        if method == "session.resume":
+            return {"pending": [], "prompts": []}
+        return {"admission_id": "a", "status": "terminal", "outcome": "cancelled",
+                "result": {"final_response": "", "interrupted": True, "interrupt_message": cause}}
+    _view, result = await gapped(answer, lambda view: view.run("q", oneshot=True))
+    assert result == code

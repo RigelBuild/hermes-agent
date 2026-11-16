@@ -5,7 +5,8 @@ import logging
 import sys
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError
+from gateway.session_contract import GATEWAY_STOP_CAUSES
+from hermes_cli.gateway_client import GATEWAY_LOST_EXIT_CODE, GatewayClientError
 
 logger = logging.getLogger(__name__)
 
@@ -580,6 +581,9 @@ class GatewayChatView:
                               interrupted=bool(result.get("interrupted")) or outcome == "cancelled")
                 exit_code = (_oneshot_exit_code(text, result) if self.unattended
                              else turn_exit_code(result, kanban_worker=False))
+                if result.get("interrupted") and result.get("interrupt_message") in GATEWAY_STOP_CAUSES:
+                    # The gateway stopped this turn for its own shutdown: lost, not a user stop.
+                    exit_code = GATEWAY_LOST_EXIT_CODE
                 if self.usage_file:
                     self._write_usage_file(result, outcome)
                 if self.emitter is not None:

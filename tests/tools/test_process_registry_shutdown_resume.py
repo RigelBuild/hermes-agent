@@ -39,10 +39,18 @@ def _stub_signal(monkeypatch, registry):
     monkeypatch.setattr(registry, "_post_kill_survivors", lambda _session: [])
 
 
+def _spawn_after_ready(registry):
+    """The bootstrap's post-READY step: spawn off the loop, then arm the notices."""
+    spawned, notices = registry.spawn_queued_relaunches()
+    for notice in notices:
+        registry._arm_watcher(notice)
+    return spawned
+
+
 def _boot(registry):
     """Boot recovery, then the post-READY spawn of the relaunches it claimed."""
     recovered = registry.recover_from_checkpoint(resume_shutdown_killed=True)
-    registry.spawn_pending_relaunches()
+    _spawn_after_ready(registry)
     return recovered
 
 
@@ -378,7 +386,7 @@ def test_no_relaunch_spawns_before_ready(monkeypatch, checkpoint, chat_home):
     assert registry.recover_from_checkpoint(resume_shutdown_killed=True) == 1
     assert spawned == [] and len(registry.pending_relaunches) == 1
 
-    assert registry.spawn_pending_relaunches() == 1
+    assert _spawn_after_ready(registry) == 1
     assert len(spawned) == 1 and registry.pending_relaunches == []
 
 
@@ -401,3 +409,17 @@ def test_unspawned_claims_are_given_back(monkeypatch, checkpoint, chat_home):
     entry = json.loads(checkpoint.read_text())[0]
     assert entry["resume_reason"] == SHUTDOWN_RESUME_REASON and entry["resume_count"] == 0
     assert entry["attempt_status"] == "unknown" and registry.pending_relaunches == []
+
+
+# The client's exit code decides: a gateway-stop interrupt exits 76 and is kept, a user Stop exits 130 and is not.
+@pytest.mark.parametrize("exit_code, kept", [(GATEWAY_LOST_EXIT_CODE, True), (130, False)])
+def test_interrupt_exit_during_shutdown(checkpoint, exit_code, kept):
+    registry = ProcessRegistry()
+    session = _attempt()
+    registry._running[session.id] = session
+    registry._write_checkpoint()
+    registry.shutting_down = True
+
+    registry._finish_exited(session, exit_code)
+
+    assert any(e.get("session_id") == "proc_att" for e in json.loads(checkpoint.read_text())) is kept
