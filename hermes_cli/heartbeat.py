@@ -94,6 +94,19 @@ def _next_scheduled_fire(schedule: str, timezone: Optional[str], anchor: datetim
     return datetime.fromisoformat(result).timestamp()
 
 
+def _last_scheduled_slot(schedule: str, timezone: Optional[str], now: float) -> float:
+    """Latest cron slot at or before ``now``, stepped on the instant timeline so a repeated hour is not skipped."""
+    from cron.jobs import compute_next_run
+    slot, base = None, datetime.fromtimestamp(now - 86400, UTC)
+    while True:
+        nxt = datetime.fromisoformat(
+            compute_next_run({"kind": "cron", "expr": schedule}, base.isoformat(), timezone=timezone or None)
+        ).timestamp()
+        if nxt > now:
+            return slot if slot is not None else now
+        slot, base = nxt, datetime.fromtimestamp(nxt, UTC)
+
+
 @dataclass
 class HeartbeatState:
     """Serializable per-session heartbeat."""
@@ -516,8 +529,9 @@ class HeartbeatManager:
         """Return the injection prompt if the heartbeat is due, else None.
 
         The fire is recorded immediately (before the turn runs) so overlapping polls or a long turn can never
-        double-fire the same tick. Missed ticks coalesce: the anchor resets to NOW, not the theoretical
-        schedule.
+        double-fire the same tick. Missed interval ticks coalesce: the anchor resets to NOW. A scheduled tick
+        anchors to the cron slot it fires (the latest at or before NOW), so a late poll in a repeated DST hour
+        does not fire the same wall-clock slot twice.
         """
         with _CLAIM_LOCK:
             s = self._state
@@ -537,7 +551,8 @@ class HeartbeatManager:
                 self._state = stored
                 return None
             self._last_claim = (s.last_fired_at, s.fire_count)
-            s.last_fired_at = now if now is not None else time.time()
+            claimed_at = now if now is not None else time.time()
+            s.last_fired_at = _last_scheduled_slot(s.schedule, s.timezone, claimed_at) if s.schedule else claimed_at
             s.fire_count += 1
             self._save(s)
             return s.render_prompt()
