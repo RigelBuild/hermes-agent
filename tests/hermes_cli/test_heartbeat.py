@@ -321,6 +321,30 @@ def test_resume_inside_repeated_hour_does_not_refire_a_fired_slot(monkeypatch):
     assert manager.state.fire_count == 2
 
 
+def test_resume_after_multi_day_pause_waits_for_the_next_slot(monkeypatch):
+    """Daily 09:00 paused Mon 10:00, resumed Thu 12:00: the next fire is Fri 09:00, and nothing is due at resume."""
+    from hermes_cli import heartbeat
+
+    tz = ZoneInfo("America/New_York")
+    monday_fire = datetime(2026, 5, 4, 9, 0, tzinfo=tz).timestamp()
+    monday_pause = datetime(2026, 5, 4, 10, 0, tzinfo=tz).timestamp()
+    thursday_resume = datetime(2026, 5, 7, 12, 0, tzinfo=tz).timestamp()
+    now = {"t": monday_fire}
+    monkeypatch.setattr(heartbeat.time, "time", lambda: now["t"])
+    manager = HeartbeatManager("multi-day-pause", route_key="test:multi-day-pause")
+    manager.set("check", schedule="0 9 * * *", timezone="America/New_York")
+    manager.state.created_at = datetime(2026, 5, 3, 9, 0, tzinfo=tz).timestamp()
+    manager._save(manager.state)
+    assert manager.due_prompt(monday_fire) is not None
+    now["t"] = monday_pause
+    manager.pause()
+    now["t"] = thursday_resume
+    manager.resume()
+    friday_fire = datetime(2026, 5, 8, 9, 0, tzinfo=tz).timestamp()
+    assert manager.state.next_fire() == friday_fire
+    assert manager.due_prompt(thursday_resume) is None
+
+
 def test_weekly_claim_anchors_to_the_scan_start_when_no_slot_is_in_the_window():
     """A weekly cron claimed 5 days late has no slot in the one-day window: the anchor is the window start, not the poll."""
     manager = HeartbeatManager("weekly-anchor", route_key="test:weekly-anchor")

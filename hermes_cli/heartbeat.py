@@ -526,8 +526,9 @@ class HeartbeatManager:
                 now = time.time()
                 self._state.last_fired_at = now
                 if self._state.schedule:
-                    # Keep the last fired slot: moving the anchor to a poll inside a repeated hour lands on its second occurrence.
-                    self._state.schedule_anchor = self._state.schedule_anchor or now
+                    # Latest slot at or before now; keeps the old anchor when no newer slot exists (a fold resume).
+                    start = max(self._state.schedule_anchor, now - 86400)
+                    self._state.schedule_anchor = _last_scheduled_slot(self._state.schedule, self._state.timezone, start, now)
             self._save(self._state)
         return self._state
 
