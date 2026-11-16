@@ -576,6 +576,8 @@ class ProcessSession:
     attempt_token: str = ""
     resume_count: int = 0
     attempt_status: str = ""                    # pending, running, or claimed attempt
+    recovered_checkpoint_path: str = field(default="", repr=False)
+    attempt_unknown: bool = field(default=False, repr=False)
     pty_fallback: str = ""                      # why a pty=true local spawn runs in pipe mode instead
     # Watcher/notification routing (persisted for crash recovery)
     watcher_platform: str = ""
@@ -1054,7 +1056,14 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 self._finished[session.id] = session
             else:
                 self._finished.pop(session.id, None)
-        self._write_checkpoint()
+        checkpoint_path = session.recovered_checkpoint_path or None
+        if session.attempt_token:
+            session.attempt_unknown = True
+            try:
+                self._recover_interrupted_attempts(only_session_id=session.id, checkpoint_path=checkpoint_path)
+            except Exception:
+                logger.exception('Could not classify interrupted background job %s', session.id)
+        self._write_checkpoint(checkpoint_path=checkpoint_path, preserve_ids={session.id} if session.attempt_token else None)
         session._completion_event.set()
         return session if session.systemd_unit else None
 

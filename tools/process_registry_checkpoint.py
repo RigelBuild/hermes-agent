@@ -17,7 +17,7 @@ class ProcessCheckpointMixin:
 
     # ----- Checkpoint (crash recovery) -----
 
-    def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None):
+    def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None, *, checkpoint_path=None, preserve_ids=None):
         """Write running process metadata to the checkpoint file atomically."""
         from tools.process_registry import _checkpoint_path, _CHECKPOINT_FIELDS
 
@@ -45,15 +45,18 @@ class ProcessCheckpointMixin:
                 if extra_entries:
                     tracked_ids = {item.get("session_id") for item in entries}
                     entries.extend(item for item in extra_entries if item.get("session_id") not in tracked_ids)
-                known = {*self._running, *self._finished}
+                known = {*self._running, *self._finished} - (preserve_ids or set())
             from hermes_cli.active_sessions import _FileLock
             from utils import atomic_json_write
-            path = _checkpoint_path()
+            from pathlib import Path
+            path = Path(checkpoint_path) if checkpoint_path else _checkpoint_path()
             # Every interpreter of the profile (owner, each managed worker) rewrites this file from
             # its own table; a worker's output-log handoff is its only path to the next one, so a
             # writer keeps the handoffs it does not track (read-merge-write under one file lock).
             with _FileLock(path.with_name(path.name + ".lock")):
-                entries.extend(self._foreign_handoffs(path, known))
+                emitted = {entry.get('session_id') for entry in entries}
+                entries.extend(entry for entry in self._foreign_handoffs(path, known)
+                               if entry.get('session_id') not in emitted)
                 atomic_json_write(path, entries)
         except Exception as e:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
@@ -67,11 +70,14 @@ class ProcessCheckpointMixin:
             on_disk = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             return []
-        return [entry for entry in on_disk if isinstance(entry, dict) and entry.get("session_id") not in known
-                and ((entry.get("attempt_token") and entry.get("attempt_status") in {"pending", "running", "claimed", "unknown"})
-                     or ((log := adoptable_log(entry.get("output_log"))) and Path(log).exists()
-                         and (_exit_path(log).exists() or self._detached_host_fate(
-                             entry.get("pid"), entry.get("host_start_time")) == "running")))]
+        return [entry for entry in on_disk if isinstance(entry, dict)
+                and ((entry.get('attempt_token') and entry.get('attempt_status') == 'unknown'
+                      and not ((log := adoptable_log(entry.get('output_log'))) and _exit_path(log).exists()))
+                     or (entry.get('session_id') not in known
+                         and ((entry.get('attempt_token') and entry.get('attempt_status') in {'pending', 'running', 'claimed'})
+                              or ((log := adoptable_log(entry.get('output_log'))) and Path(log).exists()
+                                  and (_exit_path(log).exists() or self._detached_host_fate(
+                                      entry.get('pid'), entry.get('host_start_time')) == 'running')))))]
 
     def _write_resumable_entry(self, entry):
         """Persist an admitted attempt; corrupt checkpoint data disables admission."""
@@ -91,12 +97,13 @@ class ProcessCheckpointMixin:
             entries.append(entry)
             atomic_json_write(path, entries)
 
-    def _remove_resumable_entry(self, session_id, attempt_token):
+    def _remove_resumable_entry(self, session_id, attempt_token, checkpoint_path=None):
         from hermes_cli.active_sessions import _FileLock
         from tools.process_registry import _checkpoint_path
         from utils import atomic_json_write
 
-        path = _checkpoint_path()
+        from pathlib import Path
+        path = Path(checkpoint_path) if checkpoint_path else _checkpoint_path()
         with _FileLock(path.with_name(path.name + ".lock")):
             try:
                 entries = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -106,7 +113,18 @@ class ProcessCheckpointMixin:
                        and entry.get("session_id") == session_id and entry.get("attempt_token") == attempt_token)]
             atomic_json_write(path, entries)
 
-    def _recover_interrupted_attempts(self):
+    def _mark_adopted_attempt_running(self, path, session_id, token):
+        from hermes_cli.active_sessions import _FileLock
+        from utils import atomic_json_write
+        with _FileLock(path.with_name(path.name + '.lock')):
+            entries = json.loads(path.read_text(encoding='utf-8-sig'))
+            for entry in entries:
+                if (isinstance(entry, dict) and entry.get('session_id') == session_id
+                        and entry.get('attempt_token') == token and entry.get('attempt_status') == 'unknown'):
+                    entry['attempt_status'] = 'running'
+            atomic_json_write(path, entries)
+
+    def _recover_interrupted_attempts(self, only_session_id=None, checkpoint_path=None):
         """Mark interrupted attempts unknown and replay notices at least once on each boot."""
         from pathlib import Path
         from hermes_cli.active_sessions import _FileLock
@@ -114,7 +132,7 @@ class ProcessCheckpointMixin:
         from tools.process_registry_output_log import _exit_path, adoptable_log
         from utils import atomic_json_write
 
-        path = _checkpoint_path()
+        path = Path(checkpoint_path) if checkpoint_path else _checkpoint_path()
         notices = []
         with _FileLock(path.with_name(path.name + '.lock')):
             try:
@@ -125,11 +143,16 @@ class ProcessCheckpointMixin:
             for entry in entries:
                 if not isinstance(entry, dict) or not entry.get('attempt_token'):
                     continue
+                if only_session_id is not None and entry.get('session_id') != only_session_id:
+                    continue
                 status = entry.get('attempt_status')
                 if status not in {'pending', 'running', 'claimed', 'unknown'}:
                     continue
                 log = adoptable_log(entry.get('output_log'))
                 if log and Path(_exit_path(log)).exists():
+                    continue
+                pid = entry.get('pid')
+                if pid and self._detached_host_fate(pid, entry.get('host_start_time')) == 'running':
                     continue
                 if status != 'unknown':
                     entry['attempt_status'] = 'unknown'
@@ -137,13 +160,25 @@ class ProcessCheckpointMixin:
                 notices.append({
                     'session_id': entry['session_id'], 'session_key': entry.get('session_key', ''),
                     'parent_session_id': entry.get('parent_session_id', ''),
+                    'attempt_token': entry['attempt_token'],
+                    'checkpoint_path': str(path),
+                    'task_id': entry.get('task_id', ''), 'owner_task_id': entry.get('owner_task_id', ''),
+                    'command': entry.get('command', ''),
                     'started_at': entry.get('started_at', 0),
                     'recovery_notice': 'outcome UNKNOWN, verify before retrying',
                     **{key: entry.get('watcher_' + key, '') for key in _WATCHER_ROUTE_KEYS},
                 })
             if changed:
                 atomic_json_write(path, entries)
-        self.pending_watchers.extend(notices)
+        if only_session_id is None:
+            self.pending_watchers.extend(notices)
+        else:
+            import sys
+            runner_ref = getattr(sys.modules.get('gateway.run'), '_gateway_runner_ref', None)
+            runner = runner_ref() if callable(runner_ref) else None
+            for notice in notices:
+                if runner is None or not runner.arm_process_watcher(notice):
+                    self.pending_watchers.append(notice)
 
     def recover_from_checkpoint(self) -> int:
         """On gateway startup, probe PIDs from the checkpoint file; returns how many
@@ -160,7 +195,10 @@ class ProcessCheckpointMixin:
         checkpoint_path = _checkpoint_path()
         if not checkpoint_path.exists():
             return 0
-        self._recover_interrupted_attempts()
+        try:
+            self._recover_interrupted_attempts()
+        except Exception:
+            logger.exception('Could not classify interrupted background jobs')
         try:
             entries = json.loads(checkpoint_path.read_text(encoding="utf-8-sig"))
         except Exception:
@@ -169,7 +207,12 @@ class ProcessCheckpointMixin:
         unresolved_scope_entries: list[dict[str, Any]] = []
         for entry in entries:
             if entry.get('attempt_status') == 'unknown':
-                continue
+                from tools.process_registry_output_log import _exit_path
+                log = adoptable_log(entry.get('output_log'))
+                pid = entry.get('pid')
+                if not ((log and _exit_path(log).exists()) or
+                        (pid and self._detached_host_fate(pid, entry.get('host_start_time')) == 'running')):
+                    continue
             pid, pid_scope = entry.get("pid"), entry.get("pid_scope", "host")
             if not pid:
                 continue
@@ -220,6 +263,13 @@ class ProcessCheckpointMixin:
             # (and recorded exit) outlives its spawner, so tail it from the start.
             fields["output_log"] = log
             session = ProcessSession(id=entry["session_id"], detached=True, **fields)
+            if session.attempt_status == 'unknown':
+                try:
+                    self._mark_adopted_attempt_running(checkpoint_path, session.id, session.attempt_token)
+                except Exception:
+                    logger.exception('Could not mark adopted background job %s running', session.id)
+                session.attempt_status = 'running'
+            session.recovered_checkpoint_path = str(checkpoint_path)
             if session.output_log:
                 self._track_started(session, self._log_reader_loop, f"proc-log-reader-{session.id}")
             else:
@@ -228,13 +278,14 @@ class ProcessCheckpointMixin:
             recovered += 1
             logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
             # Re-enqueue watcher so gateway can resume notifications
-            if session.watcher_interval > 0:
+            if session.watcher_interval > 0 or session.attempt_token:
                 self.pending_watchers.append({
                     "session_id": session.id,
-                    "check_interval": session.watcher_interval,
+                    "check_interval": session.watcher_interval or 5,
                     "session_key": session.session_key,
                     **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
                     "notify_on_complete": session.notify_on_complete,
+                    "death_only": session.watcher_interval <= 0,
                     "parent_session_id": session.parent_session_id,
                 })
         self._write_checkpoint(extra_entries=unresolved_scope_entries)

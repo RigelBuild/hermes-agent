@@ -1899,9 +1899,16 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         from tools.process_registry_notifications import format_process_notification, should_surface_notification
         notice = watcher.get('recovery_notice')
         if notice:
-            event = {'type': 'completion', **watcher, 'command': '', 'exit_code': None,
+            event = {'type': 'completion', **watcher, 'exit_code': None,
                      'completion_reason': 'unknown', 'output': notice}
-            await self._enqueue_process_completion_notification(notice, event)
+            text = f"Background job {watcher['session_id']}: {notice}"
+            delivered = await self._enqueue_process_completion_notification(text, event)
+            if delivered is not False:
+                try:
+                    process_registry._remove_resumable_entry(
+                        watcher['session_id'], watcher['attempt_token'], watcher.get('checkpoint_path'))
+                except Exception:
+                    logger.exception('could not settle recovery notice for %s', watcher['session_id'])
             return
         session_id = watcher["session_id"]
         interval = watcher["check_interval"]
@@ -1912,7 +1919,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         notify_mode = self._load_background_notifications_mode()  # the owning profile's (scope bound above)
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
-        silent = notify_mode == "off" and not agent_notify
+        silent = watcher.get('death_only', False) or (notify_mode == "off" and not agent_notify)
         last_output_len = 0
         completion_attempts = 0
         retry_interval = interval
@@ -1920,6 +1927,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             await asyncio.sleep(retry_interval)
             session = process_registry.get(session_id)
             if session is None:
+                break
+            if getattr(session, 'attempt_unknown', False):
                 break
             surface = should_surface_notification({
                 "owner_task_id": getattr(session, "owner_task_id", ""),
