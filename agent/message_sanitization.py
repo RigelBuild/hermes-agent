@@ -681,6 +681,8 @@ _REASONING_CARRIER_ROUTES: tuple = (
     # (carriers, providers (lowered), hosts) — evidence per row in the PR body / FINDINGS.
     (frozenset(), frozenset({"mistral", "groq", "cerebras", "sambanova"}),
      ("mistral.ai", "groq.com", "cerebras.ai", "sambanova.ai", "hunyuan.cloud.tencent.com")),
+    # Anthropic refuses replayed reasoning text sent through this gateway.
+    (frozenset(), frozenset(), ("llm-gateway.internal.rigel.build",)),
     # Fireworks' ChatMessage schema is additionalProperties:false with reasoning_content only.
     (frozenset({RC}), frozenset({"fireworks"}), ("fireworks.ai",)),
     # OpenRouter-format gateways read the unified array, the string and the alias.
