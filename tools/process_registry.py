@@ -702,6 +702,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         self._running: dict[str, ProcessSession] = {}
         self._finished: dict[str, ProcessSession] = {}
         self._lock = threading.Lock()
+        # Relaunches boot recovery claimed, spawned once the gateway is READY.
+        self.pending_relaunches: list = []
+        # Set when the gateway starts stopping: an admitted chat that fails then is resumable.
+        self.shutting_down = False
         # Side-channel for check_interval watchers (gateway reads after agent run)
         self.pending_watchers: list[dict[str, Any]] = []
         # Unified queue for all background events (distinguished by "type"); the CLI
@@ -1638,7 +1642,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     def _publish_finished(self, session: ProcessSession, was_running: bool) -> None:
         self._release_finished_handles(session)
-        self._write_checkpoint()
+        # A chat that fails while the gateway stops lost its gateway, not its task: keep it resumable.
+        failed_in_shutdown = self.shutting_down and session.completion_reason != "killed" and session.exit_code != 0
+        self._write_checkpoint(extra_entries=self._shutdown_resume_entries(
+            session, "gateway_shutdown" if failed_in_shutdown else ""))
         if was_running and session.notify_on_complete:
             notification = {
                 "type": "completion",

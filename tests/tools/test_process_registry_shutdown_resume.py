@@ -39,7 +39,10 @@ def _stub_signal(monkeypatch, registry):
 
 
 def _boot(registry):
-    return registry.recover_from_checkpoint(resume_shutdown_killed=True)
+    """Boot recovery, then the post-READY spawn of the relaunches it claimed."""
+    recovered = registry.recover_from_checkpoint(resume_shutdown_killed=True)
+    registry.spawn_pending_relaunches()
+    return recovered
 
 
 # (a) Shutdown kill keeps the attempt's checkpoint entry, marked as a gateway shutdown kill.
@@ -59,9 +62,11 @@ def test_shutdown_killed_attempt_keeps_marked_entry(monkeypatch, checkpoint):
     assert entries[0]["argv"] == ARGV
 
 
-# (b) A job that exits by itself is classified by its exit, not kept as resumable.
+# (b) Guard (passes before this change): a job that exits by itself outside a shutdown is
+# classified by its exit, not kept as resumable.
 @pytest.mark.parametrize("exit_code", [0, 1])
 def test_self_exit_is_not_kept_as_resumable(checkpoint, exit_code):
+    """Guard for existing behaviour, not a red-green test."""
     registry = ProcessRegistry()
     session = _attempt()
     registry._running[session.id] = session
@@ -71,6 +76,42 @@ def test_self_exit_is_not_kept_as_resumable(checkpoint, exit_code):
 
     entries = json.loads(checkpoint.read_text())
     assert all(e.get("session_id") != "proc_att" for e in entries)
+
+
+# A chat whose gateway drops while it stops exits 1 on its own: before or after kill_all, it stays resumable.
+@pytest.mark.parametrize("order", ["exit_then_kill_all", "kill_all_then_exit"])
+def test_failed_exit_during_shutdown_is_kept_resumable(monkeypatch, checkpoint, order):
+    registry = ProcessRegistry()
+    session = _attempt()
+    registry._running[session.id] = session
+    _stub_signal(monkeypatch, registry)
+    registry._write_checkpoint()
+    registry.shutting_down = True
+
+    if order == "exit_then_kill_all":
+        registry._finish_exited(session, 1)
+        registry.kill_all(source="gateway_shutdown")
+    else:
+        other = _attempt(sid="proc_other")
+        other.attempt_token = "tok2"
+        registry._running[other.id] = other
+        registry.kill_all(source="gateway_shutdown", exclude_ids=frozenset({session.id}))
+        registry._finish_exited(session, 1)
+
+    entry = next(e for e in json.loads(checkpoint.read_text()) if e["session_id"] == "proc_att")
+    assert entry["resume_reason"] == SHUTDOWN_RESUME_REASON and entry["attempt_status"] == "unknown"
+
+
+def test_clean_exit_during_shutdown_is_not_kept(checkpoint):
+    registry = ProcessRegistry()
+    session = _attempt()
+    registry._running[session.id] = session
+    registry._write_checkpoint()
+    registry.shutting_down = True
+
+    registry._finish_exited(session, 0)
+
+    assert all(e.get("session_id") != "proc_att" for e in json.loads(checkpoint.read_text()))
 
 
 # (c) and (d) Boot relaunch. The chat session id comes from the creation receipt
@@ -259,7 +300,7 @@ def test_spawn_failure_restores_entry_and_keeps_recovering(monkeypatch, checkpoi
             raise OSError("hermes not found")
 
         monkeypatch.setattr(registry, "_spawn_job", boom)
-        assert _boot(registry) == 1
+        _boot(registry)
 
         assert registry.get("proc_live") is not None
         entry = next(e for e in json.loads(checkpoint.read_text()) if e["session_id"] == "proc_att")
@@ -292,3 +333,44 @@ async def test_resumed_notice_keeps_the_relaunched_entry(monkeypatch, checkpoint
 
     assert sent == ["Background job proc_att: resumed after gateway restart (1/3)"]
     assert [e["session_id"] for e in json.loads(checkpoint.read_text())] == ["proc_att"]
+
+
+def test_resumed_job_completion_is_not_deduplicated_by_the_notice(monkeypatch, checkpoint, chat_home):
+    from gateway.run_notifications import GatewayNotificationsMixin
+    identity = GatewayNotificationsMixin._completion_delivery_identity
+
+    checkpoint.write_text(json.dumps([{**_boot_entry(), "notify_on_complete": True}]))
+    registry = ProcessRegistry()
+    _spawn_recorder(monkeypatch, registry, [])
+    _boot(registry)
+    notice = next(n for n in registry.pending_watchers if n.get("recovery_notice"))
+    delivered = {identity({"type": "completion", **notice})}
+
+    session = registry.get("proc_att")
+    session.process = None
+    registry._finish_exited(session, 0)
+    completion = registry.completion_queue.get_nowait()
+
+    assert completion["started_at"] != 1.0
+    assert identity(completion) is not None and identity(completion) not in delivered
+
+
+def test_no_relaunch_spawns_before_ready(monkeypatch, checkpoint, chat_home):
+    checkpoint.write_text(json.dumps([_boot_entry()]))
+    registry = ProcessRegistry()
+    spawned = []
+    _spawn_recorder(monkeypatch, registry, spawned)
+
+    assert registry.recover_from_checkpoint(resume_shutdown_killed=True) == 1
+    assert spawned == [] and len(registry.pending_relaunches) == 1
+
+    assert registry.spawn_pending_relaunches() == 1
+    assert len(spawned) == 1 and registry.pending_relaunches == []
+
+
+@pytest.mark.parametrize("source", [["--query-f", "prompt.md"], ["--que", "text"], ["--query-file=prompt.md"],
+                                    ["-qtext"], ["--image", "pic.png", "-q", "text"]])
+def test_launch_argv_drops_abbreviated_query_sources(source):
+    from tools.process_registry_checkpoint import resume_launch_argv
+    argv = resume_launch_argv(["hermes", "chat", "-Q", *source, "--yolo"], "sid")
+    assert argv == ["hermes", "chat", "-Q", "--yolo", "--resume", "sid", "--discard-unknown", "--query", RESUME_NOTE]

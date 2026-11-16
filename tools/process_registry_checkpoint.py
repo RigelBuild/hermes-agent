@@ -15,7 +15,7 @@ SHUTDOWN_RESUME_REASON = "gateway_shutdown"
 SHUTDOWN_RESUME_CAP = 3
 RESUME_NOTE = ("The gateway restarted while this run was in progress. "
                "Check what is already done, then continue the task.")
-_QUERY_FLAGS = ("-q", "--query", "--query-file")
+_DROPPED_DESTS = frozenset({"query", "query_file", "image"})
 
 
 def checkpoint_entry(s) -> dict[str, Any]:
@@ -40,16 +40,29 @@ def _without_request_id(argv: list[str]) -> list[str]:
     return argv[:at] + argv[at + 2:]
 
 
+def _option_dests(parser, token) -> set:
+    """The chat-parser destinations an option token resolves to (abbreviations included)."""
+    parsed = parser._parse_optional(token)
+    if parsed is None:
+        return set()
+    options = parsed if isinstance(parsed, list) else [parsed]
+    return {option[0].dest for option in options if option[0] is not None}
+
+
 def resume_launch_argv(argv: list[str], chat_session_id: str) -> list[str]:
-    """The stored argv with its query source swapped for the continuation note, resuming the chat."""
-    out, skip = [], False
-    for arg in argv:
+    """The stored argv without its query source or image, resuming the chat with the continuation note."""
+    from tools.process_resumable import _chat_parser
+    parser = _chat_parser()
+    out, skip = list(argv[:2]), False
+    for arg in argv[2:]:
         if skip:
             skip = False
-        elif arg in _QUERY_FLAGS:
-            skip = True
-        elif not (arg.startswith(("--query=", "--query-file=")) or (arg.startswith("-q") and len(arg) > 2)):
-            out.append(arg)
+            continue
+        if arg.startswith("-") and _option_dests(parser, arg) & _DROPPED_DESTS:
+            # A value glued on (--query-file=x, -qtext) needs no second token.
+            skip = "=" not in arg and not (arg[1] != "-" and len(arg) > 2)
+            continue
+        out.append(arg)
     return [*out, "--resume", chat_session_id, "--discard-unknown", "--query", RESUME_NOTE]
 
 
@@ -314,38 +327,68 @@ class ProcessCheckpointMixin:
             return True
         self._update_attempt(checkpoint_path, claimed, give_back)
 
-    def _relaunch_shutdown_killed(self, entry: dict[str, Any], checkpoint_path, lookup) -> Optional[Any]:
-        """Resume a dead attempt the gateway killed at shutdown, up to the cap; returns the new
-        session, or None when it was not relaunched (the unknown notice then applies)."""
+    def _relaunch_shutdown_killed(self, entry: dict[str, Any], checkpoint_path, lookup) -> bool:
+        """Claim a dead attempt the gateway killed at shutdown, up to the cap, and queue its relaunch
+        for spawn_pending_relaunches; False when it was not claimed (the unknown notice then applies)."""
+        import contextvars
         from tools.process_resumable import resumable_chat_argv
-        from tools.process_registry import ProcessSession, _CHECKPOINT_FIELDS, _CHECKPOINT_DEFAULTS
-        from tools.environments.local import _append_dropped_path_entries
 
         if (entry.get("resume_reason") != SHUTDOWN_RESUME_REASON
                 or int(entry.get("resume_count") or 0) >= SHUTDOWN_RESUME_CAP):
-            return None
+            return False
         argv = list(entry.get("argv") or [])
         admitted = _without_request_id(argv)
         if not admitted or resumable_chat_argv(shlex.join(admitted)) is None:
-            return None
+            return False
         sid = entry.get("resume_session_id") or lookup(entry.get("request_id"))
         if not sid:
             logger.warning("Not resuming background chat %s: no chat session for its request", entry.get("session_id"))
-            return None
+            return False
         claimed = self._claim_shutdown_resume(checkpoint_path, entry, sid)
         if claimed is None:
-            return None
+            return False
+        unknown = [w for w in self.pending_watchers
+                   if w.get("recovery_notice") and w.get("session_id") == claimed["session_id"]
+                   and w.get("attempt_token") == claimed.get("attempt_token")]
+        self.pending_watchers = [w for w in self.pending_watchers if not any(w is u for u in unknown)]
+        # The spawn runs after READY, in this profile's scope captured now.
+        self.pending_relaunches.append((contextvars.copy_context(), claimed, str(checkpoint_path), unknown))
+        return True
+
+    def spawn_pending_relaunches(self) -> int:
+        """Spawn the relaunches boot recovery claimed; the gateway calls this once it is READY."""
+        queued, self.pending_relaunches = self.pending_relaunches, []
+        spawned = 0
+        for context, claimed, checkpoint_path, unknown in queued:
+            session = context.run(self._spawn_claimed_relaunch, claimed, checkpoint_path)
+            notices = unknown if session is None else []
+            if session is not None:
+                spawned += 1
+                try:
+                    notices = self._resumed_watchers(session, checkpoint_path)
+                except Exception:
+                    logger.exception("Could not queue the resumed notice for %s", session.id)
+            for notice in notices:
+                self._arm_watcher(notice)
+        return spawned
+
+    def _spawn_claimed_relaunch(self, claimed, checkpoint_path):
+        from tools.process_registry import ProcessSession, _CHECKPOINT_FIELDS, _CHECKPOINT_DEFAULTS
+        from tools.environments.local import _append_dropped_path_entries
         try:
+            argv = list(claimed["argv"])
             fields = {f: claimed.get(f, _CHECKPOINT_DEFAULTS[f]) for f in _CHECKPOINT_FIELDS}
+            # A fresh spawn epoch gives this run its own completion identity.
             fields.update(command=claimed.get("command", "unknown"), argv=argv,
                           owner_task_id=claimed.get("owner_task_id", "") or claimed.get("task_id", ""),
-                          started_at=claimed.get("started_at", time.time()), pid=None, pid_scope="host",
+                          started_at=time.time(), pid=None, pid_scope="host",
                           host_start_time=None, systemd_unit="", output_log="")
             session = ProcessSession(id=claimed["session_id"], **fields)
-            session.recovered_checkpoint_path = str(checkpoint_path)
+            session.recovered_checkpoint_path = checkpoint_path
             # Same login-PATH fix-up as the original terminal spawn.
             command = _append_dropped_path_entries(
-                shlex.join(resume_launch_argv(argv, sid)), self._spawn_env(None).get("PATH", ""))
+                shlex.join(resume_launch_argv(argv, claimed["resume_session_id"])),
+                self._spawn_env(None).get("PATH", ""))
             return self._spawn_local_admitted(session, command, None, False, session.persist_on_release)
         except Exception:
             logger.exception("Could not resume background chat %s; leaving it for the next boot", claimed["session_id"])
@@ -355,39 +398,43 @@ class ProcessCheckpointMixin:
                 logger.exception("Could not restore background chat %s after a failed resume", claimed["session_id"])
             return None
 
-    def _announce_resumed(self, session, checkpoint_path) -> None:
-        """Swap the queued unknown notice for a resumed one that leaves the new entry in place."""
-        self.pending_watchers = [
-            w for w in self.pending_watchers
-            if not (w.get("recovery_notice") and w.get("session_id") == session.id
-                    and w.get("attempt_token") == session.attempt_token)]
+    def _arm_watcher(self, notice) -> None:
+        """Start a watcher on the serving gateway, else keep it for the next drain."""
+        import sys
+        runner_ref = getattr(sys.modules.get('gateway.run'), '_gateway_runner_ref', None)
+        runner = runner_ref() if callable(runner_ref) else None
+        if runner is None or not runner.arm_process_watcher(notice):
+            self.pending_watchers.append(notice)
+
+    def _resumed_watchers(self, session, checkpoint_path) -> list[dict[str, Any]]:
+        """A resumed notice that keeps the new entry, plus the relaunched session's own watcher.
+        The notice has no started_at, so it never shares the run's completion identity."""
         from tools.process_registry import _WATCHER_ROUTE_KEYS
-        self.pending_watchers.append({
+        notice = {
             "session_id": session.id, "session_key": session.session_key,
             "parent_session_id": session.parent_session_id, "attempt_token": session.attempt_token,
             "checkpoint_path": str(checkpoint_path), "task_id": session.task_id,
-            "owner_task_id": session.owner_task_id, "command": session.command, "started_at": session.started_at,
+            "owner_task_id": session.owner_task_id, "command": session.command,
             "recovery_notice": f"resumed after gateway restart ({session.resume_count}/{SHUTDOWN_RESUME_CAP})",
             "keep_entry": True,
             **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
-        })
-        self._queue_recovered_watcher(session)
+        }
+        return [notice, *self._recovered_watchers(session)]
 
-    def _queue_recovered_watcher(self, session) -> None:
-        """Re-enqueue the watcher so the gateway resumes this session's notifications."""
+    def _recovered_watchers(self, session) -> list[dict[str, Any]]:
+        """The watcher that resumes this session's notifications, if it needs one."""
         from tools.process_registry import _WATCHER_ROUTE_KEYS
-        if session.watcher_interval > 0 or session.attempt_token:
-            self.pending_watchers.append({
-                "session_id": session.id,
-                "check_interval": session.watcher_interval or 5,
-                "session_key": session.session_key,
-                **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
-                "notify_on_complete": session.notify_on_complete,
-                "death_only": session.watcher_interval <= 0,
-                "parent_session_id": session.parent_session_id,
-            })
-
-
+        if not (session.watcher_interval > 0 or session.attempt_token):
+            return []
+        return [{
+            "session_id": session.id,
+            "check_interval": session.watcher_interval or 5,
+            "session_key": session.session_key,
+            **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
+            "notify_on_complete": session.notify_on_complete,
+            "death_only": session.watcher_interval <= 0,
+            "parent_session_id": session.parent_session_id,
+        }]
 
     def recover_from_checkpoint(self, *, resume_shutdown_killed: bool = False) -> int:
         """On gateway startup, probe PIDs from the checkpoint file; returns how many
@@ -435,13 +482,10 @@ class ProcessCheckpointMixin:
                         (pid and self._detached_host_fate(pid, entry.get('host_start_time')) == 'running')):
                     if lookup is not None:
                         try:
-                            session = self._relaunch_shutdown_killed(entry, checkpoint_path, lookup)
+                            if self._relaunch_shutdown_killed(entry, checkpoint_path, lookup):
+                                recovered += 1
                         except Exception:
                             logger.exception('Could not resume background chat %s', entry.get('session_id'))
-                            session = None
-                        if session is not None:
-                            self._announce_resumed(session, checkpoint_path)
-                            recovered += 1
                     continue
             pid, pid_scope = entry.get("pid"), entry.get("pid_scope", "host")
             if not pid:
@@ -507,5 +551,5 @@ class ProcessCheckpointMixin:
                     self._running[session.id] = session
             recovered += 1
             logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
-            self._queue_recovered_watcher(session)
+            self.pending_watchers.extend(self._recovered_watchers(session))
         return recovered

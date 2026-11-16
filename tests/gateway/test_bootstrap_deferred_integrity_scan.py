@@ -128,3 +128,15 @@ async def test_clean_previous_exit_launches_no_scan(_startup):
 
     assert events == ["runner_started", "ready", ("runtime_waited", False)]
     assert not scan_entered.is_set()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_killed_chats_are_relaunched_only_after_ready(_startup, monkeypatch):
+    from gateway.config import GatewayConfig
+    from tools.process_registry import process_registry
+    events, _, _ = _startup
+    monkeypatch.setattr(process_registry, "spawn_pending_relaunches", lambda: events.append("relaunched") or 0)
+
+    assert await run_bootstrap.start_gateway(config=GatewayConfig(), replace=False, verbosity=None) is True
+
+    assert events.index("ready") < events.index("relaunched")
