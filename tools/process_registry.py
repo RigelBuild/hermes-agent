@@ -576,6 +576,8 @@ class ProcessSession:
     attempt_token: str = ""
     resume_count: int = 0
     attempt_status: str = ""                    # pending, running, or claimed attempt
+    attempt_owner_pid: Optional[int] = None      # process writing the initial resumable checkpoint
+    attempt_owner_started_at: Optional[int] = None
     recovered_checkpoint_path: str = field(default="", repr=False)
     attempt_unknown: bool = field(default=False, repr=False)
     pty_fallback: str = ""                      # why a pty=true local spawn runs in pipe mode instead
@@ -667,7 +669,7 @@ _CHECKPOINT_FIELDS = (
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
     "heartbeat_seconds", "persist_on_release", "output_log", "argv", "request_id",
-    "attempt_token", "resume_count", "attempt_status")
+    "attempt_token", "resume_count", "attempt_status", "attempt_owner_pid", "attempt_owner_started_at")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -1227,6 +1229,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 session.request_id = request_id
                 session.attempt_token = attempt["attempt_token"]
                 session.attempt_status = "pending"
+                session.attempt_owner_pid = attempt.get("attempt_owner_pid") or os.getpid()
+                session.attempt_owner_started_at = (
+                    attempt.get("attempt_owner_started_at") or self._safe_host_start_time(os.getpid()))
                 safe_command = _append_dropped_path_entries(shlex.join(argv), self._spawn_env(env_vars).get("PATH", "") if restore_login_path else "")
         try:
             return self._spawn_local_admitted(session, safe_command, env_vars, use_pty, persist_on_release)

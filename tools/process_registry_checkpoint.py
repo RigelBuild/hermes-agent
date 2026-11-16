@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import time
 from typing import Any, Dict, List, Optional
 
@@ -93,9 +94,19 @@ class ProcessCheckpointMixin:
                 entries = []
             if not isinstance(entries, list):
                 raise ValueError("invalid process checkpoint")
-            entries = [item for item in entries if isinstance(item, dict) and item.get("session_id") != entry["session_id"]]
-            entries.append(entry)
+            owner_pid = os.getpid()
+            attempt = {
+                **entry,
+                "attempt_owner_pid": owner_pid,
+                "attempt_owner_started_at": self._safe_host_start_time(owner_pid),
+            }
+            entries = [
+                item for item in entries
+                if isinstance(item, dict) and item.get("session_id") != attempt["session_id"]
+            ]
+            entries.append(attempt)
             atomic_json_write(path, entries)
+        entry.update(attempt)
 
     def _remove_resumable_entry(self, session_id, attempt_token, checkpoint_path=None):
         from hermes_cli.active_sessions import _FileLock
@@ -154,6 +165,10 @@ class ProcessCheckpointMixin:
                 pid = entry.get('pid')
                 if pid and self._detached_host_fate(pid, entry.get('host_start_time')) == 'running':
                     continue
+                if status == 'pending' and entry.get('attempt_owner_pid'):
+                    if self._detached_host_fate(
+                            entry['attempt_owner_pid'], entry.get('attempt_owner_started_at')) == 'running':
+                        continue
                 if status != 'unknown':
                     entry['attempt_status'] = 'unknown'
                     changed = True

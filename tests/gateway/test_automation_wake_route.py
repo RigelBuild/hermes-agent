@@ -32,6 +32,32 @@ async def test_wake_admits_as_the_committed_turn_when_the_origin_drifted(tmp_pat
     finally:
         authority.db.close()
 
+@pytest.mark.asyncio
+async def test_recovery_notice_routes_to_its_persisted_session(tmp_path, monkeypatch):
+    runner, authority, _adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    try:
+        route, sid = metadata['gateway_session_key'], metadata['gateway_session_id']
+        event = {
+            'type': 'completion', 'session_id': 'proc_recovered', 'session_key': route,
+            'parent_session_id': sid, 'attempt_token': 'attempt',
+            'recovery_notice': 'outcome UNKNOWN, verify before retrying',
+            'platform': 'discord', 'chat_type': 'dm', 'chat_id': '42', 'user_id': '42',
+            'exit_code': None, 'completion_reason': 'unknown',
+            'output': 'outcome UNKNOWN, verify before retrying', 'started_at': 1.0,
+        }
+        assert await runner._inject_watch_notification(
+            'Background job proc_recovered: outcome UNKNOWN, verify before retrying', event,
+        ) is True
+        rows = list_session_admissions(authority.db, session_id=authority.logical_owner(sid), pending_only=False)
+        assert len(rows) == 2
+        wake = rows[-1]['payload']['native_text_v1']
+        assert wake['source'] == {key: value for key, value in rows[0]['payload']['native_text_v1']['source'].items()
+                                  if key != 'message_id'}
+        assert rows[-1]['payload']['text'].startswith('Background job proc_recovered:')
+        assert route == runner.session_store._generate_session_key(source)
+    finally:
+        authority.db.close()
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('thread_id', [None, '9'])

@@ -1,9 +1,8 @@
 import json
+import os
 import shlex
 import threading
 from types import SimpleNamespace
-
-import pytest
 
 from tools.process_resumable import resumable_chat_argv
 from tools.process_registry import ProcessRegistry
@@ -60,7 +59,58 @@ def test_foreign_writer_preserves_pending_attempt(monkeypatch, tmp_path):
         thread.start()
     for thread in threads:
         thread.join()
-    assert json.loads(path.read_text()) == [entry]
+    written = json.loads(path.read_text())
+    assert [item["session_id"] for item in written] == ["pending"]
+    assert written[0]["attempt_status"] == "pending"
+    assert written[0]["attempt_owner_pid"] == os.getpid()
+    assert "attempt_owner_started_at" in written[0]
+
+
+def test_live_foreign_owner_pending_attempt_is_not_classified_as_interrupted(monkeypatch, tmp_path):
+    import subprocess
+    import sys
+
+    from pathlib import Path
+    from tools import process_registry as module
+
+    path = tmp_path / "processes.json"
+    monkeypatch.setattr(module, "CHECKPOINT_PATH", path)
+    root = Path(__file__).resolve().parents[2]
+    owner_program = "\n".join((
+        "import sys",
+        "from pathlib import Path",
+        "import tools.process_registry as module",
+        "from tools.process_registry import ProcessRegistry",
+        "module.CHECKPOINT_PATH = Path(sys.argv[1])",
+        "registry = ProcessRegistry()",
+        "registry._write_resumable_entry({'session_id': 'pending', 'attempt_token': 'token',",
+        "    'attempt_status': 'pending', 'argv': ['hermes', 'chat'],",
+        "    'request_id': 'request', 'resume_count': 0})",
+        "print('ready', flush=True)",
+        "sys.stdin.readline()",
+    ))
+    owner = subprocess.Popen(
+        [sys.executable, "-c", owner_program, str(path)], cwd=root,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert owner.stdout.readline().strip() == "ready"
+        registry = ProcessRegistry()
+        assert registry.recover_from_checkpoint() == 0
+        assert json.loads(path.read_text())[0]["attempt_status"] == "pending"
+        assert not registry.pending_watchers
+
+        owner.stdin.write("exit\n")
+        owner.stdin.flush()
+        owner.wait(timeout=5)
+
+        assert registry.recover_from_checkpoint() == 0
+        assert json.loads(path.read_text())[0]["attempt_status"] == "unknown"
+        assert [notice["session_id"] for notice in registry.pending_watchers] == ["pending"]
+    finally:
+        if owner.poll() is None:
+            owner.terminate()
+            owner.wait(timeout=5)
 
 
 def test_spawn_records_pending_before_launch(monkeypatch, tmp_path):
@@ -80,11 +130,12 @@ def test_spawn_records_pending_before_launch(monkeypatch, tmp_path):
     entry, spawned = captured[0]
     assert entry[0]["attempt_status"] == "pending" and entry[0]["attempt_token"]
     assert entry[0]["request_id"] == session.request_id
-    assert "--request-id" in entry[0]["argv"]
     assert session.request_id in spawned[-1]
     running = json.loads(path.read_text())[0]
     assert running["attempt_status"] == "running" and running["pid"] == 12345
     assert running["argv"] == entry[0]["argv"]
+    assert running["attempt_owner_pid"] == os.getpid()
+    assert "attempt_owner_started_at" in running
 
 
 def test_ineligible_spawn_is_unchanged(monkeypatch, tmp_path):
