@@ -156,9 +156,9 @@ class GatewaySessionStore:
             _check_resume_launch({**(launch or {}), "toolsets": getattr(cli, "_typed_toolsets", None),
                                   "ignore_rules": getattr(cli, "_explicit_ignore_rules", None) or None}, snapshot)
             return self._adopt(snapshot)
-        return self.create(launch)
+        return self.create(launch, request_id=getattr(cli, "_request_id", None))
 
-    def create(self, launch=None, title=None, *, record_cwd=True):
+    def create(self, launch=None, title=None, *, record_cwd=True, request_id=None):
         """``session.create`` with the launch policy (and ``title``: the owner's resolve -> create ->
         title step); adopts and returns the new session id. ``record_cwd=False`` (``/new``,
         ``--create-if-missing``) leaves the row's cwd empty, as main's explicit creates did."""
@@ -174,7 +174,7 @@ class GatewaySessionStore:
         if title:
             params["title"] = title
         params.update(self.client_env())
-        snapshot = self.call("session.create", request_id=uuid.uuid4().hex, **params)
+        snapshot = self.call("session.create", request_id=request_id or uuid.uuid4().hex, **params)
         warning = (snapshot.get("info") or {}).get("config_warning")
         if warning:
             print(f"Warning: {warning}", file=sys.stderr)

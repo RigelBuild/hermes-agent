@@ -54,6 +54,15 @@ def test_query_runs_main_hermes_cli(routed):
     assert calls["cli_main"]["query"] == "hello" and "gateway" not in calls
 
 
+def test_query_file_forwards_request_id(routed, tmp_path):
+    m, calls = routed
+    prompt = tmp_path / "prompt"
+    prompt.write_text("hello")
+    m.cmd_chat(_args(query_file=str(prompt), request_id="fixed-request"))
+    assert calls["cli_main"]["query"] == "hello"
+    assert calls["cli_main"]["request_id"] == "fixed-request"
+
+
 def test_cli_main_does_not_hand_off_to_thin_client():
     import inspect
 

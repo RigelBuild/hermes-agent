@@ -68,6 +68,17 @@ def test_new_session_is_created_on_the_gateway_and_its_id_adopted(store, monkeyp
     assert db.connection.state("local-new").info["model"] == "fake-model"
 
 
+def test_initial_request_id_is_not_reused_for_new_session(store):
+    db, client = store
+    instance = cli()
+    instance._request_id = "fixed-request"
+    db.open_session(instance, {})
+    db.create({}, record_cwd=False)
+    creates = [params for method, params in client.calls if method == "session.create"]
+    assert creates[0]["request_id"] == "fixed-request"
+    assert creates[1]["request_id"] != "fixed-request"
+
+
 def test_a_finite_run_creates_mains_oneshot_session_so_bare_c_finds_it(store, monkeypatch):
     """Main labels a `chat -q` / `-Q` session ``oneshot`` (agent.session_source.session_source_for), which
     `hermes -c` / `--resume latest` count as CLI history; created as ``cli`` the owner stores the
