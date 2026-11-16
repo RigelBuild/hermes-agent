@@ -131,12 +131,18 @@ class ProcessCheckpointMixin:
                 log = adoptable_log(entry.get('output_log'))
                 if log and Path(_exit_path(log)).exists():
                     continue
+                pid = entry.get('pid')
+                if pid and self._detached_host_fate(pid, entry.get('host_start_time')) == 'running':
+                    continue
                 if status != 'unknown':
                     entry['attempt_status'] = 'unknown'
                     changed = True
                 notices.append({
                     'session_id': entry['session_id'], 'session_key': entry.get('session_key', ''),
                     'parent_session_id': entry.get('parent_session_id', ''),
+                    'attempt_token': entry['attempt_token'],
+                    'task_id': entry.get('task_id', ''), 'owner_task_id': entry.get('owner_task_id', ''),
+                    'command': entry.get('command', ''),
                     'started_at': entry.get('started_at', 0),
                     'recovery_notice': 'outcome UNKNOWN, verify before retrying',
                     **{key: entry.get('watcher_' + key, '') for key in _WATCHER_ROUTE_KEYS},
@@ -160,7 +166,10 @@ class ProcessCheckpointMixin:
         checkpoint_path = _checkpoint_path()
         if not checkpoint_path.exists():
             return 0
-        self._recover_interrupted_attempts()
+        try:
+            self._recover_interrupted_attempts()
+        except Exception:
+            logger.exception('Could not classify interrupted background jobs')
         try:
             entries = json.loads(checkpoint_path.read_text(encoding="utf-8-sig"))
         except Exception:
@@ -169,7 +178,12 @@ class ProcessCheckpointMixin:
         unresolved_scope_entries: list[dict[str, Any]] = []
         for entry in entries:
             if entry.get('attempt_status') == 'unknown':
-                continue
+                from tools.process_registry_output_log import _exit_path
+                log = adoptable_log(entry.get('output_log'))
+                pid = entry.get('pid')
+                if not ((log and _exit_path(log).exists()) or
+                        (pid and self._detached_host_fate(pid, entry.get('host_start_time')) == 'running')):
+                    continue
             pid, pid_scope = entry.get("pid"), entry.get("pid_scope", "host")
             if not pid:
                 continue

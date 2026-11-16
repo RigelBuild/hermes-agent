@@ -1899,9 +1899,12 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         from tools.process_registry_notifications import format_process_notification, should_surface_notification
         notice = watcher.get('recovery_notice')
         if notice:
-            event = {'type': 'completion', **watcher, 'command': '', 'exit_code': None,
+            event = {'type': 'completion', **watcher, 'exit_code': None,
                      'completion_reason': 'unknown', 'output': notice}
-            await self._enqueue_process_completion_notification(notice, event)
+            text = f"Background job {watcher['session_id']}: {notice}"
+            delivered = await self._enqueue_process_completion_notification(text, event)
+            if delivered is not False:
+                process_registry._remove_resumable_entry(watcher['session_id'], watcher['attempt_token'])
             return
         session_id = watcher["session_id"]
         interval = watcher["check_interval"]
