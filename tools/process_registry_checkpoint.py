@@ -264,7 +264,10 @@ class ProcessCheckpointMixin:
             fields["output_log"] = log
             session = ProcessSession(id=entry["session_id"], detached=True, **fields)
             if session.attempt_status == 'unknown':
-                self._mark_adopted_attempt_running(checkpoint_path, session.id, session.attempt_token)
+                try:
+                    self._mark_adopted_attempt_running(checkpoint_path, session.id, session.attempt_token)
+                except Exception:
+                    logger.exception('Could not mark adopted background job %s running', session.id)
                 session.attempt_status = 'running'
             session.recovered_checkpoint_path = str(checkpoint_path)
             if session.output_log:

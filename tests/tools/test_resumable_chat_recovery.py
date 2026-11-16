@@ -29,6 +29,35 @@ def test_adopted_unknown_stays_single_running_entry(monkeypatch, tmp_path):
         child.wait()
 
 
+def test_failed_adoption_mark_does_not_abort_other_entries(monkeypatch, tmp_path):
+    from tools import process_registry as module
+    path = tmp_path / 'processes.json'
+    monkeypatch.setattr(module, 'CHECKPOINT_PATH', path)
+    registry = ProcessRegistry()
+    monkeypatch.setattr(registry, '_detached_host_fate', lambda *args: 'running')
+    monkeypatch.setattr(registry, '_mark_adopted_attempt_running', lambda *args: (_ for _ in ()).throw(OSError('disk')))
+    path.write_text(json.dumps([{'session_id': sid, 'attempt_token': sid, 'attempt_status': 'unknown', 'pid': 123}
+                                for sid in ('proc_a', 'proc_b')]))
+    assert registry.recover_from_checkpoint() == 2
+    assert registry.get('proc_a').attempt_status == 'running'
+    assert registry.get('proc_b').attempt_status == 'running'
+
+
+def test_checkpoint_deduplicates_emitted_unknown_copy(monkeypatch, tmp_path):
+    from tools import process_registry as module
+    path = tmp_path / 'processes.json'
+    monkeypatch.setattr(module, 'CHECKPOINT_PATH', path)
+    registry = ProcessRegistry()
+    session = module.ProcessSession(id='proc_a', command='hermes chat', attempt_token='token',
+                                    attempt_status='running')
+    registry._running[session.id] = session
+    path.write_text(json.dumps([{'session_id': 'proc_a', 'attempt_token': 'token', 'attempt_status': 'unknown'}]))
+    registry._write_checkpoint()
+    entries = json.loads(path.read_text())
+    assert len(entries) == 1
+    assert entries[0]['attempt_status'] == 'running'
+
+
 def test_live_child_is_adopted(monkeypatch, tmp_path):
     from tools import process_registry as module
     path = tmp_path / 'processes.json'
