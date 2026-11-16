@@ -2,6 +2,8 @@
 
 import threading
 import time
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -13,6 +15,7 @@ from hermes_cli.heartbeat import (
     load_heartbeat,
     migrate_heartbeat_to_session,
     parse_interval,
+    parse_heartbeat_set,
     save_heartbeat,
 )
 
@@ -38,7 +41,6 @@ def test_cli_reports_route_lookup_failure(command, method, monkeypatch):
     assert len(output) == 1
     assert "heartbeat route lookup failed" in output[0]
     cli._start_heartbeat_watchdog.assert_not_called()
-
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -70,7 +72,6 @@ def test_parse_interval_not_an_interval(text):
 def test_parse_interval_too_small_is_rejected():
     assert parse_interval("5s") == -1
     assert parse_interval("30s") == -1
-    # Exactly the floor is allowed.
     assert parse_interval(f"{MIN_INTERVAL_SECONDS}s") == MIN_INTERVAL_SECONDS
 
 
@@ -79,6 +80,18 @@ def test_format_interval():
     assert format_interval(7200) == "2h"
     assert format_interval(86400) == "1d"
     assert format_interval(90) == "90s"
+
+
+@pytest.mark.parametrize("text", [
+    'at "30 7 * * *" Check deployment',
+    'at "30 7 * * *" tz America/New_York --idle Check deployment',
+])
+def test_parse_scheduled_heartbeat(text):
+    from hermes_cli.heartbeat import parse_heartbeat_set
+
+    parsed = parse_heartbeat_set(text)
+    assert parsed == (None, "30 7 * * *", "America/New_York" if "tz " in text else None,
+                      "Check deployment", "idle" if "--idle" in text else "steer")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -92,6 +105,151 @@ def test_state_roundtrip():
     assert loaded.prompt == "check CI"
     assert loaded.interval_seconds == 600
     assert loaded.status == "active"
+
+
+def test_scheduled_state_roundtrip():
+    s = HeartbeatState(prompt="check CI", interval_seconds=0, schedule="30 7 * * *",
+                       timezone="America/New_York", created_at=time.time())
+    loaded = HeartbeatState.from_json(s.to_json())
+    assert (loaded.schedule, loaded.timezone) == ("30 7 * * *", "America/New_York")
+
+
+@pytest.mark.parametrize("interval,schedule", [(600, "30 7 * * *"), (0, None), (None, None)])
+def test_manager_requires_exactly_one_schedule(interval, schedule):
+    mgr = HeartbeatManager(session_id=f"hb-exclusive-{interval}-{schedule}")
+    with pytest.raises(ValueError, match="exactly one"):
+        mgr.set("watch CI", interval, schedule=schedule)
+
+@pytest.mark.parametrize("schedule,zone", [("30 7 * * *", "Mars/Base"), ("* * * * * *", "UTC")])
+def test_manager_rejects_invalid_cron(schedule, zone):
+    with pytest.raises(ValueError):
+        HeartbeatManager("invalid-cron").set("check", schedule=schedule, timezone=zone)
+
+
+def test_corrupt_schedule_is_safe():
+    from tui_gateway.methods_session_control import _safe_heartbeat_snapshot
+
+    state = HeartbeatState(prompt="check", interval_seconds=0, schedule="bad cron", timezone="Mars/Base")
+    assert not state.valid_cadence()
+    assert state.last_error
+    assert _safe_heartbeat_snapshot(state)["next_fire_at"] is None
+
+
+def test_invalid_stale_manager_does_not_resume_paused_heartbeat():
+    from hermes_cli.heartbeat import save_heartbeat
+
+    state = HeartbeatState(prompt='check', interval_seconds=0, schedule='bad cron', created_at=time.time())
+    save_heartbeat('invalid-stale', state)
+    stale = HeartbeatManager('invalid-stale')
+    HeartbeatManager('invalid-stale').pause()
+    assert stale.due_prompt() is None
+    assert load_heartbeat('invalid-stale').status == 'paused'
+
+def test_old_gateway_rejects_schedule_with_clear_error():
+    from hermes_cli.gateway_automation import GatewayHeartbeatManager
+
+    class OldConnection:
+        def call(self, method, **kwargs):
+            assert method == "session.automation"
+            assert kwargs["kwargs"]["schedule"] == "30 7 * * *"
+            return {"state": None, "error": {"type": "TypeError", "message": "unexpected keyword argument 'schedule'"}}
+
+    manager = GatewayHeartbeatManager("old", OldConnection(), load=False)
+    with pytest.raises(RuntimeError, match="gateway does not support scheduled heartbeats; update the gateway"):
+        manager.set("check", schedule="30 7 * * *")
+
+def test_gateway_interval_uses_legacy_kwargs():
+    from hermes_cli.gateway_automation import GatewayHeartbeatManager
+
+    class Connection:
+        def call(self, method, **params):
+            assert params['kwargs'] == {'delivery_mode': 'steer'}
+            return {'state': None, 'value': None}
+
+    GatewayHeartbeatManager('old', Connection(), load=False).set('check', 60)
+
+
+def test_gateway_transport_error_suggests_upgrade_for_schedule():
+    from hermes_cli.gateway_automation import GatewayHeartbeatManager
+    from hermes_cli.gateway_client import GatewayClientError
+
+    class Connection:
+        def call(self, method, **params):
+            raise GatewayClientError('old gateway')
+
+    with pytest.raises(RuntimeError, match='update the gateway'):
+        GatewayHeartbeatManager('old', Connection(), load=False).set('check', schedule='30 7 * * *')
+
+def test_all_locales_receive_neutral_interval():
+    from agent.i18n import SUPPORTED_LANGUAGES, t
+
+    state = HeartbeatState(prompt='check', interval_seconds=600)
+    assert state.cadence_label() == '10m'
+    for lang in SUPPORTED_LANGUAGES:
+        for key in ('gateway.heartbeat.set', 'gateway.heartbeat.resumed',
+                    'cli.commands.heartbeat.set', 'cli.commands.heartbeat.resumed'):
+            rendered = t(key, lang=lang, interval=state.cadence_label(), prompt='check')
+            assert 'every every' not in rendered
+            if lang != 'en':
+                assert 'every 10m' not in rendered
+
+@pytest.mark.parametrize(
+    ("start", "expected"),
+    [
+        ("2026-03-06T12:00:00-05:00", "2026-03-07T07:30:00-05:00"),
+        ("2026-03-07T12:00:00-05:00", "2026-03-08T07:30:00-04:00"),
+        ("2026-03-08T12:00:00-04:00", "2026-03-09T07:30:00-04:00"),
+        ("2026-10-30T12:00:00-04:00", "2026-10-31T07:30:00-04:00"),
+        ("2026-10-31T12:00:00-04:00", "2026-11-01T07:30:00-05:00"),
+        ("2026-11-01T12:00:00-05:00", "2026-11-02T07:30:00-05:00"),
+    ],
+)
+def test_schedule_next_fire_preserves_wall_clock_across_dst(start, expected):
+    from hermes_cli.heartbeat import _next_scheduled_fire
+
+    next_fire = _next_scheduled_fire("30 7 * * *", "America/New_York", datetime.fromisoformat(start))
+    assert next_fire == datetime.fromisoformat(expected).timestamp()
+
+@pytest.mark.parametrize("schedule,start", [
+    ("30 2 * * *", "2026-03-07T12:00:00-05:00"),
+    ("30 1 * * *", "2026-10-31T12:00:00-04:00"),
+])
+def test_gap_and_fold_fire_once(schedule, start, monkeypatch):
+    from hermes_cli import heartbeat
+    anchor = datetime.fromisoformat(start).timestamp()
+    monkeypatch.setattr(heartbeat.time, "time", lambda: anchor)
+    manager = HeartbeatManager("dst-" + schedule)
+    manager.set("check", schedule=schedule, timezone="America/New_York")
+    fire = manager.state.next_fire()
+    assert manager.due_prompt(fire - 1) is None
+    assert manager.due_prompt(fire) is not None
+    assert manager.due_prompt(fire + 3600) is None
+
+def test_scheduled_route_survives_restart_and_fires_once(monkeypatch):
+    from hermes_cli import heartbeat
+
+    start = datetime(2026, 3, 7, 12, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    fire = datetime(2026, 3, 8, 7, 30, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    monkeypatch.setattr(heartbeat.time, "time", lambda: start)
+    manager = HeartbeatManager("old", route_key="test:scheduled-route")
+    manager.set("check CI", schedule="30 7 * * *", timezone="America/New_York")
+    restored = HeartbeatManager("new", route_key="test:scheduled-route")
+    assert restored.state.schedule == "30 7 * * *"
+    assert restored.due_prompt(fire - 1) is None
+    assert "check CI" in restored.due_prompt(fire)
+    assert restored.due_prompt(fire) is None
+
+
+def test_scheduled_list_displays_next_fire(capsys):
+    from hermes_cli.subcommands.heartbeat import _list_heartbeats
+
+    manager = HeartbeatManager("list", route_key="test:scheduled-list")
+    manager.set("check CI", schedule="30 7 * * *", timezone="America/New_York")
+    _list_heartbeats(None)
+    output = capsys.readouterr().out
+    assert "test:scheduled-list" in output
+    assert "Next fire:" in output
+    assert "30 7 * * *" in output
 
 
 def test_is_due_anchors_on_created_then_last_fired():
@@ -137,7 +295,6 @@ def test_manager_set_pause_resume_clear():
 
     assert mgr.clear() is True
     assert not mgr.has_heartbeat()
-    # Cleared rows don't resurrect on reload.
     assert load_heartbeat("hb-lifecycle-sid") is None
 
 
@@ -160,22 +317,19 @@ def test_manager_persists_across_instances():
 def test_due_prompt_fires_once_and_reanchors():
     mgr = HeartbeatManager(session_id="hb-due-sid")
     mgr.set("tick", 600)
-    # Not due immediately after set.
     assert mgr.due_prompt() is None
-    # Force due by rewinding the anchor.
     mgr.state.created_at = time.time() - 700
     prompt = mgr.due_prompt()
     assert prompt is not None and "tick" in prompt
     assert mgr.state.fire_count == 1
-    # Immediately after firing it re-anchors — not due again.
     assert mgr.due_prompt() is None
 
 
 @pytest.mark.parametrize("stop,stored", [("clear", None), ("pause", "paused")])
 def test_a_stale_manager_does_not_fire_a_heartbeat_stopped_since(stop, stored):
     mgr = HeartbeatManager(session_id=f"hb-stale-{stop}")
-    mgr.set("tick", 600).created_at = time.time() - 700  # due in this manager's snapshot
-    getattr(HeartbeatManager(session_id=f"hb-stale-{stop}"), stop)()  # another driver stops it
+    mgr.set("tick", 600).created_at = time.time() - 700
+    getattr(HeartbeatManager(session_id=f"hb-stale-{stop}"), stop)()
     assert mgr.due_prompt() is None
     state = load_heartbeat(f"hb-stale-{stop}")
     assert (state.status if state else None) == stored
@@ -190,7 +344,7 @@ def test_a_heartbeat_stopped_during_a_claim_stays_stopped(stop, stored, monkeypa
     other = HeartbeatManager(session_id=sid)
     reread, release = threading.Event(), threading.Event()
 
-    def load(session_id):  # the claim's compare-and-set reread, held open before its write
+    def load(session_id):
         state = load_heartbeat(session_id)
         reread.set()
         release.wait(5)
@@ -201,7 +355,7 @@ def test_a_heartbeat_stopped_during_a_claim_stays_stopped(stop, stored, monkeypa
     assert reread.wait(5)
     stopper = threading.Thread(target=getattr(other, stop))
     stopper.start()
-    stopper.join(0.2)  # unserialized, the stop lands here, inside the claim
+    stopper.join(0.2)
     release.set()
     claim.join(5)
     stopper.join(5)
@@ -212,7 +366,6 @@ def test_a_heartbeat_stopped_during_a_claim_stays_stopped(stop, stored, monkeypa
 def test_missed_ticks_coalesce():
     mgr = HeartbeatManager(session_id="hb-coalesce-sid")
     mgr.set("tick", 600)
-    # Simulate 5 missed intervals: exactly ONE fire results.
     mgr.state.created_at = time.time() - 600 * 5 - 10
     assert mgr.due_prompt() is not None
     assert mgr.due_prompt() is None
@@ -228,16 +381,8 @@ def test_resume_reanchors_instead_of_instant_fire():
     assert mgr.due_prompt() is None
 
 
-# ──────────────────────────────────────────────────────────────────────
-# compression migration
-# ──────────────────────────────────────────────────────────────────────
-
-
 def test_migrate_heartbeat_to_session():
-    save_heartbeat(
-        "hb-parent-sid",
-        HeartbeatState(prompt="carry me", interval_seconds=600, created_at=time.time()),
-    )
+    save_heartbeat("hb-parent-sid", HeartbeatState(prompt="carry me", interval_seconds=600, created_at=time.time()))
     assert migrate_heartbeat_to_session("hb-parent-sid", "hb-child-sid") is True
     child = load_heartbeat("hb-child-sid")
     assert child is not None and child.prompt == "carry me"

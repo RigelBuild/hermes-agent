@@ -915,11 +915,14 @@ gateway:
     no_resume: "Geen hartklop om te hervat nie."
     resumed: "▶ Hartklop hervat (elke {interval}): {prompt}"
     cleared: "✓ Hartklop verwyder."
-    usage: "Gebruik: /heartbeat every <interval> <prompt>  (bv. /heartbeat every 10m Kontroleer CI)\nOok: /heartbeat status | pause | resume | clear"
+    usage: 'Gebruik: /heartbeat every <interval> <prompt> | /heartbeat status | pause | resume | clear; /heartbeat at "<cron>" [tz <IANA>] <prompt>'
+    set_scheduled: '♥ Heartbeat set (on schedule {schedule}): {prompt}'
+    resumed_scheduled: '▶ Heartbeat resumed (on schedule {schedule}): {prompt}'
     interval_too_small: "Interval te klein — minimum is {min_seconds}s."
     prompt_required: "Gebruik: /heartbeat every <interval> <prompt> — die prompt is verpligtend."
     invalid_prefix: "Ongeldige hartklop"
     set: "♥ Hartklop gestel (elke {interval}): {prompt}\nVuur as 'n gewone beurt af wanneer hierdie sessie ledig is en die interval verstreke is. Bestaan slegs terwyl die gateway loop — gebruik `hermes cron` vir blywende skedules."
+    set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The route retains its heartbeat across reset and gateway restart."
   refine:
     unavailable: "Verfyn onbeskikbaar (geen sessie nie)."
     nothing_yet: "Nog niks om te verfyn nie — stuur eers 'n boodskap."
@@ -3087,12 +3090,14 @@ cli:
       resumed: "▶ Hartklop hervat (elke {interval}): {prompt}"
       cleared: "✓ Hartklop verwyder."
       usage: "Gebruik: /heartbeat every <interval> <prompt>   (bv. /heartbeat every 10m Kontroleer CI)"
-      usage_also: "Ook: /heartbeat status | pause | resume | clear"
+      usage_also: 'Ook: /heartbeat status | pause | resume | clear; /heartbeat at "<cron>" [tz <IANA>] <prompt>'
+      set_scheduled: '♥ Heartbeat set (on schedule {schedule}): {prompt}'
+      resumed_scheduled: '▶ Heartbeat resumed (on schedule {schedule}): {prompt}'
       interval_too_small: "Interval te klein — minimum is {min_seconds}s."
       prompt_required: "Gebruik: /heartbeat every <interval> <prompt> — die prompt is verpligtend."
       invalid_label: "Ongeldige hartklop"
       set: "♥ Hartklop gestel (elke {interval}): {prompt}"
-      set_note: "Vuur as 'n gewone beurt af wanneer die sessie ledig is en die interval verstryk het. Bestuur met /heartbeat pause | resume | clear; bestaan net solank hierdie Hermes-proses loop — gebruik `hermes cron` vir blywende skedules."
+      set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The classic CLI remains idle-only. /heartbeat pause | resume | clear to manage."
     refine:
       nothing_yet: "Nog niks om te verfyn nie — stuur eers 'n boodskap."
       empty: "Nog niks om te verfyn nie — die gesprek is leeg."

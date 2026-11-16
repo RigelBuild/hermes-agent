@@ -4062,6 +4062,7 @@ export const esOverrides = {
       heartbeatPaused: 'Heartbeat en pausa',
       heartbeatEveryMinutes: (minutes: number) => `cada ${minutes} min`,
       heartbeatEveryHours: (hours: number) => `cada ${hours} h`,
+      heartbeatProfileTimezone: 'zona horaria del perfil',
       heartbeatEverySeconds: (seconds: number) => `cada ${seconds} s`,
       heartbeatNext: (time: string) => `próximo ${time}`,
       dueWaitingForIdle: 'pendiente: esperando inactividad',

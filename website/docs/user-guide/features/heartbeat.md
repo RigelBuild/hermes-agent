@@ -32,11 +32,14 @@ Rule of thumb: if the recurring prompt needs the conversation's context, use `/h
 | Command | What it does |
 |---|---|
 | `/heartbeat every <interval> [--idle or --steer] <prompt>` | Set (or replace) the route's heartbeat. Intervals: `90s`, `10m`, `2h`, `1d` (minimum 60s). Gateway delivery steers by default; `--idle` waits for idle. |
+| `/heartbeat at "<cron expression>" [tz <IANA timezone>] [--idle or --steer] <prompt>` | Set a wall-clock schedule. Without `tz`, the profile timezone is used. For example, `/heartbeat at "30 7 * * *" tz America/New_York Check CI` fires at 07:30 local time across daylight saving changes. |
 | `/heartbeat` or `/heartbeat status` | Show the heartbeat, its delivery mode, interval, and time to next fire. |
 | `/heartbeat pause` | Stop firing without clearing. |
 | `/heartbeat resume` | Resume (re-anchors the timer — no instant stale fire). |
 | `/heartbeat clear` | Remove the heartbeat. |
 | `hermes heartbeat list` | List heartbeats in the active profile, with route, status, interval, last fire time, fire count, and last error. |
+
+Cron schedules use the same daylight-saving behavior as `hermes cron`: a time in the spring gap fires once shifted forward, and a repeated autumn hour fires once.
 
 On messaging platforms, send a normal message in the chat before setting or resuming a heartbeat. Local CLI, TUI, and Desktop sessions do not need this step.
 

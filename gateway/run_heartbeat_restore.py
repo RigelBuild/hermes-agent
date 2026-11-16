@@ -59,6 +59,13 @@ async def restore_heartbeat_watches(runner) -> None:
                         continue
                     for meta_key, raw in db.list_meta_prefix("heartbeat:"):
                         if meta_key.startswith("heartbeat:route:"):
+                            try:
+                                state = HeartbeatState.from_json(raw)
+                                before = state.last_error
+                                if state.schedule and state.next_fire_or_none() is None and state.last_error != before:
+                                    HeartbeatManager('', route_key=meta_key[len('heartbeat:route:'):], db=db).record_error(state.last_error)
+                            except (ValueError, TypeError, AttributeError):
+                                pass
                             continue
                         session_id = meta_key[len("heartbeat:"):]
                         try:
@@ -66,7 +73,16 @@ async def restore_heartbeat_watches(runner) -> None:
                             if not isinstance(data, dict) or data.get("status") not in {"active", "paused"}:
                                 continue
                             state = HeartbeatState.from_json(raw)
-                            if not state.prompt.strip() or state.interval_seconds < 60:
+                            if not state.prompt.strip():
+                                continue
+                            before = state.last_error
+                            if not state.valid_cadence():
+                                if state.last_error != before:
+                                    current_raw = db.get_meta(meta_key)
+                                    current = HeartbeatState.from_json(current_raw) if current_raw else None
+                                    if current is not None and current.last_error != state.last_error:
+                                        current.last_error = state.last_error
+                                        db.set_meta(meta_key, current.to_json())
                                 continue
                             route, archived = _legacy_route(session_id, db, store._routing_db, store._routing_scope())
                             if route and not archived:

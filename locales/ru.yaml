@@ -915,11 +915,14 @@ gateway:
     no_resume: "Нет heartbeat для возобновления."
     resumed: "▶ Heartbeat возобновлён (каждые {interval}): {prompt}"
     cleared: "✓ Heartbeat удалён."
-    usage: "Использование: /heartbeat every <интервал> <промпт>  (например, /heartbeat every 10m Проверь CI)\nТакже: /heartbeat status | pause | resume | clear"
+    usage: 'Использование: /heartbeat every <интервал> <промпт> | /heartbeat status | pause | resume | clear; /heartbeat at "<cron>" [tz <IANA>] <prompt>'
+    set_scheduled: '♥ Heartbeat set (on schedule {schedule}): {prompt}'
+    resumed_scheduled: '▶ Heartbeat resumed (on schedule {schedule}): {prompt}'
     interval_too_small: "Интервал слишком мал — минимум {min_seconds} с."
     prompt_required: "Использование: /heartbeat every <интервал> <промпт> — промпт обязателен."
     invalid_prefix: "Недопустимый heartbeat"
     set: "♥ Heartbeat задан (каждые {interval}): {prompt}\nСрабатывает как обычный ход, когда сеанс простаивает и интервал истёк. Живёт, пока работает шлюз — для постоянных расписаний используйте `hermes cron`."
+    set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The route retains its heartbeat across reset and gateway restart."
   refine:
     unavailable: "Уточнение недоступно (нет сеанса)."
     nothing_yet: "Пока нечего уточнять — сначала отправьте сообщение."
@@ -3087,12 +3090,14 @@ cli:
       resumed: "▶ Heartbeat возобновлён (каждые {interval}): {prompt}"
       cleared: "✓ Heartbeat очищен."
       usage: "Использование: /heartbeat every <интервал> <промпт>   (например, /heartbeat every 10m Проверь CI)"
-      usage_also: "Также: /heartbeat status | pause | resume | clear"
+      usage_also: 'Также: /heartbeat status | pause | resume | clear; /heartbeat at "<cron>" [tz <IANA>] <prompt>'
+      set_scheduled: '♥ Heartbeat set (on schedule {schedule}): {prompt}'
+      resumed_scheduled: '▶ Heartbeat resumed (on schedule {schedule}): {prompt}'
       interval_too_small: "Интервал слишком мал — минимум {min_seconds}с."
       prompt_required: "Использование: /heartbeat every <интервал> <промпт> — промпт обязателен."
       invalid_label: "Недопустимый heartbeat"
       set: "♥ Heartbeat задан (каждые {interval}): {prompt}"
-      set_note: "Срабатывает как обычный ход, когда сеанс простаивает и интервал истёк. Управление: /heartbeat pause | resume | clear; живёт только пока работает этот процесс Hermes — для постоянных расписаний используйте `hermes cron`."
+      set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The classic CLI remains idle-only. /heartbeat pause | resume | clear to manage."
     refine:
       nothing_yet: "Пока нечего уточнять — сначала отправьте сообщение."
       empty: "Пока нечего уточнять — разговор пуст."

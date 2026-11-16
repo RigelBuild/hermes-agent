@@ -2855,6 +2855,7 @@ export const ruOverrides = {
       heartbeatPaused: 'Пульс приостановлен',
       heartbeatEveryMinutes: minutes => `каждые ${minutes}м`,
       heartbeatEveryHours: hours => `каждые ${hours}ч`,
+      heartbeatProfileTimezone: 'часовой пояс профиля',
       heartbeatEverySeconds: seconds => `каждые ${seconds}с`,
       heartbeatNext: time => `следующий ${time}`,
       dueWaitingForIdle: 'пора — ожидание простоя',

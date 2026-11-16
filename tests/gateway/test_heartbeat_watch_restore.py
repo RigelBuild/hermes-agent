@@ -71,7 +71,10 @@ async def test_restore_retries_persisted_routes_in_their_own_profiles(tmp_path, 
             with _profile_runtime_scope(named if profile else home):
                 entry = store.get_or_create_session(source)
                 manager = HeartbeatManager(entry.session_id)
-                manager.set('check ' + topic, 60)
+                if topic == '22':
+                    manager.set('check ' + topic, schedule='30 7 * * *', timezone='America/New_York')
+                else:
+                    manager.set('check ' + topic, 60)
                 if status == 'paused':
                     manager.pause()
                 elif status == 'cleared':
@@ -98,6 +101,11 @@ async def test_restore_retries_persisted_routes_in_their_own_profiles(tmp_path, 
             await restore_heartbeat_watches(runner)
         expected = {e.session_key: (e.origin, e.session_id) for e in entries[:2]}
         assert runner._heartbeat_watch == expected
+        with _profile_runtime_scope(named):
+            state = HeartbeatManager(entries[1].session_id).state
+            assert state.schedule == '30 7 * * *'
+            from tui_gateway.methods_session_control import _safe_heartbeat_snapshot
+            assert _safe_heartbeat_snapshot(state)['timezone'] == 'America/New_York'
         with monkeypatch.context() as patch:
             patch.setattr('hermes_cli.heartbeat.load_heartbeat', lambda sid: None)
             await restore_heartbeat_watches(runner)
@@ -105,6 +113,34 @@ async def test_restore_retries_persisted_routes_in_their_own_profiles(tmp_path, 
         runner._heartbeat_watch.clear()
         await restore_heartbeat_watches(runner)
         assert runner._heartbeat_watch == expected
+        with _profile_runtime_scope(named):
+            db = dbs[str(named)]
+            sid = entries[1].session_id
+            legacy_key = 'heartbeat:' + sid
+            route_key = 'heartbeat:route:' + entries[1].session_key
+            db.set_meta(legacy_key, HeartbeatState(prompt='bad', interval_seconds=0, schedule='bad cron').to_json())
+            writes = []
+            original_set_meta = db.set_meta
+            def counted(key, value):
+                if key == legacy_key:
+                    writes.append(key)
+                return original_set_meta(key, value)
+            with monkeypatch.context() as patch:
+                patch.setattr(db, 'set_meta', counted)
+                await restore_heartbeat_watches(runner)
+                await restore_heartbeat_watches(runner)
+            assert writes == [legacy_key]
+            assert HeartbeatState.from_json(db.get_meta(legacy_key)).last_error
+            assert HeartbeatState.from_json(db.get_meta(route_key)).last_error == ''
+        with _profile_runtime_scope(named):
+            from hermes_cli.heartbeat import list_heartbeats
+            route = entries[1].session_key
+            db = dbs[str(named)]
+            key = 'heartbeat:route:' + route
+            db.set_meta(key, HeartbeatState(prompt='bad', interval_seconds=0, schedule='bad cron').to_json())
+            await restore_heartbeat_watches(runner)
+            assert HeartbeatState.from_json(db.get_meta(key)).last_error.startswith('Invalid heartbeat cadence:')
+            assert any(item[0] == route and item[1].last_error for item in list_heartbeats(db))
     finally:
         store.close_all_db_handles()
         if 'runner' in locals():

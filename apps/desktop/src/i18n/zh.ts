@@ -3526,6 +3526,7 @@ export const zhOverrides = {
       heartbeatPaused: '心跳暂停',
       heartbeatEveryMinutes: minutes => `每 ${minutes} 分钟`,
       heartbeatEveryHours: hours => `每 ${hours} 小时`,
+      heartbeatProfileTimezone: '配置文件时区',
       heartbeatEverySeconds: seconds => `每 ${seconds} 秒`,
       heartbeatNext: time => `下次 ${time}`,
       dueWaitingForIdle: '已到期，等待会话空闲',

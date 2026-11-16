@@ -213,7 +213,7 @@ async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
 
 @pytest.mark.asyncio
 async def test_clearing_route_heartbeat_stops_future_fires(poller):
-    runner, adapter, watch, key, clock = poller
+    runner, adapter, watch, _key, clock = poller
 
     async def handler(event):
         event._heartbeat_execution_started = True
@@ -455,7 +455,7 @@ async def test_poller_skips_envelope_validation_until_heartbeat_is_due(monkeypat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("command", ["/heartbeat every 1m x", "/heartbeat resume"])
+@pytest.mark.parametrize("command", ["/heartbeat every 1m x", "/heartbeat resume", '/heartbeat at "30 7 * * *" tz America/New_York x'])
 async def test_legacy_heartbeat_commands_remain_available(monkeypatch, command):
     from agent.i18n import t
     from gateway.platforms.event import MessageEvent
@@ -493,7 +493,7 @@ async def test_legacy_heartbeat_commands_remain_available(monkeypatch, command):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("command", ["/heartbeat every 1m x", "/heartbeat resume"])
+@pytest.mark.parametrize("command", ["/heartbeat every 1m x", "/heartbeat resume", '/heartbeat at "30 7 * * *" tz America/New_York x'])
 async def test_local_heartbeat_commands_remain_available(tmp_path, monkeypatch, command):
     from agent.i18n import t
     from gateway.platforms.event import MessageEvent

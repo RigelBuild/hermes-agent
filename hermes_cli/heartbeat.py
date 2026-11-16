@@ -12,6 +12,8 @@ import re
 import threading
 import time
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -20,7 +22,7 @@ MIN_INTERVAL_SECONDS = 60  # floor: re-entering more often than once a minute is
 POLL_SECONDS = 5.0  # how often drivers poll for due heartbeats; not user-facing
 
 HEARTBEAT_PROMPT_TEMPLATE = (
-    "[Heartbeat — recurring instruction, fires every {interval}]\n{prompt}\n\n"
+    "[Heartbeat — recurring instruction, {interval}]\n{prompt}\n\n"
     "If there is nothing meaningful to do or report for this instruction "
     "right now, reply briefly that nothing has changed and stop — do not invent work."
 )
@@ -41,6 +43,7 @@ _STATE_FIELDS = {
     "created_at": (float, 0.0), "last_fired_at": (float, 0.0), "fire_count": (int, 0),
     "delivery_mode": (str, "idle"),
     "last_error": (str, ""),
+    "schedule": (str, ""), "timezone": (str, ""),
 }
 
 
@@ -56,15 +59,20 @@ def parse_interval(text: str) -> Optional[int]:
     return -1 if seconds < MIN_INTERVAL_SECONDS else seconds
 
 
-def parse_heartbeat_set(text: str) -> tuple[Optional[int], str, str]:
-    """Parse the interval and optional leading delivery flag without rewriting prompt text."""
+def parse_heartbeat_set(text: str) -> tuple[Optional[int], Optional[str], Optional[str], str, str]:
+    """Parse an interval or quoted cron expression and its delivery flag."""
+    scheduled = re.match(r'^\s*at\s+"([^"]+)"(?:\s+tz\s+(\S+))?(?:\s+(.*))?$', text, re.IGNORECASE | re.DOTALL)
+    if scheduled:
+        prompt = scheduled.group(3) or ""
+        flag = re.match(r"^--(idle|steer)(?:\s+|$)", prompt)
+        return None, scheduled.group(1), scheduled.group(2), prompt[flag.end():] if flag else prompt, flag.group(1) if flag else "steer"
     match = re.match(r"^\s*(?:every\s+)?(\S+)(?:\s+(.*))?$", text, re.IGNORECASE | re.DOTALL)
     if not match:
-        return None, "", "steer"
+        return None, None, None, "", "steer"
     interval = parse_interval(match.group(1))
     prompt = match.group(2) or ""
     flag = re.match(r"^--(idle|steer)(?:\s+|$)", prompt)
-    return interval, prompt[flag.end():] if flag else prompt, flag.group(1) if flag else "steer"
+    return interval, None, None, prompt[flag.end():] if flag else prompt, flag.group(1) if flag else "steer"
 
 
 def format_interval(seconds: int) -> str:
@@ -72,6 +80,18 @@ def format_interval(seconds: int) -> str:
     seconds = int(seconds)
     units = ((86400, "d"), (3600, "h"), (60, "m"))
     return next((f"{seconds // unit}{suffix}" for unit, suffix in units if seconds % unit == 0), f"{seconds}s")
+
+
+def _next_scheduled_fire(schedule: str, timezone: Optional[str], anchor: datetime) -> float:
+    if len(schedule.split()) != 5:
+        raise ValueError("cron schedule must have five fields")
+    if timezone:
+        ZoneInfo(timezone)
+    from cron.jobs import compute_next_run
+    result = compute_next_run({"kind": "cron", "expr": schedule}, anchor.isoformat(), timezone=timezone or None)
+    if result is None:
+        raise ValueError("could not compute next heartbeat schedule")
+    return datetime.fromisoformat(result).timestamp()
 
 
 @dataclass
@@ -86,6 +106,8 @@ class HeartbeatState:
     fire_count: int = 0
     delivery_mode: str = "steer"  # idle | steer
     last_error: str = ""
+    schedule: str = ""
+    timezone: str = ""
 
     def to_json(self) -> str:
         from hermes_cli.debug_redaction import redact_debug_support_text
@@ -98,13 +120,44 @@ class HeartbeatState:
         data = json.loads(raw)
         return cls(**{name: coerce(data.get(name) or default) for name, (coerce, default) in _STATE_FIELDS.items()})
 
+    def next_fire(self) -> float:
+        anchor = self.last_fired_at or self.created_at
+        if self.schedule:
+            return _next_scheduled_fire(self.schedule, self.timezone, datetime.fromtimestamp(anchor, UTC))
+        return anchor + self.interval_seconds
+
+    def next_fire_or_none(self) -> Optional[float]:
+        try:
+            if bool(self.schedule) == bool(self.interval_seconds):
+                raise ValueError("exactly one cadence is required")
+            if not self.schedule and self.interval_seconds < MIN_INTERVAL_SECONDS:
+                raise ValueError("interval is too small")
+            return self.next_fire()
+        except Exception as exc:
+            self.last_error = f"Invalid heartbeat cadence: {exc}"
+            return None
+
+    def valid_cadence(self) -> bool:
+        return self.next_fire_or_none() is not None
+
+    def cadence_label(self) -> str:
+        return f'"{self.schedule}" ({self.timezone or "profile timezone"})' if self.schedule else format_interval(self.interval_seconds)
+
+    def cadence_description(self) -> str:
+        return f"on schedule {self.cadence_label()}" if self.schedule else f"every {self.cadence_label()}"
+
     def is_due(self, now: Optional[float] = None) -> bool:
-        if self.status != "active" or not self.prompt or self.interval_seconds <= 0:
+        if self.status != "active" or not self.prompt:
             return False
-        return (time.time() if now is None else now) - (self.last_fired_at or self.created_at) >= self.interval_seconds
+        try:
+            if bool(self.schedule) == bool(self.interval_seconds) or (not self.schedule and self.interval_seconds < MIN_INTERVAL_SECONDS):
+                return False
+            return (time.time() if now is None else now) >= self.next_fire()
+        except Exception:
+            return False
 
     def render_prompt(self) -> str:
-        return HEARTBEAT_PROMPT_TEMPLATE.format(interval=format_interval(self.interval_seconds), prompt=self.prompt)
+        return HEARTBEAT_PROMPT_TEMPLATE.format(interval=self.cadence_description(), prompt=self.prompt)
 
 
 def _get_session_db() -> Optional[Any]:
@@ -279,7 +332,7 @@ def list_heartbeats(db: Any = None) -> list[tuple[str, HeartbeatState]]:
     for key, raw in db.list_meta_prefix(_ROUTE_PREFIX):
         try:
             state = HeartbeatState.from_json(raw)
-            if state.status in {"active", "paused"} and state.prompt.strip() and state.interval_seconds >= MIN_INTERVAL_SECONDS:
+            if state.status in {"active", "paused"} and state.prompt.strip():
                 result.append((key[len(_ROUTE_PREFIX):], state))
         except (ValueError, TypeError, AttributeError):
             continue
@@ -305,7 +358,7 @@ def migrate_heartbeat_to_route(session_id: str, route_key: str, db: Any = None) 
                     return False
                 if not isinstance(data.get("prompt"), str) or not data["prompt"].strip():
                     return False
-                if HeartbeatState.from_json(legacy[0]).interval_seconds < MIN_INTERVAL_SECONDS:
+                if not HeartbeatState.from_json(legacy[0]).valid_cadence():
                     return False
                 existing = conn.execute("SELECT 1 FROM state_meta WHERE key = ?", (route_meta,)).fetchone()
                 if existing is None:
@@ -396,28 +449,42 @@ class HeartbeatManager:
     def status_line(self) -> str:
         s = self._state
         if s is None:
-            return "No heartbeat. Set one with /heartbeat every <interval> <prompt>."
-        every = format_interval(s.interval_seconds)
+            return 'No heartbeat. Use /heartbeat every <interval> <prompt> or /heartbeat at "<cron>" [tz <IANA>] <prompt>.'
+        every = s.cadence_description()
         mode = "steer (gateway only)" if s.delivery_mode == "steer" else s.delivery_mode
         fired = f", fired {s.fire_count}×" if s.fire_count else ""
         if s.status == "active":
-            next_in = max(0, int((s.last_fired_at or s.created_at) + s.interval_seconds - time.time()))
-            return f"♥ Heartbeat (every {every}, next in ~{next_in}s{fired}, mode {mode}): {s.prompt}"
+            next_fire = s.next_fire_or_none()
+            next_text = f"next in ~{max(0, int(next_fire - time.time()))}s" if next_fire is not None else s.last_error
+            return f"♥ Heartbeat ({every}, {next_text}{fired}, mode {mode}): {s.prompt}"
         icon = "⏸ " if s.status == "paused" else ""
-        return f"{icon}Heartbeat ({s.status}, every {every}{fired}, mode {mode}): {s.prompt}"
+        return f"{icon}Heartbeat ({s.status}, {every}{fired}, mode {mode}): {s.prompt}"
 
-    def set(self, prompt: str, interval_seconds: int, *, delivery_mode: str = "steer") -> HeartbeatState:
+    def set(self, prompt: str, interval_seconds: Optional[int] = None, *, schedule: Optional[str] = None,
+            timezone: Optional[str] = None, delivery_mode: str = "steer") -> HeartbeatState:
         prompt = (prompt or "").strip()
         if not prompt:
             raise ValueError("heartbeat prompt is empty")
-        interval_seconds = int(interval_seconds)
-        if interval_seconds < MIN_INTERVAL_SECONDS:
+        if bool(interval_seconds) == bool(schedule):
+            raise ValueError("exactly one of interval and schedule is required")
+        if interval_seconds and interval_seconds < MIN_INTERVAL_SECONDS:
             raise ValueError(f"interval must be at least {MIN_INTERVAL_SECONDS}s")
+        if schedule:
+            if timezone:
+                try:
+                    ZoneInfo(timezone)
+                except (ZoneInfoNotFoundError, ValueError) as exc:
+                    raise ValueError("invalid IANA timezone") from exc
+            try:
+                _next_scheduled_fire(schedule, timezone, datetime.now(UTC))
+            except Exception as exc:
+                raise ValueError(f"invalid cron schedule: {exc}") from exc
         if delivery_mode not in {"idle", "steer"}:
             raise ValueError("delivery mode must be idle or steer")
         with _CLAIM_LOCK:
-            self._state = HeartbeatState(prompt=prompt, interval_seconds=interval_seconds, status="active",
-                                         created_at=time.time(), delivery_mode=delivery_mode)
+            self._state = HeartbeatState(prompt=prompt, interval_seconds=interval_seconds or 0, status="active",
+                                         created_at=time.time(), delivery_mode=delivery_mode,
+                                         schedule=schedule or "", timezone=timezone or "")
             self._save(self._state)
         return self._state
 
@@ -454,7 +521,13 @@ class HeartbeatManager:
         """
         with _CLAIM_LOCK:
             s = self._state
-            if s is None or not s.is_due(now):
+            if s is None:
+                return None
+            previous_error = s.last_error
+            if not s.is_due(now):
+                s.next_fire_or_none()
+                if s.last_error != previous_error:
+                    self._record_error_locked(s.last_error)
                 return None
             # Compare-and-set on the stored row: the gateway poller and a viewer's due_prompt RPC each hold
             # their own manager over it, and only one may take the tick. A row cleared or paused since is lost too.
@@ -487,16 +560,19 @@ class HeartbeatManager:
             self._save(current)
             return True
 
-    def record_error(self, error: object) -> None:
+    def _record_error_locked(self, error: object) -> None:
         from hermes_cli.debug_redaction import redact_debug_support_text
+        current = self._load()
+        if current is None:
+            self._state = None
+            return
+        current.last_error = redact_debug_support_text(error, max_chars=500) if error else ""
+        self._state = current
+        self._save(current)
+
+    def record_error(self, error: object) -> None:
         with _CLAIM_LOCK:
-            current = self._load()
-            if current is None:
-                self._state = None
-                return
-            current.last_error = redact_debug_support_text(error, max_chars=500) if error else ""
-            self._state = current
-            self._save(current)
+            self._record_error_locked(error)
 
 
 def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bool:
@@ -526,13 +602,13 @@ __all__ = [
     "HeartbeatManager",
     "HeartbeatState",
     "format_interval",
+    "list_heartbeats",
     "load_heartbeat",
     "load_route_heartbeat",
-    "save_route_heartbeat",
     "migrate_heartbeat_to_route",
-    "list_heartbeats",
     "migrate_heartbeat_to_session",
     "parse_heartbeat_set",
     "parse_interval",
     "save_heartbeat",
+    "save_route_heartbeat",
 ]

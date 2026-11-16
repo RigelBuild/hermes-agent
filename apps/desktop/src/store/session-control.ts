@@ -75,6 +75,9 @@ export interface SessionControlHeartbeat {
   last_fired_at: number
   prompt: string
   status: SessionControlHeartbeatStatus
+  schedule?: string
+  timezone?: string
+  next_fire_at?: number
 }
 
 export interface SessionControlSnapshot {
@@ -418,7 +421,7 @@ function parseLoop(value: unknown): SessionControlLoop | null {
 function parseHeartbeat(value: unknown): SessionControlHeartbeat | null {
   const required = ['prompt', 'status', 'interval_seconds', 'created_at', 'last_fired_at', 'fire_count']
 
-  if (!isRecord(value) || !hasExactFields(value, required)) {
+  if (!isRecord(value) || !required.every(key => hasOwn(value, key))) {
     return null
   }
 
@@ -429,7 +432,10 @@ function parseHeartbeat(value: unknown): SessionControlHeartbeat | null {
     !isInteger(value.interval_seconds) ||
     !isFiniteNumber(value.created_at) ||
     !isFiniteNumber(value.last_fired_at) ||
-    !isInteger(value.fire_count)
+    !isInteger(value.fire_count) ||
+    (value.schedule != null && typeof value.schedule !== 'string') ||
+    (value.timezone != null && typeof value.timezone !== 'string') ||
+    (value.next_fire_at != null && !isFiniteNumber(value.next_fire_at))
   ) {
     return null
   }
@@ -440,7 +446,10 @@ function parseHeartbeat(value: unknown): SessionControlHeartbeat | null {
     interval_seconds: value.interval_seconds,
     last_fired_at: value.last_fired_at,
     prompt: value.prompt,
-    status: value.status as SessionControlHeartbeatStatus
+    status: value.status as SessionControlHeartbeatStatus,
+    ...(typeof value.schedule === 'string' ? { schedule: value.schedule } : {}),
+    ...(typeof value.timezone === 'string' ? { timezone: value.timezone } : {}),
+    ...(isFiniteNumber(value.next_fire_at) ? { next_fire_at: value.next_fire_at } : {})
   }
 }
 

@@ -120,7 +120,7 @@ class GatewayGoalCommandsMixin:
 
     async def _handle_heartbeat_command(self, event: MessageEvent) -> str:
         """Handle /heartbeat with busy steering by default or explicit idle delivery."""
-        from hermes_cli.heartbeat import parse_heartbeat_set, format_interval, MIN_INTERVAL_SECONDS
+        from hermes_cli.heartbeat import parse_heartbeat_set, MIN_INTERVAL_SECONDS
         args = (event.get_command_args() or "").strip()
         lower = args.lower()
         mgr, session_entry = await self._get_heartbeat_manager_for_event(event)
@@ -146,28 +146,28 @@ class GatewayGoalCommandsMixin:
             if state is None:
                 return t("gateway.heartbeat.no_resume")
             _watch()
-            return t("gateway.heartbeat.resumed", interval=format_interval(state.interval_seconds), prompt=state.prompt)
+            return t("gateway.heartbeat.resumed_scheduled" if state.schedule else "gateway.heartbeat.resumed", interval=state.cadence_label(), schedule=state.cadence_label(), prompt=state.prompt)
         if lower in {"clear", "stop", "off"}:
             had = mgr.clear()
             if quick_key:
                 self._unregister_heartbeat_watch(quick_key)
             return t("gateway.heartbeat.cleared") if had else t("gateway.heartbeat.none_set")
 
-        interval, prompt, delivery_mode = parse_heartbeat_set(args)
-        if interval is None:
+        interval, schedule, timezone, prompt, delivery_mode = parse_heartbeat_set(args)
+        if interval is None and schedule is None:
             return t("gateway.heartbeat.usage")
-        if interval < 0:
+        if interval is not None and interval < 0:
             return t("gateway.heartbeat.interval_too_small", min_seconds=MIN_INTERVAL_SECONDS)
         if not prompt.strip():
             return t("gateway.heartbeat.prompt_required")
         if not await self._heartbeat_route_has_admission(event, session_entry):
             return t("gateway.heartbeat.needs_admission")
         state, err = _mgr_call(t("gateway.heartbeat.invalid_prefix"), mgr.set, prompt, interval,
-                               delivery_mode=delivery_mode, errors=(ValueError,))
+                               schedule=schedule, timezone=timezone, delivery_mode=delivery_mode, errors=(ValueError,))
         if err:
             return err
         _watch()
-        return t("gateway.heartbeat.set", interval=format_interval(state.interval_seconds), prompt=state.prompt)
+        return t("gateway.heartbeat.set_scheduled" if state.schedule else "gateway.heartbeat.set", interval=state.cadence_label(), schedule=state.cadence_label(), prompt=state.prompt).split("\n", 1)[0] + "\n" + t("gateway.heartbeat.set_note")
 
     def _idle_cached_agent_or_error(self, event: MessageEvent, verb: str):
         """``(session_key, cached_agent, None)`` for /refine and /review, or ``(_, _, error_text)``:

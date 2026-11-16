@@ -152,7 +152,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[text | -- <text> | draft <text> | show | gate add <cmd> | pause | resume | clear | status | wait <pid> | unwait]",
                argument_mode="mixed", busy_policy="dispatch", busy_handler="goal"),
     CommandDef("heartbeat", "Set a recurring prompt for this session", "Session",
-               aliases=("hb",), args_hint="[every <interval> [--idle|--steer] <prompt> | status | pause | resume | clear]",
+               aliases=("hb",), args_hint='[every <interval> | at "<cron>" [tz <IANA>]] [--idle|--steer] <prompt> | status | pause | resume | clear',
                subcommands=("status", "pause", "resume", "clear"),
                busy_policy="dispatch"),
     CommandDef("refine", "Review this conversation now and save lessons to memory/skills", "Session",

@@ -3633,6 +3633,7 @@ export const en: Translations = {
       heartbeatPaused: 'Heartbeat paused',
       heartbeatEveryMinutes: minutes => `every ${minutes}m`,
       heartbeatEveryHours: hours => `every ${hours}h`,
+      heartbeatProfileTimezone: 'profile timezone',
       heartbeatEverySeconds: seconds => `every ${seconds}s`,
       heartbeatNext: time => `next ${time}`,
       dueWaitingForIdle: 'due — waiting for idle',

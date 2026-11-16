@@ -278,6 +278,7 @@ export const arChat = {
       heartbeatPaused: 'النبض متوقف مؤقتاً',
       heartbeatEveryMinutes: minutes => `كل ${minutes} د`,
       heartbeatEveryHours: hours => `كل ${hours} س`,
+      heartbeatProfileTimezone: 'المنطقة الزمنية للملف الشخصي',
       heartbeatEverySeconds: seconds => `كل ${seconds} ث`,
       heartbeatNext: time => `التالي ${time}`,
       heartbeatActions: 'إجراءات النبض',

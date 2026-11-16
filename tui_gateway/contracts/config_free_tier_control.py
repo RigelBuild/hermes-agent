@@ -714,6 +714,9 @@ class HeartbeatSnapshot(Result):
     created_at: float
     last_fired_at: float
     fire_count: int
+    schedule: str | None = None
+    timezone: str | None = None
+    next_fire_at: float | None = None
 
 
 class SessionControlSnapshot(Result):
