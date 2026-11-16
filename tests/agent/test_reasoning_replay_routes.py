@@ -47,6 +47,10 @@ def _wire(provider, base_url, model="m", rejected=()):
     # everyone else: the de-facto standard alias
     ("zai", "https://api.z.ai/api/paas/v4", "glm-5.3", {"reasoning_content"}),
     ("openai-api", "https://api.openai.com/v1", "gpt-5", {"reasoning_content"}),
+    # Anthropic refuses replayed reasoning text sent through this gateway: the host is what
+    # identifies the route, so a generic provider name is not matched.
+    ("litellm", "https://llm-gateway.internal.rigel.build/v1", "claude-opus-5-5", set()),
+    ("custom", "https://llm-gateway.internal.rigel.build/v1", "claude-opus-5-5", set()),
 ])
 def test_each_route_gets_exactly_the_carriers_it_reads(provider, base_url, model, expected):
     turn, bare = _wire(provider, base_url, model)
@@ -64,6 +68,52 @@ def test_must_echo_pads_and_aliased_gemini_keeps_its_signature():
     assert bare["reasoning_content"] == " "  # DeepSeek 400s without it; "" is rejected too
     gemini_alias, _ = _wire("gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "my-alias")
     assert gemini_alias["tool_calls"][0]["extra_content"] == {"google": {"thought_signature": "sig"}}
+
+
+def test_litellm_gateway_sends_no_replayed_reasoning_on_any_assistant_turn():
+    """The final chat_completions body for the Rigel LiteLLM gateway carries no reasoning
+    key on any assistant turn. The check runs the real replay path (policy, shape_wire_carriers,
+    transport build_kwargs) on stored history that carries reasoning on every assistant turn."""
+    from agent.reasoning_carriers import shape_wire_carriers
+
+    url = "https://llm-gateway.internal.rigel.build/v1"
+    model = "claude-opus-5-5"
+    route = reasoning_replay_route("chat_completions", "litellm", model, url)
+    assert route.carriers == frozenset() and route.pad is False
+    stored = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "go"},
+        {**_TURN, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+    ]
+    api = []
+    for source in stored:
+        msg = deepcopy(source)
+        apply_reasoning_content_policy(source, msg, route.pad, route.carriers)
+        api.append(msg)
+    wire = shape_wire_carriers(api, model=model, base_url=url)
+    kwargs = ChatCompletionsTransport().build_kwargs(
+        model=model, messages=wire, tools=None, base_url=url, provider_name="litellm",
+        supports_reasoning=True, reasoning_config={"enabled": True, "effort": "high"},
+    )
+    assistant = [m for m in kwargs["messages"] if m.get("role") == "assistant"]
+    assert assistant, "fixture must contain an assistant turn"
+    for msg in assistant:
+        assert not {"reasoning", "reasoning_content", "reasoning_details"} & set(msg)
+    assert _TURN["reasoning"] == "thought"  # stored history untouched
+
+
+def test_litellm_gateway_profile_cannot_reintroduce_native_details():
+    """Step 4: a profile that declares native reasoning_details must not add the carrier back on this route."""
+    from unittest.mock import patch
+    from types import SimpleNamespace
+
+    url = "https://llm-gateway.internal.rigel.build/v1"
+    declared = SimpleNamespace(native_reasoning_details_type="litellm.native_assistant")
+    with patch("providers.get_provider_profile", return_value=declared):
+        route = reasoning_replay_route("chat_completions", "litellm", "claude-opus-5-5", url)
+    assert "reasoning_details" not in route.carriers
+    assert route.carriers == frozenset()
 
 
 class _Rejection(Exception):
