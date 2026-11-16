@@ -16,6 +16,9 @@ from agent.error_classifier import (
 _R = FailoverReason
 AUTH_ERROR, PAYMENT_ERROR, MODEL_INCOMPATIBLE = "auth error", "payment error", "model incompatible with route"
 MODEL_NOT_FOUND = "model not found"
+# A usage window spent on one model (Codex ``usage_limit_reached``), not a bill on the whole account.
+USAGE_LIMIT_REASON = "usage limit"
+_USAGE_LIMIT_TEXT = ("usage_limit_reached", "usage limit has been reached", "usage limit reached")
 # The request's own shape failed: another provider only helps once a parameter rung changed the request.
 _REQUEST_SHAPE = frozenset({
     _R.format_error, _R.role_alternation, _R.multimodal_tool_content_unsupported, _R.reasoning_mandatory,
@@ -76,6 +79,17 @@ def resend_cannot_help(verdict: ClassifiedError) -> bool:
 
 def benches_provider(verdict: ClassifiedError) -> bool:
     return verdict.reason is _R.billing or bool(verdict.error_context.get("quota_exhausted"))
+
+def is_usage_limit(failure: Failure) -> bool:
+    """A spent usage window on the model that was sent (Codex ``usage_limit_reached``), not a billing wall."""
+    text = str(failure.error).lower()
+    return benches_provider(failure.verdict) and any(token in text for token in _USAGE_LIMIT_TEXT)
+
+
+def is_usage_limit(failure: Failure) -> bool:
+    """A spent usage window on the model that was sent (Codex ``usage_limit_reached``), not a billing wall."""
+    text = str(failure.error).lower()
+    return benches_provider(failure.verdict) and any(token in text for token in _USAGE_LIMIT_TEXT)
 
 
 def fallback_label(failure: Failure, *, rung_spent: bool = False) -> Optional[str]:

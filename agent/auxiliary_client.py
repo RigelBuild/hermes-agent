@@ -7737,9 +7737,12 @@ def _ladder_provider_fallback(failure: aux_errors.Failure, route: _LadderRoute, 
         sender = _failure_sender(route, failure)
         failed_provider = _recoverable_pool_provider(resolved_provider, sender, route.main_runtime, same_path=True)
         sender_url = "" if sender is route.client else str(getattr(sender, "base_url", "") or "")
+        usage_limit = aux_errors.is_usage_limit(failure)
         _mark_provider_unhealthy(
             failed_provider or _classification_provider(sender, resolved_provider, route.main_runtime),
-            base_url=sender_url or route.base_info)
+            base_url=sender_url or route.base_info,
+            reason=aux_errors.USAGE_LIMIT_REASON if usage_limit else _AUX_UNHEALTHY_PAYMENT_REASON,
+            model=route.final_model if usage_limit else None)
     if reason == "request timed out":
         # WARNING, naming the endpoint, the budget and the knob: the only other trace of a slow
         # local model is the fallback provider's complaint about a model it never had (#89445).
@@ -7752,13 +7755,16 @@ def _ladder_provider_fallback(failure: aux_errors.Failure, route: _LadderRoute, 
         logger.info("Auxiliary %s%s: %s on %s (%s), trying fallback",
                     task or "call", tag, reason, resolved_provider, first_err)
     # Skip only the failed model for model-specific failures; 401/402 are provider-wide, so
-    # auth keeps skipping the credential surface, while billing is scoped to the endpoint:
-    # separate custom URLs can carry separate credentials (or no billing relationship at all).
-    _chain_failed_model = None if reason in ("auth error", "payment error") else route.final_model
+    # auth keeps skipping the credential surface, while a confirmed bill is scoped to the endpoint:
+    # separate custom URLs can carry separate credentials. A usage limit is one model's window.
+    _usage_limit_walk = reason == "payment error" and aux_errors.is_usage_limit(failure)
+    _chain_failed_model = (
+        route.final_model if _usage_limit_walk
+        else None if reason in ("auth error", "payment error") else route.final_model)
     from agent.backend_identity import FailureScope
     _chain_failure_scope = (
         FailureScope.ENDPOINT
-        if reason == "payment error" and _custom_health_base_url(resolved_provider, route.base_info)
+        if reason == "payment error" and not _usage_limit_walk and _custom_health_base_url(resolved_provider, route.base_info)
         else None
     )
     fb_client, fb_model, fb_label = _try_configured_fallback_chain(
