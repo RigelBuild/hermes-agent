@@ -225,6 +225,52 @@ def test_gap_and_fold_fire_once(schedule, start, monkeypatch):
     assert manager.due_prompt(fire) is not None
     assert manager.due_prompt(fire + 3600) is None
 
+
+NEW_YORK = ZoneInfo("America/New_York")
+
+
+def _scheduled_fire_walk(schedule, created_at, count):
+    """Return ``count`` next_fire_at values from the snapshot path; each fire re-anchors the next."""
+    from tui_gateway.methods_session_control import _safe_heartbeat_snapshot
+
+    state = HeartbeatState(prompt="check", interval_seconds=0, schedule=schedule,
+                           timezone="America/New_York", created_at=created_at.timestamp())
+    fires = []
+    for _ in range(count):
+        fire = _safe_heartbeat_snapshot(state)["next_fire_at"]
+        fires.append(fire)
+        state.last_fired_at = fire
+    return fires
+
+
+def test_scheduled_heartbeat_next_fire_at_holds_wall_clock_across_dst():
+    """A 07:30 heartbeat reads 07:30 New York every day for a year, across both DST changes."""
+    start = datetime(2026, 2, 1, 7, 30, tzinfo=NEW_YORK)
+    walls = [datetime.fromtimestamp(fire, NEW_YORK)
+             for fire in _scheduled_fire_walk("30 7 * * *", start, 365)]
+    assert [w.strftime("%Y-%m-%d") for w in walls] == [
+        (start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(1, 366)]
+    assert {(w.hour, w.minute) for w in walls} == {(7, 30)}
+    by_day = {w.strftime("%Y-%m-%d"): w.strftime("%z") for w in walls}
+    assert by_day["2026-03-07"] == "-0500"
+    assert by_day["2026-03-08"] == "-0400"
+    assert by_day["2026-10-31"] == "-0400"
+    assert by_day["2026-11-01"] == "-0500"
+
+
+@pytest.mark.parametrize("schedule,created_at,expected", [
+    # 02:30 does not exist on 2026-03-08; the snapshot path reports it at 03:30 EDT.
+    ("30 2 * * *", datetime(2026, 3, 7, 7, 30, tzinfo=NEW_YORK),
+     ["2026-03-08T03:30:00-04:00", "2026-03-09T02:30:00-04:00"]),
+    # 01:30 happens twice on 2026-11-01; the snapshot path reports the first (EDT) instant.
+    ("30 1 * * *", datetime(2026, 10, 31, 7, 30, tzinfo=NEW_YORK),
+     ["2026-11-01T01:30:00-04:00", "2026-11-02T01:30:00-05:00"]),
+])
+def test_scheduled_heartbeat_gap_and_fold_next_fire_at(schedule, created_at, expected):
+    fires = _scheduled_fire_walk(schedule, created_at, len(expected))
+    assert fires == [datetime.fromisoformat(e).timestamp() for e in expected]
+
+
 def test_scheduled_route_survives_restart_and_fires_once(monkeypatch):
     from hermes_cli import heartbeat
 
