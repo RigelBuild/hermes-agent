@@ -161,22 +161,22 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         assert _smart_approve("rm -rf /", "recursive delete") == "deny"
 
     @patch("agent.auxiliary_client.call_llm")
-    def test_ambiguous_response_escalates(self, mock_call_llm):
-        """Unrecognizable LLM output must default to escalate (fail safe)."""
+    def test_ambiguous_response_is_unavailable_not_escalate(self, mock_call_llm):
+        """Unrecognizable LLM output is an infrastructure failure, not an uncertain verdict."""
         mock_call_llm.return_value = self._make_response("I think this is probably fine")
-        assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
+        assert _smart_approve("rm -rf /", "recursive delete") == "unavailable"
 
     @patch("agent.auxiliary_client.call_llm")
-    def test_empty_answer_escalates_with_warning(self, mock_call_llm):
+    def test_empty_answer_is_unavailable_with_warning(self, mock_call_llm):
         """The #117428 failure mode: a 200 response with empty content (finish_reason==
         "length" after a reasoning model spent the whole max_tokens budget on hidden
-        reasoning) must escalate AND log at WARNING — at default log levels it is otherwise
+        reasoning) must be unavailable AND log at WARNING — at default log levels it is otherwise
         indistinguishable from a genuine ESCALATE verdict."""
         response = self._make_response("")
         response.choices[0].finish_reason = "length"
         mock_call_llm.return_value = response
         with self.assertLogs("tools.approval", level="WARNING"):
-            self.assertEqual(_smart_approve("rm -rf /", "recursive delete"), "escalate")
+            self.assertEqual(_smart_approve("rm -rf /", "recursive delete"), "unavailable")
 
     @patch("agent.auxiliary_client.call_llm")
     def test_empty_answer_without_finish_reason_still_warns(self, mock_call_llm):
@@ -186,22 +186,22 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         response.choices[0].finish_reason = None
         mock_call_llm.return_value = response
         with self.assertLogs("tools.approval", level="WARNING") as logs:
-            assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
+            assert _smart_approve("rm -rf /", "recursive delete") == "unavailable"
         assert any("finish_reason=None" in message for message in logs.output), logs.output
 
     @patch("agent.auxiliary_client.call_llm")
-    def test_truncated_verdict_escalates_even_when_content_is_a_verdict(self, mock_call_llm):
+    def test_truncated_verdict_is_unavailable_even_when_content_is_a_verdict(self, mock_call_llm):
         for answer in ("APPROVE", "DENY"):
             response = self._make_response(answer)
             response.choices[0].finish_reason = "length"
             mock_call_llm.return_value = response
             with self.subTest(answer=answer):
-                self.assertEqual(_smart_approve("rm -rf /", "recursive delete"), "escalate")
+                self.assertEqual(_smart_approve("rm -rf /", "recursive delete"), "unavailable")
 
     @patch("agent.auxiliary_client.call_llm")
-    def test_malformed_response_escalates(self, mock_call_llm):
+    def test_malformed_response_is_unavailable(self, mock_call_llm):
         mock_call_llm.return_value = MagicMock(choices=[])
-        self.assertEqual(_smart_approve("rm -rf /", "recursive delete"), "escalate")
+        self.assertEqual(_smart_approve("rm -rf /", "recursive delete"), "unavailable")
 
     @patch("agent.auxiliary_client.call_llm")
     def test_recognized_verdict_does_not_warn(self, mock_call_llm):
@@ -232,7 +232,7 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
     @patch("agent.auxiliary_client.call_llm")
     def test_a_reason_cannot_turn_an_unknown_word_into_a_verdict(self, mock_call_llm):
         mock_call_llm.return_value = self._make_response("Sure\nAPPROVE")
-        assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
+        assert _smart_approve("rm -rf /", "recursive delete") == "unavailable"
 
     @patch("agent.auxiliary_client.call_llm")
     def test_budget_leaves_room_for_a_reason(self, mock_call_llm):

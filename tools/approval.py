@@ -1119,6 +1119,7 @@ REVIEWER_DENY_NOTE = "**Reviewer:** flagged as dangerous"
 _REVIEW_NOTES = {
     "approve": "**Reviewer:** passed",
     "escalate": "**Reviewer:** unsure, check it carefully",
+    "unavailable": "**Reviewer unavailable:**",
     "deny": REVIEWER_DENY_NOTE,
 }
 
@@ -1128,7 +1129,9 @@ _gate_note = threading.local()
 
 def _review_line(verdict: str, note: str) -> str:
     """The reviewer's verdict for the human prompt, with its one-sentence reason when it gave one."""
-    head = _REVIEW_NOTES.get(verdict, _REVIEW_NOTES["escalate"])
+    head = _REVIEW_NOTES.get(verdict, _REVIEW_NOTES["unavailable"])
+    if verdict == "unavailable":
+        return f"{head} {note}" if note else head
     return f"{head}: {note}" if note else head
 
 

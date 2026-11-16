@@ -106,15 +106,15 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
         """If the config reader itself blows up, _smart_approve fails safe."""
         mock_call_llm.return_value = _make_response("APPROVE")
         mock_cfg.side_effect = RuntimeError("config unreadable")
-        # _smart_approve's outer try/except catches this and escalates
-        assert _smart_approve("echo hi", "flagged") == "escalate"
+        # _smart_approve's outer try/except catches this and reports the guardian unavailable
+        assert _smart_approve("echo hi", "flagged") == "unavailable"
 
 
 
 
     @patch("tools.approval_context._get_approval_config")
     @patch("agent.auxiliary_client.call_llm")
-    def test_smart_approve_failure_logs_warning_and_escalates(
+    def test_smart_approve_failure_logs_warning_and_is_unavailable(
         self, mock_call_llm, mock_cfg
     ):
         """A failed/blocked guardian call must surface as a WARNING with the
@@ -124,7 +124,7 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
         mock_cfg.return_value = {"mode": "smart"}
 
         with patch("tools.approval_smart.logger") as mock_logger:
-            assert _smart_approve("echo hi", "flagged") == "escalate"
+            assert _smart_approve("echo hi", "flagged") == "unavailable"
 
         assert mock_logger.warning.called
         args, _ = mock_logger.warning.call_args
