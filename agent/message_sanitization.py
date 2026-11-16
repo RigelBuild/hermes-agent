@@ -681,8 +681,6 @@ _REASONING_CARRIER_ROUTES: tuple = (
     # (carriers, providers (lowered), hosts) — evidence per row in the PR body / FINDINGS.
     (frozenset(), frozenset({"mistral", "groq", "cerebras", "sambanova"}),
      ("mistral.ai", "groq.com", "cerebras.ai", "sambanova.ai", "hunyuan.cloud.tencent.com")),
-    # Anthropic refuses replayed reasoning text sent through this gateway.
-    (frozenset(), frozenset(), ("llm-gateway.internal.rigel.build",)),
     # Fireworks' ChatMessage schema is additionalProperties:false with reasoning_content only.
     (frozenset({RC}), frozenset({"fireworks"}), ("fireworks.ai",)),
     # OpenRouter-format gateways read the unified array, the string and the alias.
@@ -692,6 +690,14 @@ _REASONING_CARRIER_ROUTES: tuple = (
     (frozenset({RC, RD}), frozenset({"novita", "tencent-tokenhub", "minimax", "minimax-cn"}),
      ("novita.ai", "tokenhub.tencentmaas.com", "tokenhub-intl.tencentcloudmaas.com", "minimax.io", "minimaxi.com")),
     (_LOCAL_CARRIERS, frozenset({"ollama-cloud", "custom", "lmstudio", "upstage"}), ("ollama.com", "upstage.ai")),
+)
+
+# Model-gated rows, checked before the host/provider table. Each row is (carriers, model substrings
+# (lowered), hosts): it applies only when the host matches AND the model name contains a substring.
+# Anthropic refuses replayed reasoning text through the Rigel LiteLLM gateway, so only Claude models
+# on that host are stripped. The same host also serves OpenRouter and GPT lanes, which keep their carriers.
+_REASONING_CARRIER_MODEL_ROUTES: tuple = (
+    (frozenset(), ("claude",), ("llm-gateway.internal.rigel.build",)),
 )
 
 
@@ -729,12 +735,21 @@ def needs_reasoning_echo(provider: Any, model: Any, base_url: Any) -> bool:
     return reasoning_echo_family(provider, model, base_url) is not None
 
 
-def route_reasoning_carriers(provider: Any, base_url: Any) -> frozenset:
-    """Reasoning carriers the chat-completions route reads (before any runtime rejection)."""
+def route_reasoning_carriers(provider: Any, base_url: Any, model: Any = None) -> frozenset:
+    """Reasoning carriers the chat-completions route reads (before any runtime rejection).
+
+    ``model`` is optional so a caller with no model keeps host-only matching. The model-gated rows
+    (``_REASONING_CARRIER_MODEL_ROUTES``) are checked first and need both a host and a model match."""
     from utils import base_url_host_matches
 
     provider_lower = (provider or "").strip().lower()
-    carriers = next(
+    model_lower = (model or "").lower()
+    gated = next(
+        (c for c, subs, hosts in _REASONING_CARRIER_MODEL_ROUTES
+         if any(sub in model_lower for sub in subs) and any(base_url_host_matches(base_url, h) for h in hosts)),
+        None,
+    )
+    carriers = gated if gated is not None else next(
         (c for c, providers, hosts in _REASONING_CARRIER_ROUTES
          if provider_lower in providers or any(base_url_host_matches(base_url, h) for h in hosts)),
         None,
@@ -766,7 +781,7 @@ def reasoning_replay_route(
     pad = bool(echo_opt_in) or needs_reasoning_echo(provider, model, base_url)
     if (api_mode or "chat_completions") != "chat_completions":
         return ReasoningReplayRoute(pad, None)
-    carriers = route_reasoning_carriers(provider, base_url) - frozenset(rejected)
+    carriers = route_reasoning_carriers(provider, base_url, model) - frozenset(rejected)
     # A strict route never gets a reasoning key, not even the must-echo pad.
     return ReasoningReplayRoute(pad and RC in carriers, carriers)
 
