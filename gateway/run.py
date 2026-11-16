@@ -1035,14 +1035,10 @@ def _is_fresh_gateway_interruption(
 
 
 def build_resume_recovery_note(
-    reason: Optional[str], message: str = "", *, interactive: bool = True) -> str:
+    reason: Optional[str], message: str = "") -> str:
     """Build the resume-pending recovery system note for an interrupted turn (empty ``message`` = auto-resume).
 
-    Interactive platforms report the restore and ask what next; non-interactive ones finish the work.
-
-    On non-interactive event platforms (webhook, API server — adapters with ``interactive_resume = False``)
-    nobody can answer; the resumed turn must instead complete the interrupted work, or the task is silently
-    abandoned behind a "restored" acknowledgement that goes nowhere (#57056).
+    A startup resume continues the interrupted work on every platform.
     """
     reason_phrase = (
         "a gateway restart" if reason == "restart_timeout"
@@ -1053,24 +1049,15 @@ def build_resume_recovery_note(
         tail_guidance = (
             "Do NOT re-execute old tool calls — skip any unfinished work from the conversation history."
         )
-    elif interactive:
-        resume_guidance = (
-            "Report to the user that the session was restored "
-            "successfully and ask what they would like to do next.")
-        tail_guidance = (
-            "Do NOT re-execute old tool calls — skip any unfinished work from the conversation history."
-        )
     else:
-        resume_guidance = (
-            "No user is present on this non-interactive platform, "
-            "so do NOT emit a 'session restored' acknowledgement "
-            "or ask questions. Review the conversation history and "
-            "CONTINUE the interrupted task to completion.")
+        resume_guidance = "CONTINUE the interrupted task and complete the remaining work."
         tail_guidance = (
-            "Do NOT re-run tool calls whose results already "
-            "appear in the history — resume from the first step that has no recorded result.")
+            "Do NOT re-run tool calls whose results already appear in the history. "
+            "For each interrupted call without a recorded result, its outcome is unknown; "
+            "check the state before retrying it."
+        )
     return (
-        f"[System note: The previous turn was interrupted by "
+        f"[System note: resumed after {reason_phrase.removeprefix('a ')}. The previous turn was interrupted by "
         f"{reason_phrase}; the gateway is now back online. "
         f"Any restart/shutdown command in the history has already "
         f"run — do NOT re-execute or verify it. {resume_guidance} {tail_guidance}]"
@@ -1078,7 +1065,7 @@ def build_resume_recovery_note(
 
 
 def _prepare_resume_pending_message(
-    reason: Optional[str], message: Optional[str], *, interactive: bool = True) -> tuple[str, str]:
+    reason: Optional[str], message: Optional[str]) -> tuple[str, str]:
     """Return the recovery message and the user text to persist.
 
     Empty original: persist the note (a "" user row trips the pre-call sanitizer). Real text: persist clean.
@@ -1090,7 +1077,7 @@ def _prepare_resume_pending_message(
     words: the transcript stays scaffold-free (the model still receives the wrapped note), and a non-empty
     row never trips the sanitizer.
     """
-    recovery_message = build_resume_recovery_note(reason, message or "", interactive=interactive)
+    recovery_message = build_resume_recovery_note(reason, message or "")
     persist_message = message if isinstance(message, str) and message.strip() else recovery_message
     return recovery_message, persist_message
 

@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.tool_result_classification import tool_may_have_side_effect
 from agent.message_metadata import drop_typed_ask
+from agent.message_sanitization import coalesce_tool_call_id, tool_call_id_variants, tool_result_id_variants
 from agent.turn_context import drop_stale_api_content
 from hermes_cli.timefmt import coerce_epoch
 
@@ -30,6 +31,7 @@ _DANGLING_NOTICES = (
     "[Orphan recovery: this tool may have executed before Hermes stopped; its effect is UNKNOWN. Inspect current state before retrying.]",
     "[Orphan recovery: this read-only tool did not complete and had no effect.]",
 )
+_PARTIAL_NOTICE = "[Orphan recovery: interrupted before its result was recorded; outcome UNKNOWN. Verify state before retrying.]"
 
 
 # Every executor ends the killed run's ``output`` with a bracketed marker line: "[Command
@@ -145,11 +147,34 @@ def strip_dangling_tool_call_tail(agent_history: list[dict[str, Any]]) -> list[d
     return agent_history[:-1]
 
 
+def _recover_partial_tool_tail(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep recorded results and close unanswered calls without executing them again."""
+    end = len(history)
+    start = end
+    while start and history[start - 1].get("role") == "tool":
+        start -= 1
+    if start == end or not start:
+        return history
+    assistant = history[start - 1]
+    if assistant.get("role") != "assistant" or not assistant.get("tool_calls"):
+        return history
+    answered = set().union(*(tool_result_id_variants(result.get("tool_call_id")) for result in history[start:end]))
+    missing = [call for call in assistant["tool_calls"] if not (tool_call_id_variants(call) & answered)]
+    if not missing:
+        return history
+    return history + [
+        make_tool_result_message(
+            _call_name(call) or "unknown",
+            _PARTIAL_NOTICE,
+            coalesce_tool_call_id(call), effect_disposition="unknown",
+        )
+        for call in missing
+    ]
+
+
 def sanitize_replay_history(agent_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Both strippers in canonical order (interrupted blocks, then dangling tail); same list object when nothing strips."""
-    if not agent_history:
-        return agent_history
-    return strip_dangling_tool_call_tail(strip_interrupted_tool_tails(agent_history))
+    """Apply the shared replay cleanup chain."""
+    return canonicalize_replay_history(agent_history)
 
 
 def canonicalize_replay_history(
@@ -169,6 +194,7 @@ def canonicalize_replay_history(
         now = time.time()
     cleaned = strip_interrupted_tool_tails(agent_history)
     cleaned = strip_dangling_tool_call_tail(cleaned)
+    cleaned = _recover_partial_tool_tail(cleaned)
     return strip_stale_dangerous_confirmations(cleaned, now=now)
 
 
