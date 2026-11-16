@@ -91,12 +91,13 @@ class ProcessCheckpointMixin:
             entries.append(entry)
             atomic_json_write(path, entries)
 
-    def _remove_resumable_entry(self, session_id, attempt_token):
+    def _remove_resumable_entry(self, session_id, attempt_token, checkpoint_path=None):
         from hermes_cli.active_sessions import _FileLock
         from tools.process_registry import _checkpoint_path
         from utils import atomic_json_write
 
-        path = _checkpoint_path()
+        from pathlib import Path
+        path = Path(checkpoint_path) if checkpoint_path else _checkpoint_path()
         with _FileLock(path.with_name(path.name + ".lock")):
             try:
                 entries = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -106,7 +107,7 @@ class ProcessCheckpointMixin:
                        and entry.get("session_id") == session_id and entry.get("attempt_token") == attempt_token)]
             atomic_json_write(path, entries)
 
-    def _recover_interrupted_attempts(self):
+    def _recover_interrupted_attempts(self, only_session_id=None):
         """Mark interrupted attempts unknown and replay notices at least once on each boot."""
         from pathlib import Path
         from hermes_cli.active_sessions import _FileLock
@@ -125,6 +126,8 @@ class ProcessCheckpointMixin:
             for entry in entries:
                 if not isinstance(entry, dict) or not entry.get('attempt_token'):
                     continue
+                if only_session_id is not None and entry.get('session_id') != only_session_id:
+                    continue
                 status = entry.get('attempt_status')
                 if status not in {'pending', 'running', 'claimed', 'unknown'}:
                     continue
@@ -141,6 +144,7 @@ class ProcessCheckpointMixin:
                     'session_id': entry['session_id'], 'session_key': entry.get('session_key', ''),
                     'parent_session_id': entry.get('parent_session_id', ''),
                     'attempt_token': entry['attempt_token'],
+                    'checkpoint_path': str(path),
                     'task_id': entry.get('task_id', ''), 'owner_task_id': entry.get('owner_task_id', ''),
                     'command': entry.get('command', ''),
                     'started_at': entry.get('started_at', 0),
@@ -149,7 +153,15 @@ class ProcessCheckpointMixin:
                 })
             if changed:
                 atomic_json_write(path, entries)
-        self.pending_watchers.extend(notices)
+        if only_session_id is None:
+            self.pending_watchers.extend(notices)
+        else:
+            import sys
+            runner_ref = getattr(sys.modules.get('gateway.run'), '_gateway_runner_ref', None)
+            runner = runner_ref() if callable(runner_ref) else None
+            for notice in notices:
+                if runner is None or not runner.arm_process_watcher(notice):
+                    self.pending_watchers.append(notice)
 
     def recover_from_checkpoint(self) -> int:
         """On gateway startup, probe PIDs from the checkpoint file; returns how many

@@ -1055,6 +1055,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             else:
                 self._finished.pop(session.id, None)
         self._write_checkpoint()
+        if session.attempt_token:
+            try:
+                self._recover_interrupted_attempts(only_session_id=session.id)
+            except Exception:
+                logger.exception('Could not classify interrupted background job %s', session.id)
         session._completion_event.set()
         return session if session.systemd_unit else None
 

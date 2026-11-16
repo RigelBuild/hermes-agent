@@ -1904,7 +1904,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             text = f"Background job {watcher['session_id']}: {notice}"
             delivered = await self._enqueue_process_completion_notification(text, event)
             if delivered is not False:
-                process_registry._remove_resumable_entry(watcher['session_id'], watcher['attempt_token'])
+                try:
+                    process_registry._remove_resumable_entry(
+                        watcher['session_id'], watcher['attempt_token'], watcher.get('checkpoint_path'))
+                except Exception:
+                    logger.exception('could not settle recovery notice for %s', watcher['session_id'])
             return
         session_id = watcher["session_id"]
         interval = watcher["check_interval"]
