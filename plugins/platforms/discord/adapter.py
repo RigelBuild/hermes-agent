@@ -5724,6 +5724,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
         try:
+            client = self._client
             channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             send_kwargs, view = build(channel)
             if view is not None:
@@ -5731,7 +5732,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             msg = await channel.send(**send_kwargs)
             if view is not None:
                 view._message = msg
-                view.bound_client = self._client
+                view.bound_client = client
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             if fail_log:
@@ -5793,29 +5794,32 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         custom_id = str(data.get("custom_id") or "")
         if not custom_id:
             return
-        logger.info("[Discord] component interaction custom_id=%s user=%s", custom_id,
-                    getattr(getattr(interaction, "user", None), "id", None))
+        logger.debug("[Discord] component interaction custom_id=%s", custom_id)
         if not custom_id.startswith("hermes:exec:"):
             return
+        logger.info("[Discord] component interaction custom_id=%s user=%s", custom_id,
+                    getattr(getattr(interaction, "user", None), "id", None))
         request_id = custom_id[len("hermes:exec:"):].rpartition(":")[0]
         view = self._exec_approval_views.get(request_id)
         if view is not None and not view.is_finished():
             if view.bound_client is self._client:
                 # A live view on this client: discord.py's store routes the press.
                 return
-            # Orphan: sent before a reconnect, so its buttons are not in the live store.
-            reply = t("platform.discord.approval.no_longer_pending")
-            try:
-                if await view.press(interaction, custom_id):
-                    return
-                logger.warning("[Discord] orphaned approval press matched no live button: custom_id=%s", custom_id)
-            except Exception:
-                logger.warning("[Discord] orphaned approval press failed: custom_id=%s", custom_id, exc_info=True)
-                # A recorded answer whose card edit failed: say it was recorded, not that the click failed.
-                recorded = view.resolved or view._backend_settled
-                reply = t("platform.discord.approval.already_resolved" if recorded else "platform.discord.approval.click_failed")
-            await self._reply_unanswered_approval_press(interaction, custom_id, reply)
-            return
+            press_message_id = getattr(getattr(interaction, "message", None), "id", None)
+            if press_message_id is not None and press_message_id == getattr(view._message, "id", None):
+                # Orphan: sent before a reconnect, so its buttons are not in the live store.
+                reply = t("platform.discord.approval.no_longer_pending")
+                try:
+                    if await view.press(interaction, custom_id):
+                        return
+                    logger.warning("[Discord] orphaned approval press matched no live button: custom_id=%s", custom_id)
+                except Exception:
+                    logger.warning("[Discord] orphaned approval press failed: custom_id=%s", custom_id, exc_info=True)
+                    # A recorded answer whose card edit failed: say it was recorded, not that the click failed.
+                    recorded = view.resolved or view._backend_settled
+                    reply = t("platform.discord.approval.already_resolved" if recorded else "platform.discord.approval.click_failed")
+                await self._reply_unanswered_approval_press(interaction, custom_id, reply)
+                return
         if interaction.response.is_done():
             # Answered already (a live Approve, or discord.py's own callback): nothing left to say.
             logger.info("[Discord] approval press already answered: custom_id=%s", custom_id)
@@ -5847,8 +5851,6 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         )
         if view.request_id and not self._observe_exec_approval_settle(prompt.session_key, view):
             view.pending_retire = "gone"
-        if view.request_id:
-            self._register_exec_approval_view(view.request_id, view)
         view_slot = {}
         def _build(_channel):
             truncated = prompt.command_preview != prompt.command
@@ -5885,6 +5887,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 approval_index.discard_pending_reservation(request_id)
             raise
         view = view_slot.get("view")
+        if result.success and view is not None and view.request_id:
+            self._register_exec_approval_view(view.request_id, view)
         if result.success and prompt.command_preview != prompt.command and prompt.request_id and "once" in prompt.choices:
             from tools.approval import restrict_gateway_approval_card_to_deny
             restrict_gateway_approval_card_to_deny(prompt.session_key, str(prompt.request_id), restricted=False)

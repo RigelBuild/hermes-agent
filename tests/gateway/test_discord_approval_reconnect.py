@@ -94,12 +94,12 @@ async def _connect(adapter, monkeypatch, created):
     assert await adapter.connect() is True
 
 
-def _capture_card(bot):
+def _capture_card(bot, message_id=1234):
     """Make ``bot`` send the card into a channel and record its kwargs (view, embed, message)."""
     card = {}
 
     async def send(**kwargs):
-        message = SimpleNamespace(id=1234, edit=AsyncMock(), embeds=[kwargs["embed"]])
+        message = SimpleNamespace(id=message_id, edit=AsyncMock(), embeds=[kwargs["embed"]])
         card.update(kwargs)
         card["message"] = message
         return message
@@ -230,11 +230,16 @@ async def test_unmatched_press_gets_ephemeral_reply_and_log(monkeypatch, caplog)
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert any("custom_id=hermes:exec:" in r.getMessage() for r in warnings)
 
+    caplog.set_level(logging.DEBUG)
+    caplog.clear()
     other, other_response = _press("hermes:model:abc")
     await on_interaction(other)
 
     other_response.send_message.assert_not_awaited()
-    assert any("custom_id=hermes:model:abc" in r.getMessage() for r in caplog.records)
+    assert any(r.levelno == logging.DEBUG and "custom_id=hermes:model:abc" in r.getMessage()
+               for r in caplog.records)
+    assert not any("custom_id=hermes:model:abc" in r.getMessage()
+                   and r.levelno >= logging.INFO for r in caplog.records)
     await adapter.disconnect()
 
 
@@ -459,4 +464,174 @@ async def test_orphan_press_whose_edit_fails_after_recording_answer_gets_already
     response.send_message.assert_awaited_once()
     assert response.send_message.await_args.args[0] == t("platform.discord.approval.already_resolved")
     assert response.send_message.await_args.kwargs.get("ephemeral") is True
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_card_sent_across_reconnect_is_resolved_by_the_new_client(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    created: list[_FakeBot] = []
+    await _connect(adapter, monkeypatch, created)
+    adapter._allowed_user_ids = {"11111"}
+
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+    card = {}
+
+    async def send(**kwargs):
+        # The reconnect lands while the card is still in flight on the old client.
+        await _connect(adapter, monkeypatch, created)
+        adapter._allowed_user_ids = {"11111"}
+        message = SimpleNamespace(id=1234, edit=AsyncMock(), embeds=[kwargs["embed"]])
+        card.update(kwargs)
+        card["message"] = message
+        return message
+
+    channel = SimpleNamespace(send=AsyncMock(side_effect=send))
+    created[0].get_channel = lambda _chat_id: channel
+    result = await adapter.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)
+    assert result.success is True
+    assert len(created) == 2
+
+    custom_id = f"hermes:exec:{request_id}:once"
+    interaction, response = _press(custom_id, message=card["message"])
+    await created[1]._events["on_interaction"](interaction)
+
+    assert entry.result == "once"
+    assert entry.event.is_set()
+    response.edit_message.assert_awaited_once()
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_orphan_press_naming_another_cards_message_is_refused(monkeypatch, caplog):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    created: list[_FakeBot] = []
+    await _connect(adapter, monkeypatch, created)
+    adapter._allowed_user_ids = {"11111"}
+    caplog.set_level(logging.INFO)
+
+    session_a = "agent:a:discord:555"
+    session_b = "agent:b:discord:555"
+    request_a = uuid.uuid4().hex
+    request_b = uuid.uuid4().hex
+    entry_a = _queue_entry(monkeypatch, session_a, request_a)
+    _queue_entry(monkeypatch, session_b, request_b)
+
+    card_a = _capture_card(created[0], message_id=1111)
+    assert (await adapter.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session_a, request_id=request_a)).success is True
+    card_b = _capture_card(created[0], message_id=2222)
+    assert (await adapter.send_exec_approval(
+        chat_id="555", command="rm y", session_key=session_b, request_id=request_b)).success is True
+
+    await _connect(adapter, monkeypatch, created)
+    adapter._allowed_user_ids = {"11111"}
+    caplog.clear()
+
+    # Card A's button, pressed on card B's message.
+    custom_id = f"hermes:exec:{request_a}:once"
+    on_interaction = created[1]._events["on_interaction"]
+    interaction, response = _press(custom_id, message=card_b["message"])
+    await on_interaction(interaction)
+
+    assert entry_a.result is None
+    assert not entry_a.event.is_set()
+    response.send_message.assert_awaited_once()
+    assert response.send_message.await_args.args[0] == t("platform.discord.approval.no_longer_pending")
+    assert response.send_message.await_args.kwargs.get("ephemeral") is True
+    response.edit_message.assert_not_awaited()
+    assert any(r.levelno == logging.WARNING and "component press matched no pending approval" in r.getMessage()
+               and f"custom_id={custom_id}" in r.getMessage() for r in caplog.records)
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_live_unfinished_view_press_is_left_to_discord(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    created: list[_FakeBot] = []
+    await _connect(adapter, monkeypatch, created)
+    adapter._allowed_user_ids = {"11111"}
+
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+
+    card = _capture_card(created[0])
+    result = await adapter.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)
+    assert result.success is True
+    assert not card["view"].is_finished()
+
+    # The live client's store routes this press to the view, so the listener must not answer it.
+    custom_id = f"hermes:exec:{request_id}:once"
+    interaction, response = _press(custom_id, message=card["message"])
+    await created[0]._events["on_interaction"](interaction)
+
+    response.send_message.assert_not_awaited()
+    response.edit_message.assert_not_awaited()
+    assert entry.result is None
+    assert not entry.event.is_set()
+    await adapter.disconnect()
+
+
+class _StubApprovalView:
+    def __init__(self):
+        self.done = False
+
+    def is_finished(self):
+        return self.done
+
+
+def test_exec_approval_view_registry_prunes_finished_then_oldest_past_cap():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    cap = adapter._EXEC_APPROVAL_VIEW_CAP
+    views: dict[str, _StubApprovalView] = {}
+
+    def register(rid):
+        views[rid] = _StubApprovalView()
+        adapter._register_exec_approval_view(rid, views[rid])
+        assert len(adapter._exec_approval_views) <= cap
+
+    for i in range(cap):
+        register(f"s{i}")
+    settled = [f"s{i}" for i in range(10, 20)]
+    for rid in settled:
+        views[rid].done = True
+
+    # Over the cap with settled views present: the settled ones are dropped first, so no unfinished
+    # view is evicted yet.
+    register("n0")
+    assert not set(settled) & set(adapter._exec_approval_views)
+    assert "s0" in adapter._exec_approval_views
+    assert len(adapter._exec_approval_views) == cap - len(settled) + 1
+
+    # With no settled views left, the oldest unfinished views go first.
+    for i in range(1, 40):
+        register(f"n{i}")
+    assert len(adapter._exec_approval_views) == cap
+    assert "s0" not in adapter._exec_approval_views
+    assert "n39" in adapter._exec_approval_views
+
+
+@pytest.mark.asyncio
+async def test_failed_card_send_is_not_registered(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    created: list[_FakeBot] = []
+    await _connect(adapter, monkeypatch, created)
+    adapter._allowed_user_ids = {"11111"}
+
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    _queue_entry(monkeypatch, session, request_id)
+
+    channel = SimpleNamespace(send=AsyncMock(side_effect=RuntimeError("send failed")))
+    created[0].get_channel = lambda _chat_id: channel
+    result = await adapter.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)
+
+    assert result.success is False
+    assert request_id not in adapter._exec_approval_views
     await adapter.disconnect()
