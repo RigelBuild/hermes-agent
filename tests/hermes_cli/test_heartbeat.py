@@ -274,9 +274,9 @@ def test_scheduled_heartbeat_next_fire_at_holds_wall_clock_across_dst():
     # Weekly cron: the last Monday slot (05-04) is over a day before the claim, so the scan finds none and falls back.
     ("0 9 * * 1", datetime(2026, 5, 1, 9, 0, tzinfo=ZoneInfo("America/New_York")),
      ["2026-05-06T10:00:00-04:00"], ["2026-05-11T09:00:00-04:00"]),
-    # Daily cron claimed 30 h late: the slot is older than the one-day window, so the next fire is the next day's slot.
+    # Daily cron claimed 24.5 h after its first due slot: the window still holds the 05-03 slot, so the next fire is 05-04.
     ("30 9 * * *", datetime(2026, 5, 1, 9, 30, tzinfo=ZoneInfo("America/New_York")),
-     ["2026-05-02T16:00:00-04:00"], ["2026-05-03T09:30:00-04:00"]),
+     ["2026-05-03T10:00:00-04:00"], ["2026-05-04T09:30:00-04:00"]),
 ])
 def test_scheduled_heartbeat_gap_and_fold_next_fire_at(schedule, created_at, claims, expected):
     fires = _scheduled_fire_walk(schedule, created_at, [datetime.fromisoformat(c).timestamp() for c in claims])
@@ -343,6 +343,37 @@ def test_resume_after_multi_day_pause_waits_for_the_next_slot(monkeypatch):
     friday_fire = datetime(2026, 5, 8, 9, 0, tzinfo=tz).timestamp()
     assert manager.state.next_fire() == friday_fire
     assert manager.due_prompt(thursday_resume) is None
+
+
+def test_resume_of_an_invalid_cadence_does_not_raise_and_stays_active():
+    """A paused row whose cron is invalid resumes without raising, and the stored row agrees with the cache."""
+    from hermes_cli.heartbeat import load_route_heartbeat
+
+    manager = HeartbeatManager("bad-cadence-resume", route_key="test:bad-cadence-resume")
+    manager.set("check", schedule="30 7 * * *", timezone="America/New_York")
+    manager.state.schedule = "bad cron"
+    manager._save(manager.state)
+    manager.pause()
+    manager.resume()
+    assert manager.state.status == "active"
+    assert load_route_heartbeat("test:bad-cadence-resume").status == "active"
+
+
+def test_abandon_of_a_scheduled_claim_restores_the_slot_so_it_fires_again():
+    """A scheduled claim whose turn never starts rewinds the anchor, so the same slot is due on the next poll."""
+    tz = ZoneInfo("America/New_York")
+    slot = datetime(2026, 5, 4, 7, 30, tzinfo=tz).timestamp()
+    manager = HeartbeatManager("abandon-scheduled", route_key="test:abandon-scheduled")
+    manager.set("check", schedule="30 7 * * *", timezone="America/New_York")
+    manager.state.created_at = datetime(2026, 5, 3, 7, 30, tzinfo=tz).timestamp()
+    manager._save(manager.state)
+    before_anchor, before_fired = manager.state.schedule_anchor, manager.state.last_fired_at
+    assert manager.due_prompt(slot) is not None
+    assert manager.abandon_fire() is True
+    assert manager.state.schedule_anchor == before_anchor
+    assert manager.state.last_fired_at == before_fired
+    assert manager.state.next_fire() == slot
+    assert manager.due_prompt(slot) is not None
 
 
 def test_weekly_claim_anchors_to_the_scan_start_when_no_slot_is_in_the_window():

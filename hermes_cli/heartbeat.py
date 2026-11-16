@@ -431,7 +431,7 @@ class HeartbeatManager:
         except RuntimeError as exc:
             self._log_lookup_failure(exc)
         self._state: Optional[HeartbeatState] = self._load()
-        self._last_claim: Optional[tuple[float, int]] = None
+        self._last_claim: Optional[tuple[float, int, float]] = None
 
     def _storage(self) -> tuple[Optional[str], bool]:
         if self.route_key:
@@ -521,14 +521,19 @@ class HeartbeatManager:
             self._state = self._load()
             if not self._state:
                 return None
-            self._state.status = status
             if reanchor:
                 now = time.time()
+                # Compute the new anchor before touching state: a bad cron raises here and must not leave a half-set row.
+                anchor = None
+                if self._state.schedule and self._state.valid_cadence():
+                    # Latest slot in the last day, or the window start when none falls in it. Same rule as a claim.
+                    anchor = _last_scheduled_slot(self._state.schedule, self._state.timezone, _scan_start(self._state, now), now)
+                self._state.status = status
                 self._state.last_fired_at = now
-                if self._state.schedule:
-                    # Latest slot at or before now; keeps the old anchor when no newer slot exists (a fold resume).
-                    start = max(self._state.schedule_anchor, now - 86400)
-                    self._state.schedule_anchor = _last_scheduled_slot(self._state.schedule, self._state.timezone, start, now)
+                if anchor is not None:
+                    self._state.schedule_anchor = anchor
+            else:
+                self._state.status = status
             self._save(self._state)
         return self._state
 
