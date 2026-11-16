@@ -918,7 +918,7 @@ def _reinject_pruned_skill_markers(summary: str, skill_names: list[str]) -> str:
 
 
 # Lean tail mode: small recency window; continuity via verbatim user messages in
-# the summary, tool-result stubs with recovery pointers, and a session_search footer.
+# the summary, tool-result stubs with recovery pointers, and preserved session history.
 
 # 2.5% of the context window, clamped; floor keeps small models workable.
 LEAN_TAIL_FLOOR_TOKENS = 10_000
@@ -983,19 +983,13 @@ def _build_verbatim_user_section(turns: list[dict[str, Any]]) -> str:
 
 
 def _build_recovery_footer(session_id: str, region_len: int) -> str:
-    """Deterministic pointer to the compacted region in session history.
-    state.db keeps every pre-compaction message; naming the session_search re-access path lets the model
-    treat compaction as deferred retrieval, not loss."""
+    """Identify how many compacted messages remain preserved in session history."""
     if not session_id:
         return ""
     return (
         "\n\n" + _LEAN_RECOVERY_HEADING + "\n"
         f"The {region_len} compacted message(s) remain fully preserved in "
-        "session history. If you need any detail this summary does not carry "
-        "(exact command output, file contents, error text, earlier "
-        "reasoning), recover it with: "
-        f"session_search(query='<keywords>', session_id='{session_id}') — "
-        "do not guess at lost specifics when you can look them up."
+        "session history. Use the summary above as the record of prior work."
     )
 
 
@@ -1071,8 +1065,7 @@ def _build_anchor_index(turns: list[dict[str, Any]]) -> str:
     return (
         "\n\n" + _LEAN_ANCHOR_HEADING + "\n"
         + "\n".join(sections)
-        + "\n(Exact identifiers from the compacted region — use these verbatim, "
-        "and as session_search query anchors to recover their full context.)"
+        + "\n(Exact identifiers from the compacted region, retained as search anchors.)"
     )
 
 
@@ -3665,7 +3658,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
         n = max(1, min(cls._SAMPLED_INPUT_SLICES, len(records)))
         marker_template = (
-            "\n\n...[records {first:,}-{last:,}: {elided:,} chars elided — recover via session_search]...\n\n"
+            "\n\n...[records {first:,}-{last:,}: {elided:,} chars elided]...\n\n"
         )
         marker_len = len(marker_template.format(first=len(records), last=len(records), elided=total_len))
         budget = max(cls._SUMMARY_INPUT_MAX_CHARS - marker_len * (n - 1), 1)

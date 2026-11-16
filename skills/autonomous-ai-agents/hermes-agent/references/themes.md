@@ -40,7 +40,7 @@ key in its row (element-specific keys fall back to the shared one when unset).
 |---|---|---|
 | App background (whole TUI + GUI) | `background` | terminal default |
 | **Tool-call marker** (`●`, tool spinner) | `ui_tool` | `ui_accent` |
-| **Thinking / reasoning text** | `ui_thinking` | `banner_dim` |
+| **Thinking text** | `ui_thinking` | `banner_dim` |
 | Accent — headings, links, chevrons, `Σ` | `ui_accent` / `banner_accent` | — |
 | Heading / primary text | `banner_title` / `ui_primary` | — |
 | Body / label text, user messages | `ui_text` / `banner_text`, `ui_label` | — |

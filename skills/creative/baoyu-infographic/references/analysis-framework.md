@@ -30,7 +30,7 @@ Approach content analysis as a **world-class instructional designer**:
 | Type | Characteristics | Best Layout | Best Style |
 |------|-----------------|-------------|------------|
 | **Timeline/History** | Sequential events, dates, progression | linear-progression | craft-handmade, aged-academia |
-| **Process/Tutorial** | Step-by-step instructions, how-to | linear-progression, winding-roadmap | ikea-manual, technical-schematic |
+| **Process/Tutorial** | Ordered instructions, how-to | linear-progression, winding-roadmap | ikea-manual, technical-schematic |
 | **Comparison** | A vs B, pros/cons, before-after | binary-comparison, comparison-matrix | corporate-memphis, bold-graphic |
 | **Hierarchy** | Levels, priorities, pyramids | hierarchical-layers, tree-branching | craft-handmade, corporate-memphis |
 | **Relationships** | Connections, overlaps, influences | venn-diagram, hub-spoke, jigsaw | craft-handmade, subway-map |

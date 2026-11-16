@@ -33,7 +33,7 @@ Gmail, Calendar, Drive, Contacts, Sheets, and Docs — through Hermes-managed OA
 
 ## First-Time Setup
 
-The setup is fully non-interactive — you drive it step by step so it works
+The setup is fully non-interactive, so you can complete it in one session
 on CLI, Telegram, Discord, or any platform.
 
 Run the setup script with Python from the Hermes environment, not an unrelated

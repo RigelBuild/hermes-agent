@@ -19,7 +19,7 @@ Sequential progression showing steps, timeline, or chronological events.
 
 ## Best For
 
-- Step-by-step tutorials and how-tos
+- Tutorials and how-tos with ordered actions
 - Historical timelines and evolution
 - Project milestones and roadmaps
 - Workflow documentation

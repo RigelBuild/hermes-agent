@@ -42,8 +42,8 @@ Run `scripts/setup.sh` to verify all dependencies. Requires: Python 3.10+, Manim
 | Mode | Input | Output | Reference |
 |------|-------|--------|-----------|
 | **Concept explainer** | Topic/concept | Animated explanation with geometric intuition | `references/scene-planning.md` |
-| **Equation derivation** | Math expressions | Step-by-step animated proof | `references/equations.md` |
-| **Algorithm visualization** | Algorithm description | Step-by-step execution with data structures | `references/graphs-and-data.md` |
+| **Equation derivation** | Math expressions | Animated proof sequence | `references/equations.md` |
+| **Algorithm visualization** | Algorithm description | Animated execution with data structures | `references/graphs-and-data.md` |
 | **Data story** | Data/metrics | Animated charts, comparisons, counters | `references/graphs-and-data.md` |
 | **Architecture diagram** | System description | Components building up with connections | `references/mobjects.md` |
 | **Paper explainer** | Research paper | Key findings and methods animated | `references/scene-planning.md` |

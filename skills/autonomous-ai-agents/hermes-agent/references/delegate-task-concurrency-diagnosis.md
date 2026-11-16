@@ -56,18 +56,17 @@ appears, **the cap is the model**, not Hermes.
 
 ## Why models self-limit batches
 
-Reasoning models (Claude Opus/Sonnet, GPT-5, Grok-4) routinely trim a
-13- or 15-task batch to a "rounder" number (5, 8, 9, 10) when their
-internal reasoning says the coordination cost outweighs parallelism. The
+Models (Claude Opus/Sonnet, GPT-5, Grok-4) routinely trim a
+13- or 15-task batch to a "rounder" number (5, 8, 9, 10) when they
+estimate that coordination costs outweigh parallelism. The
 cost-warning log line printed at startup *reinforces* this — the model
-reads its own reasoning trace and sees "each child consumes API tokens
-independently" and concludes a smaller batch is "more responsible."
+sees "each child consumes API tokens independently" and concludes a
+smaller batch is "more responsible."
 
-The model will then narrate the choice as "the runtime caps at 9" or
+The model may then say "the runtime caps at 9" or
 "despite the config saying 15, max parallel is 9," which is **not true**
-— it's post-hoc rationalisation. Calling this out to the user is fine;
-it is a real, well-known reasoning-model failure mode (face-saving
-attribution to the system rather than admitting a self-imposed limit).
+— it is a post-hoc rationalisation. Calling this out to the user is fine;
+models can incorrectly attribute a self-imposed limit to the system.
 
 ## How to actually force N parallel children
 
@@ -79,9 +78,8 @@ Tell the model explicitly in the prompt:
 
 If the model still trims, use `execute_code` to construct the `tasks`
 list deterministically and call the tool with that exact list — the
-model is then merely a courier and is far less likely to second-guess
-the count. Or use a different model: smaller / less-reasoning-heavy
-models trim less aggressively in practice.
+model is then merely a courier and is less likely to change the count.
+Or use a different model: smaller models trim less aggressively in practice.
 
 ## Pitfalls / gotchas
 

@@ -791,6 +791,39 @@ class TestTailBudgetCodexReplayFields:
         assert c._find_tail_cut_by_tokens(messages, head_end=1, token_budget=150) == 5
 
 
+def test_summary_serialization_drops_separate_thinking_fields(compressor):
+    messages = [{
+        "role": "assistant",
+        "content": "The user-facing answer.",
+        "reasoning": "plain readable hidden text",
+        "reasoning_content": "another readable carrier",
+        "reasoning_details": [{"type": "thinking", "thinking": "structured hidden text", "signature": "sig"}],
+        "anthropic_content_blocks": [
+            {"type": "thinking", "thinking": "native hidden text", "signature": "sig"},
+            {"type": "text", "text": "Visible content."},
+        ],
+        "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "opaque payload"}],
+    }]
+
+    serialized = compressor._serialize_for_summary(messages)
+
+    assert "The user-facing answer." in serialized
+    for private_text in (
+        "plain readable hidden text", "another readable carrier", "structured hidden text",
+        "native hidden text", "opaque payload",
+    ):
+        assert private_text not in serialized
+
+
+def test_recovery_footer_omits_prompt_to_search_old_messages():
+    from agent.context_compressor import _build_recovery_footer
+
+    footer = _build_recovery_footer("session-id", 12)
+
+    assert "12 compacted message(s) remain fully preserved" in footer
+    assert "earlier reasoning" not in footer.lower()
+    assert "session_search" not in footer
+
 class TestGenerateSummaryNoneContent:
     """Regression: content=None (from tool-call-only assistant messages) must not crash."""
 

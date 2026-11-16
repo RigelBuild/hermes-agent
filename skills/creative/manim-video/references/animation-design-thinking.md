@@ -107,7 +107,7 @@ with self.voiceover(text="The gradient points downhill") as tracker:
 
 ### The "dim and reveal" pattern
 
-When building a complex equation step by step:
+When building a complex equation:
 1. Show the full equation dimmed at `opacity=0.2` (sets expectation for where you're going)
 2. Highlight the first term at full opacity
 3. Explain it

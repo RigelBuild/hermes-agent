@@ -11,6 +11,27 @@ KIMI = "https://api.kimi.com/coding"
 MOONSHOT = "https://api.moonshot.cn/anthropic"
 DEEPSEEK = "https://api.deepseek.com/anthropic"
 
+def test_unsigned_history_is_not_replayed_as_text():
+    messages = [
+        {"role": "user", "content": "question"},
+        {"role": "assistant", "content": "visible answer", "reasoning_content": "private thought"},
+        {"role": "user", "content": "continue"},
+    ]
+    _, converted = convert_messages_to_anthropic(messages, base_url="https://api.anthropic.com", model="claude-sonnet-4-6")
+    assistant = next(message for message in converted if message["role"] == "assistant")
+    assert {"type": "text", "text": "visible answer"} in assistant["content"]
+    assert "private thought" not in str(assistant["content"])
+
+
+def test_invalid_and_unsigned_thinking_are_dropped():
+    from agent.anthropic_message_convert import _keep_valid_thinking
+
+    visible = {"type": "text", "text": "visible answer"}
+    unsigned = {"type": "thinking", "thinking": "unsigned private text"}
+    signed = {"type": "thinking", "thinking": "signed private text", "signature": "signature"}
+    assert _keep_valid_thinking([unsigned, signed, visible], False) == [signed, visible]
+    assert _keep_valid_thinking([unsigned, signed, visible], True) == [visible]
+
 
 def _thinking_on_replay(base_url, signature=SIG, model="k3"):
     """Normalize a thinking+text turn, store it, convert to the next-turn request,

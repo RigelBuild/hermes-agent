@@ -559,7 +559,7 @@ def _merge_consecutive_roles(result: list[dict[str, Any]]) -> list[dict[str, Any
 
 
 def _keep_valid_thinking(content: list[Any], signature_dead: bool) -> list[Any]:
-    """Keep valid signed Anthropic thinking, demoting readable unsigned/invalidated thinking.
+    """Keep valid signed Anthropic thinking and drop unsigned or invalidated blocks.
     Preserved-thinking models apply this to historical turns too; older models apply it only
     to the latest assistant turn."""
     new_content = []
@@ -571,8 +571,6 @@ def _keep_valid_thinking(content: list[Any], signature_dead: bool) -> list[Any]:
         signed = b.get("data") if is_redacted else b.get("signature")  # redacted 'data' IS the signature
         if signed and not signature_dead:
             new_content.append(b)
-        elif (signature_dead or not is_redacted) and b.get("thinking"):
-            new_content.append(_text_block(b["thinking"]))  # demote to plain text; dataless redacted dropped
     return new_content
 
 

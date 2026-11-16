@@ -254,6 +254,7 @@ class TestCliApprovalUi:
 
         class FakeAgent:
             def __init__(self, **kwargs):
+                seen["system_prompt"] = kwargs.get("ephemeral_system_prompt")
                 self._print_fn = None
                 self.thinking_callback = None
 
@@ -272,7 +273,8 @@ class TestCliApprovalUi:
                     "failed": False,
                 }
 
-        with patch("run_agent.AIAgent", FakeAgent), \
+        with patch("hermes_cli.gateway_side.connection_for", return_value=None), \
+             patch("run_agent.AIAgent", FakeAgent), \
              patch.object(cli_module, "_cprint"), \
              patch.object(cli_module, "ChatConsole") as chat_console:
             chat_console.return_value.print = MagicMock()
@@ -285,6 +287,9 @@ class TestCliApprovalUi:
                 _thread.join(timeout=10)
 
         assert seen["approval"].__self__ is cli
+        from agent.delegation_prompt import CHILD_PROCESS_GUIDANCE
+
+        assert CHILD_PROCESS_GUIDANCE in seen["system_prompt"]
         assert seen["approval"].__func__ is HermesCLI._approval_callback
         assert seen["sudo"].__self__ is cli
         assert seen["sudo"].__func__ is HermesCLI._sudo_password_callback

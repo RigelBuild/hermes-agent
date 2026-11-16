@@ -8,6 +8,7 @@ import os
 import threading
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
+from agent.delegation_prompt import CHILD_PROCESS_GUIDANCE
 from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -141,26 +142,26 @@ def _normalize_event(event_type: Any) -> Any:
     except (ValueError, TypeError):
         return None
 
+
 _CONTEXT_FILES_INTRO = (
     "\nThe workspace's project context files are reproduced below. Their conventions and invariants are binding for "
     "your work in this workspace.\n\n"
 )
+
 _COMPLETION_INSTRUCTIONS = (
     "\nComplete this task using the tools available to you. When finished, provide a clear, concise summary of:\n"
     "- What you did\n- What you found or accomplished\n- Any files you created or modified\n- Any issues encountered\n\n"
     "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path "
     "unless the task/context explicitly gives that path. If no exact local path is provided, discover it first before "
     "issuing git/workdir-specific commands.\n\n"
-    "Keep your final summary tight: lead with outcomes, prefer bullet points over paragraphs, and don't replay your "
-    "whole process. Your response is returned to the parent agent as a summary, and overlong summaries crowd out the "
-    "parent's context window."
+    "Keep your final summary tight: lead with outcomes and prefer bullet points. Your response is returned to the parent "
+    "agent as a summary, and overlong summaries crowd out the parent's context window."
 )
 _ORCHESTRATOR_BLOCK = (
     "\n## Subagent Spawning (Orchestrator Role)\n"
     "You have access to the `delegate_task` tool and CAN spawn your own subagents to parallelize independent work.\n\n"
     "WHEN to delegate:\n"
-    "- The goal decomposes into 2+ independent subtasks that can run in parallel (e.g. research A and B simultaneously).\n"
-    "- A subtask is reasoning-heavy and would flood your context with intermediate data.\n\n"
+    "- A task involves complex analysis or could flood your context with intermediate data.\n\n"
     "WHEN NOT to delegate:\n"
     "- Single-step mechanical work — do it directly.\n"
     "- Trivial tasks you can execute in one or two tool calls.\n"
@@ -209,6 +210,7 @@ def _build_child_system_prompt(
         if _ctx_files.strip():
             parts.append(_CONTEXT_FILES_INTRO + _ctx_files.strip())
     parts.append(_COMPLETION_INSTRUCTIONS)
+    parts.append(CHILD_PROCESS_GUIDANCE)
     if role == "orchestrator":
         child_note = _LEAF_CHILDREN_NOTE if child_depth + 1 >= max_spawn_depth else _NESTED_CHILDREN_NOTE
         parts.append(

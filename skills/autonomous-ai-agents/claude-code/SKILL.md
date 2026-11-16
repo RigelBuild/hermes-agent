@@ -274,7 +274,7 @@ Automatically falls back to the specified model when the default is overloaded (
 | Flag | Effect |
 |------|--------|
 | `--model <alias>` | Model selection: `sonnet`, `opus`, `haiku`, or full name like `claude-sonnet-4-6` |
-| `--effort <level>` | Reasoning depth: `low`, `medium`, `high`, `xhigh`, `max` |
+| `--effort <level>` | Effort setting: `low`, `medium`, `high`, `xhigh`, `max` |
 | `--max-turns <n>` | Limit agentic loops (print mode only; prevents runaway) |
 | `--max-budget-usd <n>` | Cap API spend in dollars (print mode only) |
 | `--fallback-model <model>` | Auto-fallback when default model is overloaded (print mode only) |
@@ -398,7 +398,7 @@ Use the `#` prefix in interactive mode to quickly add to memory: `# Always use 2
 | Command | Purpose |
 |---------|---------|
 | `/model [model]` | Switch models mid-session (use arrow keys to adjust effort) |
-| `/effort [level]` | Set reasoning effort: `low`, `medium`, `high`, `xhigh`, or `max` |
+| `/effort [level]` | Set effort: `low`, `medium`, `high`, `xhigh`, or `max` |
 | `/init` | Create a CLAUDE.md file for project memory |
 | `/memory` | Open CLAUDE.md for editing |
 | `/config` | Open interactive settings configuration |
@@ -445,7 +445,7 @@ When asked to create or modify database migrations:
 | `Ctrl+R` | Reverse search command history |
 | `Ctrl+B` | Background a running task |
 | `Ctrl+V` | Paste image into conversation |
-| `Ctrl+O` | Transcript mode — see Claude's thinking process |
+| `Ctrl+O` | Transcript mode — view the conversation transcript |
 | `Ctrl+G` or `Ctrl+X Ctrl+E` | Open prompt in external editor |
 | `Esc Esc` | Rewind conversation or code state / summarize |
 
@@ -472,8 +472,8 @@ When asked to create or modify database migrations:
 | `#` | Quick add to CLAUDE.md memory (e.g., `# Use 2-space indentation`) |
 | `/` | Slash commands |
 
-### Pro Tip: "ultrathink"
-Use the keyword "ultrathink" in your prompt for maximum reasoning effort on a specific turn. This triggers the deepest thinking mode regardless of the current `/effort` setting.
+### Pro Tip: `ultrathink`
+Use the keyword `ultrathink` in your prompt to request the highest available effort setting for one turn.
 
 ## PR Review Pattern
 
@@ -715,7 +715,7 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 
 1. **Use `--max-turns`** in print mode to prevent runaway loops. Start with 5-10 for most tasks.
 2. **Use `--max-budget-usd`** for cost caps. Note: minimum ~$0.05 for system prompt cache creation.
-3. **Use `--effort low`** for simple tasks (faster, cheaper). `high` or `max` for complex reasoning.
+3. **Use `--effort low`** for simple tasks (faster, cheaper). Use `high` or `max` for complex tasks.
 4. **Use `--bare`** for CI/scripting to skip plugin/hook discovery overhead.
 5. **Use `--allowedTools`** to restrict to only what's needed (e.g., `Read` only for reviews).
 6. **Use `/compact`** in interactive sessions when context gets large.
