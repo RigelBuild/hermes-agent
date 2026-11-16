@@ -1232,6 +1232,10 @@ interrupted and is never run again; the TUI and Desktop show a "Gateway restarti
 shutting down") notice on that turn, and you send the message again once Hermes reconnects.
 Queued messages behind it are kept and run in order on the new gateway.
 
+Recorded background `hermes chat` jobs without a recorded exit are reported as having an unknown
+outcome after a gateway restart. Hermes does not replay their prompt. Verify their effects before
+retrying. A restart can repeat the notice if its previous delivery was not confirmed.
+
 Set a positive value if you would rather let turns finish:
 
 ```yaml
