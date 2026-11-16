@@ -922,7 +922,7 @@ gateway:
     prompt_required: "Gebruik: /heartbeat every <interval> <prompt> — die prompt is verpligtend."
     invalid_prefix: "Ongeldige hartklop"
     set: "♥ Hartklop gestel (elke {interval}): {prompt}\nVuur as 'n gewone beurt af wanneer hierdie sessie ledig is en die interval verstreke is. Bestaan slegs terwyl die gateway loop — gebruik `hermes cron` vir blywende skedules."
-    set_note: "Vuur as 'n gewone beurt af wanneer hierdie sessie ledig is en die interval verstreke is. Bestaan slegs terwyl die gateway loop — gebruik `hermes cron` vir blywende skedules."
+    set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The route retains its heartbeat across reset and gateway restart."
   refine:
     unavailable: "Verfyn onbeskikbaar (geen sessie nie)."
     nothing_yet: "Nog niks om te verfyn nie — stuur eers 'n boodskap."
@@ -3097,7 +3097,7 @@ cli:
       prompt_required: "Gebruik: /heartbeat every <interval> <prompt> — die prompt is verpligtend."
       invalid_label: "Ongeldige hartklop"
       set: "♥ Hartklop gestel (elke {interval}): {prompt}"
-      set_note: "Vuur as 'n gewone beurt af wanneer die sessie ledig is en die interval verstryk het. Bestuur met /heartbeat pause | resume | clear; bestaan net solank hierdie Hermes-proses loop — gebruik `hermes cron` vir blywende skedules."
+      set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The classic CLI remains idle-only. /heartbeat pause | resume | clear to manage."
     refine:
       nothing_yet: "Nog niks om te verfyn nie — stuur eers 'n boodskap."
       empty: "Nog niks om te verfyn nie — die gesprek is leeg."

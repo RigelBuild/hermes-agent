@@ -922,7 +922,7 @@ gateway:
     prompt_required: "Úsáid: /heartbeat every <interval> <leid> — tá an leid riachtanach."
     invalid_prefix: "Buille croí neamhbhailí"
     set: "♥ Buille croí socraithe (gach {interval}): {prompt}\nLasann sé mar ghnáthsheal aon uair a bhíonn an seisiún seo díomhaoin agus an t-eatramh caite. Maireann sé fad a ritheann an gateway — úsáid `hermes cron` le haghaidh sceideal buan."
-    set_note: "Lasann sé mar ghnáthsheal aon uair a bhíonn an seisiún seo díomhaoin agus an t-eatramh caite. Maireann sé fad a ritheann an gateway — úsáid `hermes cron` le haghaidh sceideal buan."
+    set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The route retains its heartbeat across reset and gateway restart."
   refine:
     unavailable: "Níl mínchóiriú ar fáil (gan seisiún)."
     nothing_yet: "Níl aon rud le mínchóiriú fós — seol teachtaireacht ar dtús."
@@ -3097,7 +3097,7 @@ cli:
       prompt_required: "Úsáid: /heartbeat every <interval> <prompt> — tá an leid riachtanach."
       invalid_label: "Buille croí neamhbhailí"
       set: "♥ Buille croí socraithe (gach {interval}): {prompt}"
-      set_note: "Lasann sé mar ghnáthsheal aon uair a bhíonn an seisiún díomhaoin agus an t-eatramh caite. /heartbeat pause | resume | clear le bainistiú; ní mhaireann sé ach fad a bhíonn an próiseas Hermes seo ag rith — úsáid `hermes cron` le haghaidh sceideal buan."
+      set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The classic CLI remains idle-only. /heartbeat pause | resume | clear to manage."
     refine:
       nothing_yet: "Níl aon rud le mionchoigeartú fós — seol teachtaireacht ar dtús."
       empty: "Níl aon rud le mionchoigeartú fós — tá an comhrá folamh."

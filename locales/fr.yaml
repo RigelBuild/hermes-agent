@@ -1107,7 +1107,7 @@ gateway:
     set: |-
       ♥ Heartbeat défini (toutes les {interval}) : {prompt}
       Se déclenche comme un tour normal dès que cette session est inactive et que l'intervalle est écoulé. Il ne vit que tant que le gateway tourne — utilisez `hermes cron` pour des planifications durables.
-    set_note: "Se déclenche comme un tour normal dès que cette session est inactive et que l'intervalle est écoulé. Il ne vit que tant que le gateway tourne — utilisez `hermes cron` pour des planifications durables."
+    set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The route retains its heartbeat across reset and gateway restart."
   refine:
     unavailable: "Refine indisponible (aucune session)."
     nothing_yet: "Rien à affiner pour l'instant — envoyez d'abord un message."
@@ -3400,7 +3400,7 @@ cli:
       prompt_required: "Usage : /heartbeat every <interval> <prompt> — le prompt est obligatoire."
       invalid_label: "Heartbeat invalide"
       set: "♥ Heartbeat défini (toutes les {interval}) : {prompt}"
-      set_note: "Se déclenche comme un tour normal dès que la session est inactive et que l'intervalle est écoulé. /heartbeat pause | resume | clear pour le gérer ; il ne vit que tant que ce processus Hermes tourne — utilisez `hermes cron` pour des planifications durables."
+      set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The classic CLI remains idle-only. /heartbeat pause | resume | clear to manage."
     refine:
       nothing_yet: "Rien à affiner pour l'instant — envoyez d'abord un message."
       empty: "Rien à affiner pour l'instant — la conversation est vide."

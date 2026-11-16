@@ -922,7 +922,7 @@ gateway:
     prompt_required: "用法：/heartbeat every <间隔> <提示词>——提示词不能为空。"
     invalid_prefix: "无效的心跳"
     set: "♥ 心跳已设置（每 {interval}）：{prompt}\n只要此会话空闲且间隔已到，就会作为普通回合触发。仅在网关运行期间有效——持久化调度请使用 `hermes cron`。"
-    set_note: "只要此会话空闲且间隔已到，就会作为普通回合触发。仅在网关运行期间有效——持久化调度请使用 `hermes cron`。"
+    set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The route retains its heartbeat across reset and gateway restart."
   refine:
     unavailable: "精炼不可用（没有会话）。"
     nothing_yet: "暂无可精炼的内容——请先发送一条消息。"
@@ -3097,7 +3097,7 @@ cli:
       prompt_required: "用法：/heartbeat every <interval> <prompt>——必须提供提示词。"
       invalid_label: "无效心跳"
       set: "♥ 心跳已设置（每 {interval}）：{prompt}"
-      set_note: "会话空闲且间隔已到时，作为普通回合触发。使用 /heartbeat pause | resume | clear 进行管理；仅在当前 Hermes 进程运行期间有效——如需持久化的计划任务，请使用 `hermes cron`。"
+      set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The classic CLI remains idle-only. /heartbeat pause | resume | clear to manage."
     refine:
       nothing_yet: "还没有可精炼的内容——请先发送一条消息。"
       empty: "还没有可精炼的内容——对话为空。"

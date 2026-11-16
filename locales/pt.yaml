@@ -922,7 +922,7 @@ gateway:
     prompt_required: "Uso: /heartbeat every <intervalo> <prompt> — o prompt é obrigatório."
     invalid_prefix: "Heartbeat inválido"
     set: "♥ Heartbeat definido (a cada {interval}): {prompt}\nDispara como um turno normal sempre que esta sessão estiver ociosa e o intervalo tiver passado. Dura enquanto o gateway estiver em execução — use `hermes cron` para agendamentos duráveis."
-    set_note: "Dispara como um turno normal sempre que esta sessão estiver ociosa e o intervalo tiver passado. Dura enquanto o gateway estiver em execução — use `hermes cron` para agendamentos duráveis."
+    set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The route retains its heartbeat across reset and gateway restart."
   refine:
     unavailable: "Refinamento indisponível (sem sessão)."
     nothing_yet: "Nada para refinar ainda — envie uma mensagem primeiro."
@@ -3097,7 +3097,7 @@ cli:
       prompt_required: "Uso: /heartbeat every <intervalo> <prompt> — o prompt é obrigatório."
       invalid_label: "Heartbeat inválido"
       set: "♥ Heartbeat definido (a cada {interval}): {prompt}"
-      set_note: "Dispara como um turno normal sempre que a sessão estiver ociosa e o intervalo tiver passado. /heartbeat pause | resume | clear para gerenciar; existe apenas enquanto este processo do Hermes estiver em execução — use `hermes cron` para agendamentos duráveis."
+      set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The classic CLI remains idle-only. /heartbeat pause | resume | clear to manage."
     refine:
       nothing_yet: "Nada para refinar ainda — envie uma mensagem primeiro."
       empty: "Nada para refinar ainda — a conversa está vazia."

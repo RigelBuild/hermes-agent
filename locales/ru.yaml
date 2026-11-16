@@ -922,7 +922,7 @@ gateway:
     prompt_required: "Использование: /heartbeat every <интервал> <промпт> — промпт обязателен."
     invalid_prefix: "Недопустимый heartbeat"
     set: "♥ Heartbeat задан (каждые {interval}): {prompt}\nСрабатывает как обычный ход, когда сеанс простаивает и интервал истёк. Живёт, пока работает шлюз — для постоянных расписаний используйте `hermes cron`."
-    set_note: "Срабатывает как обычный ход, когда сеанс простаивает и интервал истёк. Живёт, пока работает шлюз — для постоянных расписаний используйте `hermes cron`."
+    set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The route retains its heartbeat across reset and gateway restart."
   refine:
     unavailable: "Уточнение недоступно (нет сеанса)."
     nothing_yet: "Пока нечего уточнять — сначала отправьте сообщение."
@@ -3097,7 +3097,7 @@ cli:
       prompt_required: "Использование: /heartbeat every <интервал> <промпт> — промпт обязателен."
       invalid_label: "Недопустимый heartbeat"
       set: "♥ Heartbeat задан (каждые {interval}): {prompt}"
-      set_note: "Срабатывает как обычный ход, когда сеанс простаивает и интервал истёк. Управление: /heartbeat pause | resume | clear; живёт только пока работает этот процесс Hermes — для постоянных расписаний используйте `hermes cron`."
+      set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The classic CLI remains idle-only. /heartbeat pause | resume | clear to manage."
     refine:
       nothing_yet: "Пока нечего уточнять — сначала отправьте сообщение."
       empty: "Пока нечего уточнять — разговор пуст."

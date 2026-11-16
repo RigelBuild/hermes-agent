@@ -936,7 +936,7 @@ gateway:
     prompt_required: "Használat: /heartbeat every <interval> <prompt> — a prompt megadása kötelező."
     invalid_prefix: "Érvénytelen szívverés"
     set: "♥ Szívverés beállítva ({interval} időközönként): {prompt}\nNormál körként fut le, amikor ez a munkamenet üresjáratban van, és letelt az időköz. Csak amíg az átjáró fut — tartós ütemezéshez használd a `hermes cron` parancsot."
-    set_note: "Normál körként fut le, amikor ez a munkamenet üresjáratban van, és letelt az időköz. Csak amíg az átjáró fut — tartós ütemezéshez használd a `hermes cron` parancsot."
+    set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The route retains its heartbeat across reset and gateway restart."
   refine:
     unavailable: "A finomítás nem érhető el (nincs munkamenet)."
     nothing_yet: "Még nincs mit finomítani — küldj először egy üzenetet."
@@ -3114,7 +3114,7 @@ cli:
       prompt_required: "Használat: /heartbeat every <interval> <prompt> — a prompt megadása kötelező."
       invalid_label: "Érvénytelen szívverés"
       set: "♥ Szívverés beállítva ({interval} időközzel): {prompt}"
-      set_note: "Normál körként fut le, amikor a munkamenet tétlen és letelt az időköz. Kezelés: /heartbeat pause | resume | clear; csak addig él, amíg ez a Hermes folyamat fut — tartós ütemezéshez használd a `hermes cron` parancsot."
+      set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The classic CLI remains idle-only. /heartbeat pause | resume | clear to manage."
     refine:
       nothing_yet: "Még nincs mit finomítani — küldj először egy üzenetet."
       empty: "Még nincs mit finomítani — a beszélgetés üres."

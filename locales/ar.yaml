@@ -922,7 +922,7 @@ gateway:
     prompt_required: "الاستخدام: /heartbeat every <interval> <prompt> — المطالبة مطلوبة."
     invalid_prefix: "نبض غير صالح"
     set: "♥ تم ضبط النبض (كل {interval}): {prompt}\nيُنفَّذ كدور عادي كلما كانت هذه الجلسة خاملة وانقضى الفاصل الزمني. يستمر ما دامت البوّابة تعمل — استخدم `hermes cron` للجداول الدائمة."
-    set_note: "يُنفَّذ كدور عادي كلما كانت هذه الجلسة خاملة وانقضى الفاصل الزمني. يستمر ما دامت البوّابة تعمل — استخدم `hermes cron` للجداول الدائمة."
+    set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The route retains its heartbeat across reset and gateway restart."
   refine:
     unavailable: "التحسين غير متاح (لا توجد جلسة)."
     nothing_yet: "لا شيء لتحسينه بعد — أرسل رسالة أولًا."
@@ -3097,7 +3097,7 @@ cli:
       prompt_required: "الاستخدام: /heartbeat every <interval> <prompt> — المطالبة مطلوبة."
       invalid_label: "نبض غير صالح"
       set: "♥ تم ضبط النبض (كل {interval}): {prompt}"
-      set_note: "يعمل كدور عادي كلما كانت الجلسة خاملة وانقضى الفاصل الزمني. استخدم /heartbeat pause | resume | clear للإدارة؛ يبقى فقط ما دامت عملية Hermes هذه تعمل — استخدم `hermes cron` للجداول الدائمة."
+      set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The classic CLI remains idle-only. /heartbeat pause | resume | clear to manage."
     refine:
       nothing_yet: "لا شيء لتحسينه بعد — أرسل رسالة أولًا."
       empty: "لا شيء لتحسينه بعد — المحادثة فارغة."
