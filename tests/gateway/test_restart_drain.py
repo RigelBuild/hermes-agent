@@ -774,7 +774,8 @@ async def test_request_restart_keeps_a_chat_failing_in_the_restart_wait(monkeypa
 
     assert runner.request_restart(detached=False, via_service=True) is True
     assert registry.shutting_down is True
-    registry._finish_exited(session, 1)  # "Gateway disconnected" during the restart wait
+    from hermes_cli.gateway_client import GATEWAY_LOST_EXIT_CODE
+    registry._finish_exited(session, GATEWAY_LOST_EXIT_CODE)  # the chat lost its gateway in the restart wait
     await runner._restart_task
 
     entry = json.loads(path.read_text())[0]

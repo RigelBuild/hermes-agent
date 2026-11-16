@@ -53,6 +53,8 @@ DISCONNECTED = ("Gateway disconnected; turn outcome is unknown. "
                 "Resume the printed session ID to check whether it completed or was interrupted; do not resend the work.")
 # A request refused before it reached any socket: nothing is in doubt, so never DISCONNECTED.
 NOT_SENT = "Gateway disconnected before the request was sent; nothing was sent."
+# `hermes chat` exits with this when it lost its gateway, so a supervisor can tell it from a task failure.
+GATEWAY_LOST_EXIT_CODE = 76
 
 
 class GatewayRPCError(GatewayClientError):

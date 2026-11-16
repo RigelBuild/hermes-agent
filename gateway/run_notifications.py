@@ -1090,6 +1090,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         # refuses it and the drain requeues it forever.
         if evt_type in {"watch_match", "watch_disabled", "heartbeat"} and evt.get("event_id"):
             return (evt_type, str(evt["session_id"]), str(evt["event_id"]))
+        if evt_type == "completion" and evt.get("recovery_notice") and evt.get("resume_count") is not None:
+            # A resumed notice is one per relaunch; it must never share the relaunched run's identity.
+            return (evt_type, str(evt.get("session_id") or ""),
+                    f"resumed:{evt.get('attempt_token') or ''}:{evt['resume_count']}")
         if evt_type == "completion":
             producer_id = str(evt.get("session_id") or "")
             started_at = evt.get("started_at")

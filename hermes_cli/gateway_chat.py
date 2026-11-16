@@ -9,7 +9,9 @@ from pathlib import Path
 import sys
 import uuid
 
-from hermes_cli.gateway_client import RESUME_KEY_MISMATCH, GatewayClientError, connect_gateway
+from hermes_cli.gateway_client import (
+    DISCONNECTED, GATEWAY_LOST_EXIT_CODE, NOT_SENT, RESUME_KEY_MISMATCH, GatewayClientError, connect_gateway,
+)
 from hermes_cli.gateway_connection import RESUME_REFUSALS
 
 # These options change execution or require frontend facilities not yet exposed by
@@ -402,6 +404,8 @@ def launch_from_args(args) -> int:
     except (GatewayClientError, OSError, TimeoutError, WebSocketException) as exc:
         # WebSocket errors can embed credential URLs/remote bodies.
         message = str(exc) if isinstance(exc, GatewayClientError) else "Gateway connection/read failed; no local fallback"
+        if message in (DISCONNECTED, NOT_SENT):
+            return failed(message, GATEWAY_LOST_EXIT_CODE)
         return failed(message, 2 if isinstance(exc, GatewayClientError) and ("Unsupported" in message or "unsupported" in message) else 1)
     except KeyboardInterrupt:
         print("Detached; accepted work continues at the gateway.", file=sys.stderr)

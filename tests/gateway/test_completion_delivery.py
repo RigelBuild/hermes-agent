@@ -1003,3 +1003,41 @@ def test_watch_drain_retries_transport_failure(monkeypatch, isolated_registry):
     asyncio.run(runner._async_delegation_watcher(interval=0))
     assert adapter.handle_message.await_count == 2
     assert isolated_registry.completion_queue.empty()
+
+
+def test_resumed_notice_is_delivered_once_with_other_recovery_notices(monkeypatch):
+    """Under a session authority, a resumed notice batched with an UNKNOWN notice is delivered once."""
+    import gateway.session_automation as automation
+    import gateway.session_detached as detached
+    import hermes_state_runtime
+
+    route = SimpleNamespace(origin=None, session_id="owner")
+    monkeypatch.setattr(detached, "route_entry", lambda _authority, _key: route)
+    monkeypatch.setattr(automation, "_route_owner", lambda _authority, _entry: "owner")
+    monkeypatch.setattr(hermes_state_runtime, "list_session_admissions", lambda *_a, **_kw: [])
+    delivered = []
+    runner = _runner(SimpleNamespace(handle_message=AdmittingHandler()))
+    runner.session_authority = SimpleNamespace(db=None)
+
+    async def deliver(text, evt, **_kw):
+        delivered.append((text, evt.get("_automation_identities")))
+        return True
+
+    runner._deliver_completion_notification = deliver
+    base = {k: v for k, v in _completion_event(started_at=None).items() if k != "started_at"}
+    resumed = dict(base, session_id="proc_att", attempt_token="tok", resume_count=1,
+                   recovery_notice="resumed after gateway restart (1/3)", output="resumed")
+    unknown = dict(base, session_id="proc_lost", attempt_token="tok2", started_at=5.0,
+                   recovery_notice="outcome UNKNOWN, verify before retrying", output="unknown")
+
+    async def _exercise():
+        return await asyncio.gather(
+            runner._enqueue_process_completion_notification("resumed", resumed),
+            runner._enqueue_process_completion_notification("unknown", unknown))
+
+    assert asyncio.run(_exercise()) == [True, True]
+    assert len(delivered) == 1
+    identities = delivered[0][1]
+    assert len(identities) == 2 and len(set(identities)) == 2
+    relaunch = runner._completion_delivery_identity(dict(base, session_id="proc_att", started_at=9.0))
+    assert runner._completion_delivery_identity(resumed) not in (None, relaunch)

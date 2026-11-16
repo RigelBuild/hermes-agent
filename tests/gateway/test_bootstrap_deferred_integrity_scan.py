@@ -135,8 +135,45 @@ async def test_shutdown_killed_chats_are_relaunched_only_after_ready(_startup, m
     from gateway.config import GatewayConfig
     from tools.process_registry import process_registry
     events, _, _ = _startup
-    monkeypatch.setattr(process_registry, "spawn_pending_relaunches", lambda: events.append("relaunched") or 0)
+    monkeypatch.setattr(process_registry, "spawn_queued_relaunches", lambda: events.append("relaunched") or (0, []))
 
     assert await run_bootstrap.start_gateway(config=GatewayConfig(), replace=False, verbosity=None) is True
 
     assert events.index("ready") < events.index("relaunched")
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_clears_a_stale_shutting_down_flag(monkeypatch):
+    from tools.process_registry import process_registry
+    seen = []
+
+    async def runtime(*_a):
+        seen.append(process_registry.shutting_down)
+        return True
+
+    monkeypatch.setattr(run_bootstrap, "_start_gateway_runtime", runtime)
+    process_registry.shutting_down = True
+    try:
+        assert await run_bootstrap.start_gateway() is True
+    finally:
+        process_registry.shutting_down = False
+    assert seen == [False]
+
+
+@pytest.mark.asyncio
+async def test_startup_failure_before_ready_gives_back_unspawned_claims(_startup, monkeypatch):
+    from gateway import run_runtime
+    from gateway.config import GatewayConfig
+    from tools.process_registry import process_registry
+    returned = []
+    monkeypatch.setattr(process_registry, "give_back_pending_relaunches", lambda: returned.append(True) or 1)
+    monkeypatch.setattr(process_registry, "spawn_queued_relaunches", lambda: pytest.fail("spawned before READY"))
+
+    def fail_ready(_runner):
+        raise RuntimeError("READY failed")
+
+    monkeypatch.setattr(run_runtime, "publish_gateway_runtime_ready", fail_ready)
+    with pytest.raises(RuntimeError, match="READY failed"):
+        await run_bootstrap.start_gateway(config=GatewayConfig(), replace=False, verbosity=None)
+
+    assert returned == [True]

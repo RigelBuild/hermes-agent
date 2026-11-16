@@ -1642,8 +1642,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     def _publish_finished(self, session: ProcessSession, was_running: bool) -> None:
         self._release_finished_handles(session)
-        # A chat that fails while the gateway stops lost its gateway, not its task: keep it resumable.
-        failed_in_shutdown = self.shutting_down and session.completion_reason != "killed" and session.exit_code != 0
+        # A chat that exits because it lost its gateway during a stop lost the gateway, not its task.
+        from hermes_cli.gateway_client import GATEWAY_LOST_EXIT_CODE
+        failed_in_shutdown = (self.shutting_down and session.completion_reason != "killed"
+                              and session.exit_code == GATEWAY_LOST_EXIT_CODE)
         self._write_checkpoint(extra_entries=self._shutdown_resume_entries(
             session, "gateway_shutdown" if failed_in_shutdown else ""))
         if was_running and session.notify_on_complete:

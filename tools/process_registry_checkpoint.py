@@ -40,27 +40,33 @@ def _without_request_id(argv: list[str]) -> list[str]:
     return argv[:at] + argv[at + 2:]
 
 
-def _option_dests(parser, token) -> set:
-    """The chat-parser destinations an option token resolves to (abbreviations included)."""
-    parsed = parser._parse_optional(token)
-    if parsed is None:
-        return set()
-    options = parsed if isinstance(parsed, list) else [parsed]
-    return {option[0].dest for option in options if option[0] is not None}
+def _dropped_option(options: dict[str, str], arg: str) -> tuple[bool, bool]:
+    """(dropped, value_glued) for one token, matched like argparse: exact, glued, or unique long prefix."""
+    if not arg.startswith("-") or arg == "-" or arg == "--":
+        return False, False
+    if arg.startswith("--"):
+        name, glued = arg.split("=", 1)[0], "=" in arg
+        if name in options:
+            return options[name] in _DROPPED_DESTS, glued
+        matches = {dest for option, dest in options.items() if option.startswith("--") and option.startswith(name)}
+        return len(matches) == 1 and matches <= _DROPPED_DESTS, glued
+    if arg in options:
+        return options[arg] in _DROPPED_DESTS, False
+    return options.get(arg[:2]) in _DROPPED_DESTS, True
 
 
 def resume_launch_argv(argv: list[str], chat_session_id: str) -> list[str]:
     """The stored argv without its query source or image, resuming the chat with the continuation note."""
     from tools.process_resumable import _chat_parser
-    parser = _chat_parser()
+    options = {option: action.dest for action in _chat_parser()._actions for option in action.option_strings}
     out, skip = list(argv[:2]), False
     for arg in argv[2:]:
         if skip:
             skip = False
             continue
-        if arg.startswith("-") and _option_dests(parser, arg) & _DROPPED_DESTS:
-            # A value glued on (--query-file=x, -qtext) needs no second token.
-            skip = "=" not in arg and not (arg[1] != "-" and len(arg) > 2)
+        dropped, glued = _dropped_option(options, arg)
+        if dropped:
+            skip = not glued  # a value glued on (--query-file=x, -qtext) needs no second token
             continue
         out.append(arg)
     return [*out, "--resume", chat_session_id, "--discard-unknown", "--query", RESUME_NOTE]
@@ -356,21 +362,37 @@ class ProcessCheckpointMixin:
         return True
 
     def spawn_pending_relaunches(self) -> int:
-        """Spawn the relaunches boot recovery claimed; the gateway calls this once it is READY."""
+        """Spawn the relaunches boot recovery claimed and arm their notices; synchronous form."""
+        spawned, notices = self.spawn_queued_relaunches()
+        for notice in notices:
+            self._arm_watcher(notice)
+        return spawned
+
+    def spawn_queued_relaunches(self) -> tuple[int, list[dict[str, Any]]]:
+        """Spawn the claimed relaunches without touching the event loop; returns the notices to arm."""
         queued, self.pending_relaunches = self.pending_relaunches, []
-        spawned = 0
+        spawned, notices = 0, []
         for context, claimed, checkpoint_path, unknown in queued:
             session = context.run(self._spawn_claimed_relaunch, claimed, checkpoint_path)
-            notices = unknown if session is None else []
-            if session is not None:
-                spawned += 1
-                try:
-                    notices = self._resumed_watchers(session, checkpoint_path)
-                except Exception:
-                    logger.exception("Could not queue the resumed notice for %s", session.id)
-            for notice in notices:
-                self._arm_watcher(notice)
-        return spawned
+            if session is None:
+                notices.extend(unknown)
+                continue
+            spawned += 1
+            try:
+                notices.extend(self._resumed_watchers(session, checkpoint_path))
+            except Exception:
+                logger.exception("Could not queue the resumed notice for %s", session.id)
+        return spawned, notices
+
+    def give_back_pending_relaunches(self) -> int:
+        """Undo the claims a startup that never reached READY did not spawn, so the next boot retries."""
+        queued, self.pending_relaunches = self.pending_relaunches, []
+        for _context, claimed, checkpoint_path, _unknown in queued:
+            try:
+                self._give_back_shutdown_resume(checkpoint_path, claimed)
+            except Exception:
+                logger.exception("Could not give back background chat %s", claimed["session_id"])
+        return len(queued)
 
     def _spawn_claimed_relaunch(self, claimed, checkpoint_path):
         from tools.process_registry import ProcessSession, _CHECKPOINT_FIELDS, _CHECKPOINT_DEFAULTS
@@ -408,7 +430,7 @@ class ProcessCheckpointMixin:
 
     def _resumed_watchers(self, session, checkpoint_path) -> list[dict[str, Any]]:
         """A resumed notice that keeps the new entry, plus the relaunched session's own watcher.
-        The notice has no started_at, so it never shares the run's completion identity."""
+        The notice is keyed on resume_count, so it never shares the run's completion identity."""
         from tools.process_registry import _WATCHER_ROUTE_KEYS
         notice = {
             "session_id": session.id, "session_key": session.session_key,
@@ -416,7 +438,7 @@ class ProcessCheckpointMixin:
             "checkpoint_path": str(checkpoint_path), "task_id": session.task_id,
             "owner_task_id": session.owner_task_id, "command": session.command,
             "recovery_notice": f"resumed after gateway restart ({session.resume_count}/{SHUTDOWN_RESUME_CAP})",
-            "keep_entry": True,
+            "keep_entry": True, "resume_count": session.resume_count,
             **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
         }
         return [notice, *self._recovered_watchers(session)]

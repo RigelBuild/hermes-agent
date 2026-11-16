@@ -56,6 +56,15 @@ def _join_api_turn_workers():
         thread.join(30)
 
 
+@pytest.fixture(autouse=True)
+def _reset_registry_shutting_down():
+    """A test that drives the real stop() or request_restart() must not leak the flag to the next."""
+    yield
+    registry = sys.modules.get("tools.process_registry")
+    if registry is not None:
+        registry.process_registry.shutting_down = False
+
+
 @pytest.fixture
 def private_db_probe_cleanup(tmp_path):
     """Release only this test's probe fds after its explicit SQLite-handle finalizers.

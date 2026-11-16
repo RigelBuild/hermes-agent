@@ -10,6 +10,7 @@ import pytest
 
 from tools import process_registry as module
 from tools.process_registry import ProcessRegistry, ProcessSession
+from hermes_cli.gateway_client import GATEWAY_LOST_EXIT_CODE
 from tools.process_registry_checkpoint import RESUME_NOTE, SHUTDOWN_RESUME_REASON
 
 REQUEST_ID = "req-10319"
@@ -78,7 +79,7 @@ def test_self_exit_is_not_kept_as_resumable(checkpoint, exit_code):
     assert all(e.get("session_id") != "proc_att" for e in entries)
 
 
-# A chat whose gateway drops while it stops exits 1 on its own: before or after kill_all, it stays resumable.
+# A chat whose gateway drops while it stops exits GATEWAY_LOST_EXIT_CODE: before or after kill_all, it stays resumable.
 @pytest.mark.parametrize("order", ["exit_then_kill_all", "kill_all_then_exit"])
 def test_failed_exit_during_shutdown_is_kept_resumable(monkeypatch, checkpoint, order):
     registry = ProcessRegistry()
@@ -89,27 +90,40 @@ def test_failed_exit_during_shutdown_is_kept_resumable(monkeypatch, checkpoint, 
     registry.shutting_down = True
 
     if order == "exit_then_kill_all":
-        registry._finish_exited(session, 1)
+        registry._finish_exited(session, GATEWAY_LOST_EXIT_CODE)
         registry.kill_all(source="gateway_shutdown")
     else:
         other = _attempt(sid="proc_other")
         other.attempt_token = "tok2"
         registry._running[other.id] = other
         registry.kill_all(source="gateway_shutdown", exclude_ids=frozenset({session.id}))
-        registry._finish_exited(session, 1)
+        registry._finish_exited(session, GATEWAY_LOST_EXIT_CODE)
 
     entry = next(e for e in json.loads(checkpoint.read_text()) if e["session_id"] == "proc_att")
     assert entry["resume_reason"] == SHUTDOWN_RESUME_REASON and entry["attempt_status"] == "unknown"
 
 
-def test_clean_exit_during_shutdown_is_not_kept(checkpoint):
+# A clean exit or a task failure (model, tool, bad argument) during shutdown is the job's own outcome.
+@pytest.mark.parametrize("exit_code", [0, 1, 2])
+def test_own_exit_during_shutdown_is_not_kept(checkpoint, exit_code):
     registry = ProcessRegistry()
     session = _attempt()
     registry._running[session.id] = session
     registry._write_checkpoint()
     registry.shutting_down = True
 
-    registry._finish_exited(session, 0)
+    registry._finish_exited(session, exit_code)
+
+    assert all(e.get("session_id") != "proc_att" for e in json.loads(checkpoint.read_text()))
+
+
+def test_lost_gateway_exit_outside_shutdown_is_not_kept(checkpoint):
+    registry = ProcessRegistry()
+    session = _attempt()
+    registry._running[session.id] = session
+    registry._write_checkpoint()
+
+    registry._finish_exited(session, GATEWAY_LOST_EXIT_CODE)
 
     assert all(e.get("session_id") != "proc_att" for e in json.loads(checkpoint.read_text()))
 
@@ -368,9 +382,22 @@ def test_no_relaunch_spawns_before_ready(monkeypatch, checkpoint, chat_home):
     assert len(spawned) == 1 and registry.pending_relaunches == []
 
 
-@pytest.mark.parametrize("source", [["--query-f", "prompt.md"], ["--que", "text"], ["--query-file=prompt.md"],
-                                    ["-qtext"], ["--image", "pic.png", "-q", "text"]])
+@pytest.mark.parametrize("source", [["--query-f", "prompt.md"], ["--query-f=prompt.md"], ["--query-file=prompt.md"],
+                                    ["-qtext"], ["-q", "text"], ["--image", "pic.png", "-q", "text"]])
 def test_launch_argv_drops_abbreviated_query_sources(source):
     from tools.process_registry_checkpoint import resume_launch_argv
     argv = resume_launch_argv(["hermes", "chat", "-Q", *source, "--yolo"], "sid")
     assert argv == ["hermes", "chat", "-Q", "--yolo", "--resume", "sid", "--discard-unknown", "--query", RESUME_NOTE]
+
+
+def test_unspawned_claims_are_given_back(monkeypatch, checkpoint, chat_home):
+    checkpoint.write_text(json.dumps([_boot_entry()]))
+    registry = ProcessRegistry()
+    _forbid_spawn(monkeypatch, registry, "spawned on a failed startup")
+    registry.recover_from_checkpoint(resume_shutdown_killed=True)
+
+    assert registry.give_back_pending_relaunches() == 1
+
+    entry = json.loads(checkpoint.read_text())[0]
+    assert entry["resume_reason"] == SHUTDOWN_RESUME_REASON and entry["resume_count"] == 0
+    assert entry["attempt_status"] == "unknown" and registry.pending_relaunches == []
