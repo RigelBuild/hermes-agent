@@ -31,7 +31,7 @@ from agent.credential_pool import (
     STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
     credential_pool_matches_provider,
 )
-from agent.error_classifier import FailoverReason
+from agent.error_classifier import USAGE_LIMIT_TEXT, FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
 from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
@@ -873,8 +873,6 @@ _STATUS_TO_FAILOVER_REASON = {
     402: FailoverReason.billing, 429: FailoverReason.rate_limit, 401: FailoverReason.auth,
     403: FailoverReason.auth,
 }
-_USAGE_LIMIT_REASON_TOKENS = ("usage_limit_reached", "gousagelimit")
-_USAGE_LIMIT_MESSAGE_TOKENS = ("usage limit reached", "usage limit has been reached")
 
 
 def _failed_credential_identity(agent, pool) -> tuple[Optional[str], Optional[str]]:
@@ -961,9 +959,7 @@ def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, c
     if error_context:
         context_reason = str(error_context.get("reason") or "").lower()
         context_message = str(error_context.get("message") or "").lower()
-        usage_limit_reached = any(t in context_reason for t in _USAGE_LIMIT_REASON_TOKENS) or any(
-            t in context_message for t in _USAGE_LIMIT_MESSAGE_TOKENS
-        )
+        usage_limit_reached = any(t in context_reason or t in context_message for t in USAGE_LIMIT_TEXT)
     if not has_retried_429 and not usage_limit_reached:
         return False, True
     return (True, False) if rotate_and_swap(429, "rate limit") else (False, True)
