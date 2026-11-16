@@ -1234,7 +1234,8 @@ Queued messages behind it are kept and run in order on the new gateway.
 
 Recorded background `hermes chat` jobs without a recorded exit are reported as having an unknown
 outcome after a gateway restart. Hermes does not replay their prompt. Verify their effects before
-retrying. A restart can repeat the notice if its previous delivery was not confirmed.
+retrying. If delivery is temporarily refused, the gateway retries the notice up to eight times in the
+current boot. The checkpoint remains for the next boot if all attempts fail.
 
 Set a positive value if you would rather let turns finish:
 

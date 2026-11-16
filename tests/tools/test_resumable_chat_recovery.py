@@ -1,3 +1,4 @@
+import asyncio
 import json
 import subprocess
 from types import SimpleNamespace
@@ -285,7 +286,13 @@ async def test_recorded_exit_delivered_once_and_not_readopted(monkeypatch, tmp_p
 @pytest.mark.parametrize('delivery,remaining', [(False, True), (True, False), (None, False)])
 async def test_notice_settles_only_on_delivery(monkeypatch, tmp_path, delivery, remaining):
     from tools import process_registry as module
+    from gateway import run_notifications as rn
     from gateway.run_notifications import GatewayNotificationsMixin
+
+    async def no_wait(_delay):
+        return None
+
+    monkeypatch.setattr(asyncio, 'sleep', no_wait)
     path = tmp_path / 'processes.json'
     monkeypatch.setattr(module, 'CHECKPOINT_PATH', path)
     registry = ProcessRegistry()
@@ -294,9 +301,86 @@ async def test_notice_settles_only_on_delivery(monkeypatch, tmp_path, delivery, 
                                  'attempt_status': 'pending', 'session_key': 'parent'}]))
     registry.recover_from_checkpoint()
     watcher = registry.pending_watchers[0]
-    runner = SimpleNamespace(_enqueue_process_completion_notification=AsyncMock(return_value=delivery))
+    enqueue = AsyncMock(return_value=delivery)
+    runner = SimpleNamespace(_enqueue_process_completion_notification=enqueue)
     await GatewayNotificationsMixin._watch_process(runner, watcher)
     assert bool(json.loads(path.read_text())) is remaining
+    assert enqueue.await_count == (rn._MAX_RECOVERY_NOTICE_ATTEMPTS if delivery is False else 1)
     next_registry = ProcessRegistry()
     next_registry.recover_from_checkpoint()
     assert bool(next_registry.pending_watchers) is remaining
+
+
+@pytest.mark.asyncio
+async def test_recovery_notice_retries_transient_refusal_before_next_boot(monkeypatch, tmp_path):
+    from tools import process_registry as module
+    from gateway import run_notifications as rn
+    from gateway.run_notifications import GatewayNotificationsMixin
+
+    path = tmp_path / 'processes.json'
+    monkeypatch.setattr(module, 'CHECKPOINT_PATH', path)
+    registry = ProcessRegistry()
+    monkeypatch.setattr(module, 'process_registry', registry)
+    path.write_text(json.dumps([{'session_id': 'proc_a', 'attempt_token': 'token',
+                                 'attempt_status': 'pending', 'session_key': 'agent:main:telegram:dm:123'}]))
+    registry.recover_from_checkpoint()
+    watcher = registry.pending_watchers[0]
+    attempts, delays = [], []
+
+    async def enqueue(_text, event):
+        attempts.append(event)
+        return len(attempts) == 3
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    runner = SimpleNamespace(_enqueue_process_completion_notification=enqueue)
+    monkeypatch.setattr(asyncio, 'sleep', sleep)
+    monkeypatch.setattr(rn, '_RECOVERY_NOTICE_RETRY_BASE_DELAY', 0.25)
+    await GatewayNotificationsMixin._watch_process(runner, watcher)
+
+    assert len(attempts) == 3
+    assert attempts[0] is attempts[1] is attempts[2]
+    assert delays == [0.25, 0.5]
+    assert json.loads(path.read_text()) == []
+
+
+@pytest.mark.asyncio
+async def test_recovery_notice_retry_cap_keeps_notice_for_next_boot(monkeypatch, tmp_path, caplog):
+    import logging
+
+    from tools import process_registry as module
+    from gateway import run_notifications as rn
+    from gateway.run_notifications import GatewayNotificationsMixin
+
+    path = tmp_path / 'processes.json'
+    monkeypatch.setattr(module, 'CHECKPOINT_PATH', path)
+    registry = ProcessRegistry()
+    monkeypatch.setattr(module, 'process_registry', registry)
+    path.write_text(json.dumps([{'session_id': 'proc_a', 'attempt_token': 'token',
+                                 'attempt_status': 'pending', 'session_key': 'agent:main:telegram:dm:123'}]))
+    registry.recover_from_checkpoint()
+    watcher = registry.pending_watchers[0]
+    attempts, delays = [], []
+
+    async def enqueue(_text, _event):
+        attempts.append(None)
+        return False
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    runner = SimpleNamespace(_enqueue_process_completion_notification=enqueue)
+    monkeypatch.setattr(asyncio, 'sleep', sleep)
+    monkeypatch.setattr(rn, '_RECOVERY_NOTICE_RETRY_MAX_DELAY', 1.0)
+    with caplog.at_level(logging.ERROR, logger='gateway.run'):
+        await GatewayNotificationsMixin._watch_process(runner, watcher)
+
+    assert len(attempts) == rn._MAX_RECOVERY_NOTICE_ATTEMPTS
+    assert delays == [1.0] * (rn._MAX_RECOVERY_NOTICE_ATTEMPTS - 1)
+    assert json.loads(path.read_text())[0]['attempt_status'] == 'unknown'
+    assert any('remains checkpointed for the next boot' in record.message for record in caplog.records)
+
+    next_registry = ProcessRegistry()
+    next_registry.recover_from_checkpoint()
+    assert [notice['session_id'] for notice in next_registry.pending_watchers] == ['proc_a']

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import time
 from typing import Any, Dict, List, Optional
 
@@ -11,6 +12,22 @@ logger = logging.getLogger("tools.process_registry")
 
 
 class ProcessCheckpointMixin:
+    def _pending_attempt_owner_is_live(self, pid, expected_start):
+        from gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
+
+        if not pid or not _pid_exists(pid):
+            return False
+        if expected_start is None:
+            # Without a baseline, a live PID is the original owner until it exits.
+            return True
+        current_start = get_process_start_time(pid)
+        if current_start is None:
+            return True
+        try:
+            return start_time_fingerprints_match(expected_start, current_start)
+        except (TypeError, ValueError):
+            return False
+
     def _detached_host_fate(self, pid: Optional[int], expected_start: Optional[int]) -> str:
         """Subclass supplies the live PID decision. See ProcessRegistry."""
         raise NotImplementedError
@@ -93,9 +110,19 @@ class ProcessCheckpointMixin:
                 entries = []
             if not isinstance(entries, list):
                 raise ValueError("invalid process checkpoint")
-            entries = [item for item in entries if isinstance(item, dict) and item.get("session_id") != entry["session_id"]]
-            entries.append(entry)
+            owner_pid = os.getpid()
+            attempt = {
+                **entry,
+                "attempt_owner_pid": owner_pid,
+                "attempt_owner_started_at": self._safe_host_start_time(owner_pid),
+            }
+            entries = [
+                item for item in entries
+                if isinstance(item, dict) and item.get("session_id") != attempt["session_id"]
+            ]
+            entries.append(attempt)
             atomic_json_write(path, entries)
+        entry.update(attempt)
 
     def _remove_resumable_entry(self, session_id, attempt_token, checkpoint_path=None):
         from hermes_cli.active_sessions import _FileLock
@@ -154,6 +181,12 @@ class ProcessCheckpointMixin:
                 pid = entry.get('pid')
                 if pid and self._detached_host_fate(pid, entry.get('host_start_time')) == 'running':
                     continue
+                if status == 'pending' and entry.get('attempt_owner_pid'):
+                    # Without a baseline, retain the old wait-for-PID-death behavior.
+                    owner_pid = entry['attempt_owner_pid']
+                    if self._pending_attempt_owner_is_live(
+                            owner_pid, entry.get('attempt_owner_started_at')):
+                        continue
                 if status != 'unknown':
                     entry['attempt_status'] = 'unknown'
                     changed = True

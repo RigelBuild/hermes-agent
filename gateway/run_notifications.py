@@ -69,7 +69,11 @@ _SELF_CLEARING_STORAGE_CAUSES = frozenset({"compression", "compression_closed", 
 _FINAL_WAKE_REFUSALS = frozenset({"admission_conflict", "invalid_params", "permission_denied", "profile_mismatch"})
 # Process-watcher retries of a refused completion: ~5 min at the default 5 s check interval.
 _MAX_COMPLETION_INJECTION_ATTEMPTS = 8
-_COMPLETION_INJECTION_RETRY_MAX_DELAY = 60
+_COMPLETION_INJECTION_RETRY_MAX_DELAY = 60.0
+# Same-boot retry budget is about two minutes; exhausted notices stay checkpointed for next boot.
+_RECOVERY_NOTICE_RETRY_BASE_DELAY = 1.0
+_RECOVERY_NOTICE_RETRY_MAX_DELAY = 60.0
+_MAX_RECOVERY_NOTICE_ATTEMPTS = _MAX_COMPLETION_INJECTION_ATTEMPTS
 # Drain retries of a refused watch event follow the same bounded-backoff policy, keyed to the
 # 2 s drain cadence instead of the watcher's check interval (#140899).
 _WATCH_INJECTION_RETRY_BASE_DELAY = 4.0
@@ -1902,13 +1906,23 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             event = {'type': 'completion', **watcher, 'exit_code': None,
                      'completion_reason': 'unknown', 'output': notice}
             text = f"Background job {watcher['session_id']}: {notice}"
-            delivered = await self._enqueue_process_completion_notification(text, event)
-            if delivered is not False:
-                try:
-                    process_registry._remove_resumable_entry(
-                        watcher['session_id'], watcher['attempt_token'], watcher.get('checkpoint_path'))
-                except Exception:
-                    logger.exception('could not settle recovery notice for %s', watcher['session_id'])
+            for attempt in range(1, _MAX_RECOVERY_NOTICE_ATTEMPTS + 1):
+                delivered = await self._enqueue_process_completion_notification(text, event)
+                if delivered is not False:
+                    try:
+                        process_registry._remove_resumable_entry(
+                            watcher['session_id'], watcher['attempt_token'], watcher.get('checkpoint_path'))
+                    except Exception:
+                        logger.exception('could not settle recovery notice for %s', watcher['session_id'])
+                    return
+                if attempt == _MAX_RECOVERY_NOTICE_ATTEMPTS:
+                    logger.error(
+                        'Could not deliver recovery notice for %s after %d attempts; '
+                        'it remains checkpointed for the next boot', watcher['session_id'], attempt)
+                    return
+                await asyncio.sleep(jittered_backoff(
+                    attempt, base_delay=_RECOVERY_NOTICE_RETRY_BASE_DELAY,
+                    max_delay=_RECOVERY_NOTICE_RETRY_MAX_DELAY, jitter_ratio=0.0))
             return
         session_id = watcher["session_id"]
         interval = watcher["check_interval"]
