@@ -263,6 +263,14 @@ def _rotate_if_large(path) -> None:
         pass
 
 
+def _chmod_quietly(path, mode: int) -> None:
+    """Set ``path`` to ``mode``. A chmod failure is logged, never raised, so the record still lands."""
+    try:
+        os.chmod(path, mode)
+    except OSError as exc:
+        logger.warning("Smart approvals: could not set escalation log mode (%s: %s)", type(exc).__name__, exc)
+
+
 def _append_escalation(command: str, description: str, session_key: str, reason: str, context: str) -> None:
     """Append one redacted ESCALATE record to ``logs/approval-escalations.jsonl``. Never raises."""
     try:
@@ -281,10 +289,17 @@ def _append_escalation(command: str, description: str, session_key: str, reason:
         _rotate_if_large(path)
         from hermes_cli.config import is_managed
         managed = is_managed()
-        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o660 if managed else 0o600)
-        if managed:
-            os.chmod(path, 0o660)  # the umask strips group write from the create mode
+        mode = 0o660 if managed else 0o600
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+        try:
+            fd = os.open(path, flags | os.O_EXCL, mode)
+            created = True
+        except FileExistsError:
+            fd = os.open(path, flags, mode)
+            created = False
         with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            if created and managed:
+                _chmod_quietly(path, 0o660)
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception as exc:
         logger.warning("Smart approvals: could not record escalation (%s: %s)", type(exc).__name__, exc)

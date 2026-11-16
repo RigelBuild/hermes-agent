@@ -216,12 +216,29 @@ def test_escalation_file_is_0600_when_unmanaged(hermes_home, monkeypatch):
 
 
 def test_escalation_file_is_0660_when_managed(hermes_home, monkeypatch):
+    # Managed home init (hermes_cli/config_home.py) requires these subdirs to pre-exist.
     for sub in ("cron", "sessions", "logs", "memories"):
         (hermes_home / sub).mkdir(exist_ok=True)
     monkeypatch.setattr("hermes_cli.config.is_managed", lambda: True)
     _escalate_once()
     path = hermes_home / "logs" / "approval-escalations.jsonl"
     assert path.stat().st_mode & 0o777 == 0o660
+
+def test_chmod_failure_in_managed_mode_still_appends_the_record(hermes_home, monkeypatch):
+    for sub in ("cron", "sessions", "logs", "memories"):
+        (hermes_home / sub).mkdir(exist_ok=True)
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: True)
+
+    def refuse_chmod(path, mode):
+        raise PermissionError("not the owner")
+
+    monkeypatch.setattr(approval_smart.os, "chmod", refuse_chmod)
+    _escalate_once("bash chmod-refused.sh")
+
+    path = hermes_home / "logs" / "approval-escalations.jsonl"
+    records = [json.loads(line) for line in path.read_text().splitlines() if line.startswith("{")]
+    assert [r["command"] for r in records] == ["bash chmod-refused.sh"]
+
 
 
 def test_file_over_cap_rolls_to_dot_one_and_new_record_lands_in_fresh_file(hermes_home, monkeypatch):
