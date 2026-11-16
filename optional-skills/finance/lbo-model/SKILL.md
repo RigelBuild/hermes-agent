@@ -266,7 +266,7 @@ Must return success with zero errors.
   - **After Returns (IRR/MOIC)** → show the cash flow series and outputs, confirm signs and ranges, get sign-off before sensitivity tables
   - **After Sensitivity Tables** → show that each cell varies, confirm the base case lands where expected
 * **If errors are found during verification**, fix them before moving to the next section
-* **Show your work** - explain key formulas or assumptions when helpful
+* **Show the work** - explain key formulas or assumptions when helpful
 * **Never present a completed model without having checked in at each section** — it's faster to catch a wrong cell reference at the source than to trace it backwards from a broken IRR
 
 ---

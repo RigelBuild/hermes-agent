@@ -72,7 +72,7 @@ Start with headers that force strategic thinking about what matters, input clean
 
 ---
 
-## ⚠️ CRITICAL: Formulas Over Hardcodes + Step-by-Step Verification
+## ⚠️ CRITICAL: Formulas Over Hardcodes + Verification in Stages
 
 **Formulas, not hardcodes:**
 - Every derived value (margin, multiple, statistic) MUST be an Excel formula referencing input cells — never a pre-computed number pasted in
@@ -80,7 +80,7 @@ Start with headers that force strategic thinking about what matters, input clean
 - The only hardcoded values should be raw input data (revenue, EBITDA, share price, etc.) — and every one of those gets a cell comment with its source
 - Why: the model must update automatically when an input changes. A hardcoded margin is a silent bug waiting to happen.
 
-**Verify step-by-step with the user:**
+**Verify in stages with the user:**
 - After setting up the structure → show the user the header layout before filling data
 - After entering raw inputs → show the user the input block and confirm sources/periods before building formulas
 - After building operating metrics formulas → show the calculated margins and sanity-check with the user before moving to valuation
@@ -346,7 +346,7 @@ If you have more than 15 metrics, you're probably including noise. Edit ruthless
    - Example: "FactSet consensus estimate as of 2024-10-02"
    - **Include hyperlinks when possible**: Right-click cell → Link → paste URL to SEC filing, data source, or report
 
-   **For assumptions, explain the reasoning:**
+   **For assumptions, explain the rationale:**
    - Example: "Assumed 15% EBITDA margin based on peer median, company does not disclose"
    - Example: "Estimated Enterprise Value as Market Cap + $50M net debt (from Q3 balance sheet, Q4 not yet available)"
    - Example: "Forward P/E based on street consensus EPS of $3.45 (average of 12 analyst estimates)"
@@ -417,7 +417,7 @@ This helps answer: "Is our target company trading rich or cheap vs. peers?"
 
 ## Section 7: Workflow & Practical Tips
 
-### Step-by-Step Process
+### Process in Order
 1. **Set up structure** (30 minutes)
    - Create all headers
    - Format cells (blue for inputs, black for formulas)

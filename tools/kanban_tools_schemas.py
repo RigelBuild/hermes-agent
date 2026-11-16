@@ -51,7 +51,7 @@ KANBAN_SHOW_SCHEMA = _schema(
         "It also carries the title and recent events. Use this to (re)orient yourself before "
         "starting work, especially on retries. The response includes a "
         "pre-formatted ``worker_context`` string suitable for inclusion "
-        "verbatim in your reasoning. Outside a dispatcher-spawned worker "
+        "verbatim in your working context. Outside a dispatcher-spawned worker "
         "there is no default task: a bare call returns a pointer to "
         "``kanban_list`` instead of task state."
     ),
@@ -309,7 +309,7 @@ KANBAN_COMMENT_SCHEMA = _schema(
     (
         "Append a comment to a task's thread. Use for durable notes "
         "that should outlive this run (questions for the next worker, "
-        "partial findings, rationale). Ephemeral reasoning doesn't "
+        "partial findings, rationale). Transient notes don't "
         "belong here — use your normal response instead."
     ),
     {

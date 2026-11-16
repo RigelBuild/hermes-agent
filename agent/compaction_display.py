@@ -67,7 +67,7 @@ def project_compaction_message_for_display(message: dict[str, Any]) -> Optional[
 
 
 # Lean-mode sections written for the model, not for a reader: the compacted turns' user messages
-# quoted again, and the footer naming ``session_search`` (``ContextCompressor._augment_summary_lean``).
+# quoted again, and the recovery footer (``ContextCompressor._augment_summary_lean``).
 _MODEL_ONLY_SECTIONS = (_LEAN_USER_MESSAGES_HEADING, _LEAN_RECOVERY_HEADING)
 _HISTORICAL_ONLY_LINE = "Historical only; newer protected-tail messages after this summary win."
 _COMPACTED_COUNT = re.compile(r"The (\d+) compacted message\(s\) remain fully preserved")

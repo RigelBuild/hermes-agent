@@ -1008,7 +1008,7 @@ Example 4 (json):
 - Stepwise Supervised
   - Example
 
-The stepwise supervised format is designed for chain-of-thought (COT) reasoning datasets where each example contains multiple completion steps and a preference label for each step.
+The stepwise supervised format is designed for COT-style multi-step datasets where each example contains multiple completion steps and a preference label for each step.
 
 Here’s a simple example of a stepwise supervised dataset entry:
 

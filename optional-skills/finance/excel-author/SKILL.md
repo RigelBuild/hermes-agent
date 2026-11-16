@@ -252,7 +252,7 @@ Before writing any formula:
 
 This prevents the cascading-formula-breakage pattern where inserting a header row after formulas are written shifts every downstream reference.
 
-## Verify step-by-step with the user
+## Verify in stages with the user
 
 For large models (DCFs, 3-statement, LBO), stop and show the user intermediate artifacts before continuing. Catching a wrong margin assumption before you've built downstream sensitivity tables saves an hour.
 

@@ -25,6 +25,29 @@ from tests.agent.test_run_agent_codex_responses import (
 import itertools
 
 
+def test_legacy_nudge_is_rewritten_on_codex_wire(monkeypatch):
+    from agent.conversation_loop import _LEGACY_CODEX_INCOMPLETE_NUDGE
+
+    agent = _build_agent(monkeypatch)
+    history = [
+        {"role": "user", "content": "original request"},
+        {"role": "assistant", "content": "earlier response"},
+        {"role": "user", "content": _LEGACY_CODEX_INCOMPLETE_NUDGE},
+    ]
+    wires = []
+
+    def record(api_kwargs):
+        wires.append(api_kwargs)
+        return _codex_message_response("done")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", record)
+    agent.run_conversation("continue", conversation_history=history)
+    wire = str(wires[0])
+    assert _LEGACY_CODEX_INCOMPLETE_NUDGE not in wire
+    assert _CODEX_INCOMPLETE_NUDGE in wire
+    assert _LEGACY_CODEX_INCOMPLETE_NUDGE in history[2]["content"]
+
+
 def _spy_fallback(agent, monkeypatch):
     """Record fallback activations; keep ``api_mode`` on codex_responses so the
     stub fallback answer still parses through the Codex path."""

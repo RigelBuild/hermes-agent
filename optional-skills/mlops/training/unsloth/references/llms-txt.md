@@ -776,7 +776,7 @@ Go to [http://localhost:8888](http://localhost:8888/) and open Unsloth. Access t
 
 #### Start training with Unsloth
 
-If you're new, follow our step-by-step [Fine-tuning Guide](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide), [RL Guide](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) or just save/copy any of our premade [notebooks](https://docs.unsloth.ai/get-started/unsloth-notebooks).
+If you're new, follow our [Fine-tuning Guide](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide), [RL Guide](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) or just save/copy any of our premade [notebooks](https://docs.unsloth.ai/get-started/unsloth-notebooks).
 {% endstep %}
 {% endstepper %}
 
@@ -1175,7 +1175,7 @@ Run Qwen3-30B-A3B-2507 and 235B-A22B Thinking and Instruct versions locally on y
 
 Qwen released 2507 (July 2025) updates for their [Qwen3](https://docs.unsloth.ai/models/qwen3-how-to-run-and-fine-tune) 4B, 30B and 235B models, introducing both "thinking" and "non-thinking" variants. The non-thinking '**Qwen3-30B-A3B-Instruct-2507**' and '**Qwen3-235B-A22B-Instruct-2507'** features a 256K context window, improved instruction following, multilingual capabilities and alignment.
 
-The thinking models '**Qwen3-30B-A3B-Thinking-2507**' and '**Qwen3-235B-A22B-Thinking-2507**' excel at reasoning, with the 235B achieving SOTA results in logic, math, science, coding, and advanced academic tasks.
+The models '**Qwen3-30B-A3B-Thinking-2507**' and '**Qwen3-235B-A22B-Thinking-2507**' excel at analysis, with the 235B achieving SOTA results in logic, math, science, coding, and advanced academic tasks.
 
 [Unsloth](https://github.com/unslothai/unsloth) also now supports fine-tuning and [Reinforcement Learning (RL)](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) of Qwen3-2507 models — 2x faster, with 70% less VRAM, and 8x longer context lengths
 
@@ -1426,7 +1426,7 @@ curl -X POST http://localhost:8000/v1/unload_lora_adapter \
 
 ## Llama, Qwen, Mistral, Phi or?
 
-When preparing for fine-tuning, one of the first decisions you'll face is selecting the right model. Here's a step-by-step guide to help you choose:
+When preparing for fine-tuning, one of the first decisions you'll face is selecting the right model. Here's a detailed guide to help you choose:
 
 {% stepper %}
 {% step %}
@@ -1580,7 +1580,7 @@ model, tokenizer = FastLanguageModel.from_pretrained(
 
 If you're a beginner, here might be the first questions you'll ask before your first fine-tune. You can also always ask our community by joining our [Reddit page](https://www.reddit.com/r/unsloth/).
 
-<table data-view="cards"><thead><tr><th data-type="content-ref"></th><th></th><th></th><th data-hidden data-card-target data-type="content-ref"></th></tr></thead><tbody><tr><td><a href="fine-tuning-llms-guide">fine-tuning-llms-guide</a></td><td>Step-by-step on how to fine-tune!</td><td>Learn the core basics of training.</td><td><a href="fine-tuning-llms-guide">fine-tuning-llms-guide</a></td></tr><tr><td><a href="fine-tuning-llms-guide/what-model-should-i-use">what-model-should-i-use</a></td><td>Instruct or Base Model?</td><td>How big should my dataset be?</td><td><a href="fine-tuning-llms-guide/what-model-should-i-use">what-model-should-i-use</a></td></tr><tr><td><a href="../models/tutorials-how-to-fine-tune-and-run-llms">tutorials-how-to-fine-tune-and-run-llms</a></td><td>How to Run &#x26; Fine-tune DeepSeek?</td><td>What settings should I set when running Gemma 3?</td><td><a href="../models/tutorials-how-to-fine-tune-and-run-llms">tutorials-how-to-fine-tune-and-run-llms</a></td></tr><tr><td><a href="beginner-start-here/faq-+-is-fine-tuning-right-for-me">faq-+-is-fine-tuning-right-for-me</a></td><td>What can fine-tuning do for me?</td><td>RAG vs. Fine-tuning?</td><td><a href="beginner-start-here/faq-+-is-fine-tuning-right-for-me">faq-+-is-fine-tuning-right-for-me</a></td></tr><tr><td><a href="install-and-update">install-and-update</a></td><td>How do I install Unsloth locally?</td><td>How to update Unsloth?</td><td><a href="install-and-update">install-and-update</a></td></tr><tr><td><a href="fine-tuning-llms-guide/datasets-guide">datasets-guide</a></td><td>How do I structure/prepare my dataset?</td><td>How do I collect data?</td><td></td></tr><tr><td><a href="beginner-start-here/unsloth-requirements">unsloth-requirements</a></td><td>Does Unsloth work on my GPU?</td><td>How much VRAM will I need?</td><td><a href="beginner-start-here/unsloth-requirements">unsloth-requirements</a></td></tr><tr><td><a href="../basics/running-and-saving-models">running-and-saving-models</a></td><td>How do I save my model locally?</td><td>How do I run my model via Ollama or vLLM?</td><td><a href="../basics/running-and-saving-models">running-and-saving-models</a></td></tr><tr><td><a href="fine-tuning-llms-guide/lora-hyperparameters-guide">lora-hyperparameters-guide</a></td><td>What happens when I change a parameter?</td><td>What parameters should I change?</td><td></td></tr></tbody></table>
+<table data-view="cards"><thead><tr><th data-type="content-ref"></th><th></th><th></th><th data-hidden data-card-target data-type="content-ref"></th></tr></thead><tbody><tr><td><a href="fine-tuning-llms-guide">fine-tuning-llms-guide</a></td><td>Guide: how to fine-tune!</td><td>Learn the core basics of training.</td><td><a href="fine-tuning-llms-guide">fine-tuning-llms-guide</a></td></tr><tr><td><a href="fine-tuning-llms-guide/what-model-should-i-use">what-model-should-i-use</a></td><td>Instruct or Base Model?</td><td>How big should my dataset be?</td><td><a href="fine-tuning-llms-guide/what-model-should-i-use">what-model-should-i-use</a></td></tr><tr><td><a href="../models/tutorials-how-to-fine-tune-and-run-llms">tutorials-how-to-fine-tune-and-run-llms</a></td><td>How to Run &#x26; Fine-tune DeepSeek?</td><td>What settings should I set when running Gemma 3?</td><td><a href="../models/tutorials-how-to-fine-tune-and-run-llms">tutorials-how-to-fine-tune-and-run-llms</a></td></tr><tr><td><a href="beginner-start-here/faq-+-is-fine-tuning-right-for-me">faq-+-is-fine-tuning-right-for-me</a></td><td>What can fine-tuning do for me?</td><td>RAG vs. Fine-tuning?</td><td><a href="beginner-start-here/faq-+-is-fine-tuning-right-for-me">faq-+-is-fine-tuning-right-for-me</a></td></tr><tr><td><a href="install-and-update">install-and-update</a></td><td>How do I install Unsloth locally?</td><td>How to update Unsloth?</td><td><a href="install-and-update">install-and-update</a></td></tr><tr><td><a href="fine-tuning-llms-guide/datasets-guide">datasets-guide</a></td><td>How do I structure/prepare my dataset?</td><td>How do I collect data?</td><td></td></tr><tr><td><a href="beginner-start-here/unsloth-requirements">unsloth-requirements</a></td><td>Does Unsloth work on my GPU?</td><td>How much VRAM will I need?</td><td><a href="beginner-start-here/unsloth-requirements">unsloth-requirements</a></td></tr><tr><td><a href="../basics/running-and-saving-models">running-and-saving-models</a></td><td>How do I save my model locally?</td><td>How do I run my model via Ollama or vLLM?</td><td><a href="../basics/running-and-saving-models">running-and-saving-models</a></td></tr><tr><td><a href="fine-tuning-llms-guide/lora-hyperparameters-guide">lora-hyperparameters-guide</a></td><td>What happens when I change a parameter?</td><td>What parameters should I change?</td><td></td></tr></tbody></table>
 
 <figure><img src="https://3215535692-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FxhOjnexMCB3dmuQFQ2Zq%2Fuploads%2FjT759hR4zq8ygzg1oEwI%2FLarge%20sloth%20Question%20mark.png?alt=media&#x26;token=ca8d2f56-889a-4da8-8106-da88d22e69d2" alt="" width="188"><figcaption></figcaption></figure>
 
@@ -2528,11 +2528,11 @@ To avoid [overfitting](https://docs.unsloth.ai/get-started/fine-tuning-llms-guid
 
 This step adds LoRA adapters for parameter-efficient fine-tuning. Only about 1% of the model’s parameters are trained, which makes the process significantly more efficient.
 
-For this example, we will use the [`HuggingFaceH4/Multilingual-Thinking`](https://huggingface.co/datasets/HuggingFaceH4/Multilingual-Thinking). This dataset contains chain-of-thought reasoning examples derived from user questions translated from English into four additional languages.&#x20;
+For this example, we will use the [`HuggingFaceH4/Multilingual-Thinking`](https://huggingface.co/datasets/HuggingFaceH4/Multilingual-Thinking). This dataset contains examples with intermediate working derived from user questions translated from English into four additional languages.&#x20;
 
-This is the same dataset referenced in OpenAI's fine-tuning cookbook. The goal of using a multilingual dataset is to help the model learn and generalize reasoning patterns across multiple languages.
+This is the same dataset referenced in OpenAI's fine-tuning cookbook. The goal of using a multilingual dataset is to help the model learn and generalize problem-solving patterns across multiple languages.
 
-gpt-oss introduces a reasoning effort system that controls how much reasoning the model performs. By default, the reasoning effort is set to `low`, but you can change it by setting the `reasoning_effort` parameter to `low`, `medium` or `high`.
+gpt-oss introduces a reasoning effort system that controls how much analysis the model performs. By default, the reasoning effort is set to `low`, but you can change it by setting the `reasoning_effort` parameter to `low`, `medium` or `high`.
 
 To format the dataset, we apply a customized version of the gpt-oss prompt:
 
@@ -2540,7 +2540,7 @@ Let's inspect the dataset by printing the first example:
 
 <figure><img src="https://3215535692-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FxhOjnexMCB3dmuQFQ2Zq%2Fuploads%2FvXrJGLlHZxgAazLFreMh%2Fimage.png?alt=media&#x26;token=9ddd4b8f-a884-4243-931d-39bd29274ffd" alt="" width="563"><figcaption></figcaption></figure>
 
-One unique feature of gpt-oss is its use of the [**OpenAI Harmony format**](https://github.com/openai/harmony)**,** which supports structured conversations, reasoning output, and tool calling. This format includes tags such as `<|start|>` , `<|message|>` , and `<|return|>` .&#x20;
+One unique feature of gpt-oss is its use of the [**OpenAI Harmony format**](https://github.com/openai/harmony)**,** which supports structured conversations, analysis output, and tool calling. This format includes tags such as `<|start|>` , `<|message|>` , and `<|return|>` .&#x20;
 
 {% hint style="info" %}
 🦥 Unsloth fixes the chat template to ensure it is correct. See this [tweet](https://x.com/danielhanchen/status/1953901104150065544) for technical details on our template fix.
@@ -3272,7 +3272,7 @@ Colab subscription or credits are required. We **don't** earn anything from thes
 * [Llama 3.2 (1B + 3B)](https://www.kaggle.com/notebooks/welcome?src=https%3A%2F%2Fgithub.com%2Funslothai/notebooks/blob/main/nb/Kaggle-Llama3.2_\(1B_and_3B\)-Conversational.ipynb)
 * [Qwen 2.5 (7B)](https://www.kaggle.com/notebooks/welcome?src=https%3A%2F%2Fgithub.com%2Funslothai/notebooks/blob/main/nb/Kaggle-Qwen2.5_\(7B\)-Alpaca.ipynb)
 
-#### GRPO (Reasoning) notebooks:
+#### GRPO notebooks:
 
 * [**Qwen2.5-VL**](https://www.kaggle.com/notebooks/welcome?src=https://github.com/unslothai/notebooks/blob/main/nb/Kaggle-Qwen2_5_7B_VL_GRPO.ipynb\&accelerator=nvidiaTeslaT4) - Vision GRPO - new
 * [Qwen3 (4B)](https://www.kaggle.com/notebooks/welcome?src=https://github.com/unslothai/notebooks/blob/main/nb/Kaggle-Qwen3_\(4B\)-GRPO.ipynb\&accelerator=nvidiaTeslaT4)
@@ -4352,7 +4352,7 @@ python llama.cpp/convert_hf_to_gguf.py merged_model \
 
 A guide on how to run DeepSeek-R1-0528 including Qwen3 on your own local device!
 
-DeepSeek-R1-0528 is DeepSeek's new update to their R1 reasoning model. The full 671B parameter model requires 715GB of disk space. The quantized dynamic **1.66-bit** version uses 162GB (-80% reduction in size). GGUF: [DeepSeek-R1-0528-GGUF](https://huggingface.co/unsloth/DeepSeek-R1-0528-GGUF)
+DeepSeek-R1-0528 is DeepSeek's new update to their R1 analysis model. The full 671B parameter model requires 715GB of disk space. The quantized dynamic **1.66-bit** version uses 162GB (-80% reduction in size). GGUF: [DeepSeek-R1-0528-GGUF](https://huggingface.co/unsloth/DeepSeek-R1-0528-GGUF)
 
 DeepSeek also released a R1-0528 distilled version by fine-tuning Qwen3 (8B). The distill achieves similar performance to Qwen3 (235B). ***You can also*** [***fine-tune Qwen3 Distill***](#fine-tuning-deepseek-r1-0528-with-unsloth) ***with Unsloth***. Qwen3 GGUF: [DeepSeek-R1-0528-Qwen3-8B-GGUF](https://huggingface.co/unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF)
 
@@ -4422,7 +4422,7 @@ We've also uploaded versions in [BF16 format](https://huggingface.co/unsloth/Dee
 
 ### :llama: Run Full R1-0528 on Ollama/Open WebUI
 
-Open WebUI has made an step-by-step tutorial on how to run R1 here and for R1-0528, you will just need to replace R1 with the new 0528 quant: [docs.openwebui.com/tutorials/integrations/deepseekr1-dynamic/](https://docs.openwebui.com/tutorials/integrations/deepseekr1-dynamic/)
+Open WebUI has made a detailed tutorial on how to run R1 here and for R1-0528, you will just need to replace R1 with the new 0528 quant: [docs.openwebui.com/tutorials/integrations/deepseekr1-dynamic/](https://docs.openwebui.com/tutorials/integrations/deepseekr1-dynamic/)
 
 <mark style="background-color:green;">**(NEW) To run the full R1-0528 model in Ollama, you can use our TQ1\_0 (162GB quant):**</mark>
 
@@ -4496,7 +4496,7 @@ ollama run hf.co/unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF:Q4_K_XL
 
 A guide on how to run Z.ai's new GLM-4.6 model on your own local device!
 
-GLM-4.6 is the latest reasoning model from **Z.ai**, achieving SOTA performance on coding and agent benchmarks while offering improved conversational chats. The full 355B parameter model requires **400GB** of disk space, while the Unsloth Dynamic 2-bit GGUF reduces the size to **135GB** (-**75%)**. [**GLM-4.6-GGUF**](https://huggingface.co/unsloth/GLM-4.6-GGUF)
+GLM-4.6 is the latest analysis model from **Z.ai**, achieving SOTA performance on coding and agent benchmarks while offering improved conversational chats. The full 355B parameter model requires **400GB** of disk space, while the Unsloth Dynamic 2-bit GGUF reduces the size to **135GB** (-**75%)**. [**GLM-4.6-GGUF**](https://huggingface.co/unsloth/GLM-4.6-GGUF)
 
 There is currently no smaller **GLM-4.6-Air** model available, however Z.ai's team says that it is expected soon.
 
@@ -4674,7 +4674,7 @@ Access the `unsloth-notebooks` tabs to see Unsloth notebooks.
 
 #### Start training with Unsloth
 
-If you're new, follow our step-by-step [Fine-tuning Guide](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide), [RL Guide](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) or just save/copy any of our premade [notebooks](https://docs.unsloth.ai/get-started/unsloth-notebooks).
+If you're new, follow our [Fine-tuning Guide](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide), [RL Guide](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) or just save/copy any of our premade [notebooks](https://docs.unsloth.ai/get-started/unsloth-notebooks).
 
 <figure><img src="https://3215535692-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FxhOjnexMCB3dmuQFQ2Zq%2Fuploads%2FlXvwMkWQ72p6nxFzD0ev%2FScreenshot_from_2025-09-30_21-40-29.png?alt=media&#x26;token=2a5f135d-6138-4670-aca7-ca22b5f730d7" alt=""><figcaption></figcaption></figure>
 {% endstep %}
@@ -4884,11 +4884,11 @@ It is recommended to check the quality of generated data to remove or improve on
 
 We generally recommend using a bare minimum of at least 100 rows of data for fine-tuning to achieve reasonable results. For optimal performance, a dataset with over 1,000 rows is preferable, and in this case, more data usually leads to better outcomes. If your dataset is too small you can also add synthetic data or add a dataset from Hugging Face to diversify it. However, the effectiveness of your fine-tuned model depends heavily on the quality of the dataset, so be sure to thoroughly clean and prepare your data.
 
-### How should I structure my dataset if I want to fine-tune a reasoning model?
+### How should I structure my dataset if I want to fine-tune an analysis model?
 
-If you want to fine-tune a model that already has reasoning capabilities like the distilled versions of DeepSeek-R1 (e.g. DeepSeek-R1-Distill-Llama-8B), you will need to still follow question/task and answer pairs however, for your answer you will need to change the answer so it includes reasoning/chain-of-thought process and the steps it took to derive the answer.\
-\
-For a model that does not have reasoning and you want to train it so that it later encompasses reasoning capabilities, you will need to utilize a standard dataset but this time without reasoning in its answers. This is training process is known as [Reinforcement Learning and GRPO](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide).
+For a model that already has problem-solving capabilities, such as a distilled DeepSeek-R1 variant (e.g. DeepSeek-R1-Distill-Llama-8B), use question/task and answer pairs. Include the analysis and intermediate work that led to each answer.
+
+For a model that does not yet have analysis capabilities and that you want to train to develop them, use a standard dataset without intermediate working in its answers. This training process is known as [Reinforcement Learning and GRPO](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide).
 
 ### Multiple datasets
 
@@ -5201,7 +5201,7 @@ curl -X POST http://localhost:8000/v1/load_lora_adapter \
 
 How to run QwQ-32B effectively with our bug fixes and without endless generations + GGUFs.
 
-Qwen released QwQ-32B - a reasoning model with performance comparable to DeepSeek-R1 on many [benchmarks](https://qwenlm.github.io/blog/qwq-32b/). However, people have been experiencing **infinite generations**, **many repetitions**, \<think> token issues and finetuning issues. We hope this guide will help debug and fix most issues!
+Qwen released QwQ-32B - an analysis model with performance comparable to DeepSeek-R1 on many [benchmarks](https://qwenlm.github.io/blog/qwq-32b/). However, people have been experiencing **infinite generations**, **many repetitions**, \<think> token issues and finetuning issues. We hope this guide will help debug and fix most issues!
 
 {% hint style="info" %}
 Our model uploads with our bug fixes work great for fine-tuning, vLLM and Transformers. If you're using llama.cpp and engines that use llama.cpp as backend, follow our [instructions here](#tutorial-how-to-run-qwq-32b) to fix endless generations.
@@ -6363,7 +6363,7 @@ lora_dropout = 0, # Supports any, but = 0 is optimized
 - :sloth:What Unsloth offers for RL
   - GRPO notebooks:
 
-Learn all about Reinforcement Learning (RL) and how to train your own DeepSeek-R1 reasoning model with Unsloth using GRPO. A complete guide from beginner to advanced.
+Learn all about Reinforcement Learning (RL) and how to train a model to perform analysis with Unsloth using GRPO. A complete guide from beginner to advanced.
 
 Reinforcement Learning is where an "agent" learns to make decisions by interacting with an environment and receiving **feedback** in the form of **rewards** or **penalties**.
 
@@ -6380,7 +6380,7 @@ For **advanced GRPO** documentation on batching, generation and training paramet
 1. What is RL? RLVR? PPO? GRPO? RLHF? RFT? Is <mark style="background-color:green;">**"Luck is All You Need?"**</mark> for RL?
 2. What is an environment? Agent? Action? Reward function? Rewards?
 
-This article covers everything (from beginner to advanced) you need to know about GRPO, Reinforcement Learning (RL) and reward functions, along with tips, and the basics of using GRPO with [Unsloth](https://github.com/unslothai/unsloth). If you're looking for a step-by-step tutorial for using GRPO, see our guide [here](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide/tutorial-train-your-own-reasoning-model-with-grpo).
+This article covers everything (from beginner to advanced) you need to know about GRPO, Reinforcement Learning (RL) and reward functions, along with tips, and the basics of using GRPO with [Unsloth](https://github.com/unslothai/unsloth). If you're looking for a detailed tutorial for using GRPO, see our guide [here](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide/tutorial-train-your-own-reasoning-model-with-grpo).
 
 ## :question:What is Reinforcement Learning (RL)?
 
@@ -6467,7 +6467,7 @@ The formula for PPO looks quite complicated because it was designed to be stable
 {% endcolumn %}
 
 {% column %}
-DeepSeek developed [<mark style="background-color:red;">**GRPO**</mark>](https://unsloth.ai/blog/grpo) (Group Relative Policy Optimization) to train their R1 reasoning models. The key differences to PPO are:
+DeepSeek developed [<mark style="background-color:red;">**GRPO**</mark>](https://unsloth.ai/blog/grpo) (Group Relative Policy Optimization) to train their R1 analysis models. The key differences to PPO are:
 
 1. The **Value Model is removed,** replaced with statistics from calling the reward model multiple times.
 2. The **Reward Model is removed** and replaced with just custom reward function which <mark style="background-color:blue;">**RLVR**</mark> can be used.
@@ -6481,7 +6481,7 @@ This means GRPO is extremely efficient. Previously PPO needed to train multiple 
 1. Maths equations can be easily verified. Eg 2+2 = 4.
 2. Code output can be verified as having executed correctly or not.
 3. Designing verifiable reward functions can be tough, and so most examples are math or code.
-4. Use-cases for GRPO isn’t just for code or math—its reasoning process can enhance tasks like email automation, database retrieval, law, and medicine, greatly improving accuracy based on your dataset and reward function - the trick is to define a <mark style="background-color:yellow;">**rubric - ie a list of smaller verifiable rewards, and not a final all consuming singular reward.**</mark> OpenAI popularized this in their [reinforcement learning finetuning (RFT)](https://platform.openai.com/docs/guides/reinforcement-fine-tuning) offering for example.
+4. Use-cases for GRPO isn’t just for code or math—its analysis process can enhance tasks like email automation, database retrieval, law, and medicine, greatly improving accuracy based on your dataset and reward function - the trick is to define a <mark style="background-color:yellow;">**rubric - ie a list of smaller verifiable rewards, and not a final all consuming singular reward.**</mark> OpenAI popularized this in their [reinforcement learning finetuning (RFT)](https://platform.openai.com/docs/guides/reinforcement-fine-tuning) offering for example.
 
 {% columns %}
 {% column %} <mark style="background-color:red;">**Why "Group Relative"?**</mark>
@@ -6541,9 +6541,9 @@ Since we got bad answers, RL will influence the model to try NOT to output bad a
 
 ## :sloth:What Unsloth offers for RL
 
-* With 15GB VRAM, Unsloth allows you to transform any model up to 17B parameters like Llama 3.1 (8B), Phi-4 (14B), Mistral (7B) or Qwen2.5 (7B) into a reasoning model
+* With 15GB VRAM, Unsloth allows you to transform any model up to 17B parameters like Llama 3.1 (8B), Phi-4 (14B), Mistral (7B) or Qwen2.5 (7B) into an analysis model
 * **Unsloth now supports** [**RL for Vision/multimodal**](https://docs.unsloth.ai/new/vision-reinforcement-learning-vlm-rl) **models!**
-* **Minimum requirement:** Just  5GB VRAM is enough to train your own reasoning model locally (for any model with 1.5B parameters or less)
+* **Minimum requirement:** Just  5GB VRAM is enough to train your own analysis model locally (for any model with 1.5B parameters or less)
 
 {% content-ref url="reinforcement-learning-rl-guide/tutorial-train-your-own-reasoning-model-with-grpo" %}
 [tutorial-train-your-own-reasoning-model-with-grpo](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide/tutorial-train-your-own-reasoning-model-with-grpo)
@@ -6818,9 +6818,9 @@ model_outputs = llm.generate(model_input, sampling_param)
 - :llama: Tutorial: How to Run Magistral in Ollama
 - 📖 Tutorial: How to Run Magistral in llama.cpp  <a href="#tutorial-how-to-run-llama-4-scout-in-llama.cpp" id="tutorial-how-to-run-llama-4-scout-in-llama.cpp"></a>
 
-Meet Magistral - Mistral's new reasoning models.
+Meet Magistral - Mistral's new analysis models.
 
-**Magistral-Small-2509** is a reasoning LLM developed by Mistral AI. It excels at coding and mathematics and supports multiple languages.  Magistral supports a 128k token context window and was finetuned from [**Mistral-Small-3.2**](https://huggingface.co/unsloth/Mistral-Small-3.2-24B-Instruct-2506). Magistral runs perfectly well locally on a single RTX 4090 or a Mac with 16 to 24GB RAM.
+**Magistral-Small-2509** is an analysis LLM developed by Mistral AI. It excels at coding and mathematics and supports multiple languages.  Magistral supports a 128k token context window and was finetuned from [**Mistral-Small-3.2**](https://huggingface.co/unsloth/Mistral-Small-3.2-24B-Instruct-2506). Magistral runs perfectly well locally on a single RTX 4090 or a Mac with 16 to 24GB RAM.
 
 <a href="#running-magistral" class="button primary">Running Magistral Tutorial</a> <a href="#fine-tuning-magistral-with-unsloth" class="button secondary">Fine-tuning Magistral</a>
 
@@ -7071,7 +7071,7 @@ Compile llama.cpp from source like below:
 
 Learn to run & fine-tune Phi-4 reasoning models locally with Unsloth + our Dynamic 2.0 quants
 
-Microsoft's new Phi-4 reasoning models are now supported in Unsloth. The 'plus' variant performs on par with OpenAI's o1-mini, o3-mini and Sonnet 3.7. The 'plus' and standard reasoning models are 14B parameters while the 'mini' has 4B parameters.\
+Microsoft's new Phi-4 reasoning models are now supported in Unsloth. The 'plus' variant performs on par with OpenAI's o1-mini, o3-mini and Sonnet 3.7. The 'plus' and standard variants have 14B parameters, while the 'mini' has 4B parameters.
 \
 All Phi-4 reasoning uploads use our [Unsloth Dynamic 2.0](https://docs.unsloth.ai/basics/unsloth-dynamic-2.0-ggufs) methodology.
 
@@ -7115,7 +7115,7 @@ Yes, the chat template/prompt format is this long!
 ### 📖 Llama.cpp: Run Phi-4 reasoning Tutorial
 
 {% hint style="warning" %}
-You must use `--jinja` in llama.cpp to enable reasoning for the models, expect for the 'mini' variant. Otherwise no token will be provided.
+You must use `--jinja` in llama.cpp to enable analysis for the models, expect for the 'mini' variant. Otherwise no token will be provided.
 {% endhint %}
 
 1. Obtain the latest `llama.cpp` on [GitHub here](https://github.com/ggml-org/llama.cpp). You can follow the build instructions below as well. Change `-DGGML_CUDA=ON` to `-DGGML_CUDA=OFF` if you don't have a GPU or just want CPU inference.
@@ -7671,7 +7671,7 @@ from unsloth import check_python_modules
 
 A guide on how to run DeepSeek-V3.1 and Terminus on your own local device!
 
-DeepSeek’s V3.1 and **Terminus** update introduces hybrid reasoning inference, combining 'think' and 'non-think' into one model. The full 671B parameter model requires 715GB of disk space. The quantized dynamic 2-bit version uses 245GB (-75% reduction in size). GGUF: [**DeepSeek-V3.1-GGUF**](https://huggingface.co/unsloth/DeepSeek-V3.1-GGUF)
+DeepSeek’s V3.1 and **Terminus** update introduces hybrid inference that combines analysis and direct-answer modes in one model. The full 671B parameter model requires 715GB of disk space. The quantized dynamic 2-bit version uses 245GB (-75% reduction in size). GGUF: [**DeepSeek-V3.1-GGUF**](https://huggingface.co/unsloth/DeepSeek-V3.1-GGUF)
 
 {% hint style="success" %}
 **NEW:** DeepSeek-V3.1-Terminus out now: [DeepSeek-V3.1-Terminus-GGUF](https://huggingface.co/unsloth/DeepSeek-V3.1-Terminus-GGUF)\
@@ -7705,7 +7705,7 @@ Though not a must, for best performance, have your VRAM + RAM combined equal to 
 
 We fixed a few issues with DeepSeek V3.1's chat template since they did not function correctly in llama.cpp and other engines:
 
-1. DeepSeek V3.1 is a hybrid reasoning model, meaning you can change the chat template to enable reasoning. The chat template introduced `thinking = True` , but other models use `enable_thinking = True` . We added the option to use `enable_thinking` as a keyword instead.
+1. DeepSeek V3.1 combines analysis and direct-answer modes; the chat template can switch between them. The chat template introduced `thinking = True` , but other models use `enable_thinking = True` . We added the option to use `enable_thinking` as a keyword instead.
 2. llama.cpp's jinja renderer via [minja](https://github.com/google/minja) does not allow the use of extra arguments in the `.split()` command, so using `.split(text, 1)` works in Python, but not in minja. We had to change this to make llama.cpp function correctly without erroring out.\
    \
    You will get the following error when using other quants:\
@@ -7719,7 +7719,7 @@ According to [DeepSeek](https://huggingface.co/deepseek-ai/DeepSeek-V3.1), these
 * Set <mark style="background-color:green;">**top\_p to 0.95**</mark> (recommended)
 * **128K context length** or less
 * Use `--jinja` for llama.cpp variants - we **fixed some chat template issues as well!**
-* **Use** `enable_thinking = True` to use reasoning/ thinking mode. By default it's set to non reasoning.
+* **Use** `enable_thinking = True` to use analysis mode. By default it's set to direct-answer.
 
 #### :1234: Chat template/prompt format
 
@@ -7772,7 +7772,7 @@ Run the model! Note you can call `ollama serve`in another terminal if it fails! 
 To run other quants, you need to first merge the GGUF split files into 1 like the code below. Then you will need to run the model locally.
 
 {% step %}
-Open WebUI also made a [step-by-step tutorial](https://docs.openwebui.com/tutorials/integrations/deepseekr1-dynamic/) on how to run R1 and for V3.1, you will just need to replace R1 with the new V3.1 quant.
+Open WebUI also made a [detailed tutorial](https://docs.openwebui.com/tutorials/integrations/deepseekr1-dynamic/) on how to run R1 and for V3.1, you will just need to replace R1 with the new V3.1 quant.
 {% endstep %}
 {% endstepper %}
 
@@ -8068,7 +8068,7 @@ We tested Llama 3.3 (70B) Instruct on a 80GB A100 and did 4bit QLoRA on all line
 **URL:** llms-txt#fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth
 
 **Contents:**
-  - ⚡ Step-by-Step Tutorial
+  - ⚡ detailed tutorial
 
 Tutorial on how to fine-tune and do reinforcement learning (RL) with OpenAI gpt-oss on NVIDIA DGX Spark.
 
@@ -8084,7 +8084,7 @@ After 1,000 steps and 4 hours of RL training, the gpt-oss model greatly outperfo
 
 <div><figure><img src="https://3215535692-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FxhOjnexMCB3dmuQFQ2Zq%2Fuploads%2FtzJW3WE7SKKyQ7HqJ4mS%2Fopenai%20devday%20unsloth%20feature.png?alt=media&#x26;token=fe2e0f9a-012f-4022-b57b-cdadf364ca7d" alt="" width="375"><figcaption><p>You can watch Unsloth featured on OpenAI DevDay 2025 <a href="https://youtu.be/1HL2YHRj270?si=8SR6EChF34B1g-5r&#x26;t=1080">here</a>.</p></figcaption></figure> <figure><img src="https://3215535692-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FxhOjnexMCB3dmuQFQ2Zq%2Fuploads%2FJRXY3YyhIzc283oy7e4H%2FScreenshot%202025-10-13%20at%204.22.32%E2%80%AFPM.png?alt=media&#x26;token=c06b9bb5-89b3-49ea-b8d5-11124dbd317b" alt="" width="375"><figcaption><p>gpt-oss trained with RL consistently outperforms on 2048.</p></figcaption></figure></div>
 
-### ⚡ Step-by-Step Tutorial
+### ⚡ Tutorial
 
 {% stepper %}
 {% step %}
@@ -8823,7 +8823,7 @@ For our DeepSeek-V3.1 experiments, we compared different bits of **Unsloth Dynam
 
 Benchmark experiments were mainly conducted by [David Sluys](https://www.linkedin.com/in/david-sluys-231348208/) (neolithic5452 on [Aider Discord](https://discord.com/channels/1131200896827654144/1408293692074360914)), a trusted community contributor to Aider Polyglot evaluations. Tests were run \~3 times and averaged for a median score, and the Pass-2 accuracy is reported as by convention. There are some reproducible benchmark code snippets in Aider's Discord.
 
-<summary>Expand for Reasoning model Aider benchmarks</summary>
+<summary>Expand for models using analysis mode in Aider benchmarks</summary>
 
 | Model                             | Accuracy |
 | --------------------------------- | -------- |
@@ -8840,7 +8840,7 @@ Benchmark experiments were mainly conducted by [David Sluys](https://www.linkedi
 | **(1 bit) DeepSeek V3.1 Unsloth** | **57.8** |
 | DeepSeek R1                       | 56.9     |
 
-<summary>Expand for Non Reasoning model Aider benchmarks</summary>
+<summary>Expand for models using direct-answer mode in Aider benchmarks</summary>
 
 | Model                             | Accuracy |
 | --------------------------------- | -------- |
@@ -8858,7 +8858,7 @@ Benchmark experiments were mainly conducted by [David Sluys](https://www.linkedi
 | ChatGPT 4o (March, 2025)          | 45.3     |
 | GPT-4.5                           | 44.9     |
 
-DeepSeek V3.1 has both a reasoning and a non reasoning mode, and we test both. For non reasoning, we see a clear trend of how our dynamic quantizations perform below. dynamic 5-bit attains 70.7% on Aider Pass-2, whilst dynamic 1-bit attains 55.7%. In terms of size and accuracy, the 3 and 4bit are extremely powerful!
+DeepSeek V3.1 has both an analysis mode and a direct-answer mode, and we test both. For the non-analysis mode, we see a clear trend of how our dynamic quantizations perform below. dynamic 5-bit attains 70.7% on Aider Pass-2, whilst dynamic 1-bit attains 55.7%. In terms of size and accuracy, the 3 and 4bit are extremely powerful!
 
 <figure><img src="https://3215535692-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FxhOjnexMCB3dmuQFQ2Zq%2Fuploads%2FTG2xW8wGD2hQTuT4437N%2Faider%20non.png?alt=media&#x26;token=ab73810b-b584-4d46-b056-07594ada2845" alt=""><figcaption></figcaption></figure>
 
@@ -9047,7 +9047,7 @@ Learn all the basics and best practices of fine-tuning. Beginner-friendly.
 Fine-tuning an LLM customizes its behavior, enhances + injects knowledge, and optimizes performance for domains/specific tasks. For example:
 
 * **GPT-4** serves as a base model; however, OpenAI fine-tuned it to better comprehend instructions and prompts, leading to the creation of ChatGPT-4 which everyone uses today.
-* ​**DeepSeek-R1-Distill-Llama-8B** is a fine-tuned version of Llama-3.1-8B. DeepSeek utilized data generated by DeepSeek-R1, to fine-tune Llama-3.1-8B. This process, known as distillation (a subcategory of fine-tuning), injects the data into the Llama model to learn reasoning capabilities.
+* ​**DeepSeek-R1-Distill-Llama-8B** is a fine-tuned version of Llama-3.1-8B. DeepSeek utilized data generated by DeepSeek-R1, to fine-tune Llama-3.1-8B. This process, known as distillation (a subcategory of fine-tuning), injects the data into the Llama model to learn problem-solving capabilities.
 
 With [Unsloth](https://github.com/unslothai/unsloth), you can fine-tune for free on Colab, Kaggle, or locally with just 3GB VRAM by using our [notebooks](https://docs.unsloth.ai/get-started/unsloth-notebooks). By fine-tuning a pre-trained model (e.g. Llama-3.1-8B) on a specialized dataset, you can:
 
@@ -9098,7 +9098,7 @@ There are other settings which you can toggle:
 
 We recommend starting with QLoRA, as it is one of the most accessible and effective methods for training models. Our [dynamic 4-bit](https://unsloth.ai/blog/dynamic-4bit) quants, the accuracy loss for QLoRA compared to LoRA is now largely recovered.
 
-You can also do [Text-to-speech (TTS)](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning), [reasoning (GRPO)](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide), [vision](https://docs.unsloth.ai/basics/vision-fine-tuning), [reinforcement learning](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide/reinforcement-learning-dpo-orpo-and-kto) (DPO, ORPO, KTO), [continued pretraining](https://docs.unsloth.ai/basics/continued-pretraining), text completion and other training methodologies with Unsloth.
+You can also do [Text-to-speech (TTS)](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning), [analysis (GRPO)](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide), [vision](https://docs.unsloth.ai/basics/vision-fine-tuning), [reinforcement learning](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide/reinforcement-learning-dpo-orpo-and-kto) (DPO, ORPO, KTO), [continued pretraining](https://docs.unsloth.ai/basics/continued-pretraining), text completion and other training methodologies with Unsloth.
 
 Read our detailed guide on choosing the right model:
 
@@ -9659,7 +9659,7 @@ A huge thank you to Rohan Pandey for his [Flex Attention implementation](https:/
 
 ## :dark\_sunglasses: Attention Sinks
 
-OpenAI's GPT OSS model uses an **alternating pattern of sliding window attention, full attention**, sliding window attention and so on (SWA, FA, SWA, FA, etc). Each sliding window only attends to **128 tokens** (including the current token), so computation is vastly reduced. However, this also means long context retrieval and reasoning becomes useless due to the small sliding window. Most labs fix this by expanding the sliding window to 2048 or 4096 tokens.
+OpenAI's GPT OSS model uses an **alternating pattern of sliding window attention, full attention**, sliding window attention and so on (SWA, FA, SWA, FA, etc). Each sliding window only attends to **128 tokens** (including the current token), so computation is vastly reduced. However, this also means long context retrieval and analysis becomes useless due to the small sliding window. Most labs fix this by expanding the sliding window to 2048 or 4096 tokens.
 
 OpenAI leveraged **Attention Sinks** from the Efficient Streaming Language Models with Attention Sinks [paper](https://arxiv.org/abs/2309.17453) which shows that you can use a small sliding window, except you must add a global attention on the first token! The paper provides a good illustration below:
 
@@ -9970,7 +9970,7 @@ Then **try QAT with our free** [**Qwen3 (4B) notebook**](https://colab.research.
 
 ---
 
-## Tutorial: Train your own Reasoning model with GRPO
+## Tutorial: Train your own Analysis model with GRPO
 
 **URL:** llms-txt#tutorial:-train-your-own-reasoning-model-with-grpo
 
@@ -9981,9 +9981,9 @@ Then **try QAT with our free** [**Qwen3 (4B) notebook**](https://colab.research.
   - Configure desired settings
   - Data preparation
 
-Beginner's Guide to transforming a model like Llama 3.1 (8B) into a reasoning model by using Unsloth and GRPO.
+Beginner's Guide to transforming a model like Llama 3.1 (8B) into an analysis model by using Unsloth and GRPO.
 
-DeepSeek developed [GRPO](https://unsloth.ai/blog/grpo) (Group Relative Policy Optimization) to train their R1 reasoning models.
+DeepSeek developed [GRPO](https://unsloth.ai/blog/grpo) (Group Relative Policy Optimization) to train their R1 analysis models.
 
 These instructions are for our pre-made Google Colab [notebooks](https://docs.unsloth.ai/get-started/unsloth-notebooks). If you are installing Unsloth locally, you can also copy our notebooks inside your favorite code editor. We'll be using any of these notebooks:
 
@@ -10021,11 +10021,11 @@ For **advanced GRPO** documentation on batching, generation and training paramet
 
 We have pre-selected OpenAI's [GSM8K](https://huggingface.co/datasets/openai/gsm8k) dataset which contains grade school math problems but you could change it to your own or any public one on Hugging Face. You can read more about [datasets here](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide/datasets-guide).
 
-Your dataset should still have at least 2 columns for question and answer pairs. However the answer must not reveal the reasoning behind how it derived the answer from the question. See below for an example:
+Your dataset should still have at least 2 columns for question and answer pairs. However the answer must not reveal the analysis behind how it derived the answer from the question. See below for an example:
 
 <figure><img src="https://3215535692-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FxhOjnexMCB3dmuQFQ2Zq%2Fuploads%2FqdTVcMEeJ3kzPToSY1X8%2Fimage.png?alt=media&#x26;token=3dd8d9d7-1847-42b6-a73a-f9c995b798b1" alt=""><figcaption></figcaption></figure>
 
-We'll structure the data to prompt the model to articulate its reasoning before delivering an answer. To start, we'll establish a clear format for both prompts and responses.
+We'll structure the data to prompt the model to articulate its analysis before delivering an answer. To start, we'll establish a clear format for both prompts and responses.
 
 ---
 
@@ -10042,7 +10042,7 @@ We'll structure the data to prompt the model to articulate its reasoning before 
 
 Learn to run & fine-tune Qwen3 locally with Unsloth + our Dynamic 2.0 quants
 
-Qwen's new Qwen3 models deliver state-of-the-art advancements in reasoning, instruction-following, agent capabilities, and multilingual support.
+Qwen's new Qwen3 models deliver state-of-the-art advancements in analysis, instruction-following, agent capabilities, and multilingual support.
 
 {% hint style="success" %}
 **NEW!** Qwen3 got an update in July 2025. Run & fine-tune the latest model: [**Qwen-2507**](https://docs.unsloth.ai/models/qwen3-how-to-run-and-fine-tune/qwen3-2507)
@@ -10095,7 +10095,7 @@ For NON thinking mode, we purposely enclose \<think> and \</think> with nothing:
 
 ### Switching Between Thinking and Non-Thinking Mode
 
-Qwen3 models come with built-in "thinking mode" to boost reasoning and improve response quality - similar to how [QwQ-32B](https://docs.unsloth.ai/models/tutorials-how-to-fine-tune-and-run-llms/qwq-32b-how-to-run-effectively) worked. Instructions for switching will differ depending on the inference engine you're using so ensure you use the correct instructions.
+Qwen3 models come with built-in "thinking mode" to boost analysis and improve response quality - similar to how [QwQ-32B](https://docs.unsloth.ai/models/tutorials-how-to-fine-tune-and-run-llms/qwq-32b-how-to-run-effectively) worked. Instructions for switching will differ depending on the inference engine you're using so ensure you use the correct instructions.
 
 #### Instructions for llama.cpp and Ollama:
 
@@ -10117,7 +10117,7 @@ In thinking mode, the model will generate an extra `<think>...</think>` block be
 
 Enabling non-thinking will make Qwen3 will skip all the thinking steps and behave like a normal LLM.
 
-This mode will provide final responses directly — no `<think>` blocks, no chain-of-thought.
+This mode will provide final responses directly — no `<think>` blocks, no intermediate working.
 
 ### 🦙 Ollama: Run Qwen3 Tutorial
 
@@ -10909,7 +10909,7 @@ LLMs often struggle with tasks that involve complex environments. However, by ap
 
 RL can be adapted for tasks such as auto kernel or strategy creation. This tutorial shows how to train **gpt-oss** with [**GRPO**](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide#from-rlhf-ppo-to-grpo-and-rlvr) and Unsloth to autonomously beat 2048.
 
-Our notebooks include step-by-step guides on how to navigate the whole process already.
+Our notebooks guide you through the whole process.
 
 | [2048 notebook](https://colab.research.google.com/github/openai/gpt-oss/blob/main/examples/reinforcement-fine-tuning.ipynb) (Official OpenAI example) | [Kernel generation notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-\(20B\)-GRPO.ipynb) |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
@@ -10969,7 +10969,7 @@ q4   X   (note that q4 has q_idx=0 as this is the first query in current setup)
 **Contents:**
   - Pip install
 
-Learn how to fine-tune LLMs on NVIDIA's Blackwell RTX 50 series and B200 GPUs with our step-by-step guide.
+Learn how to fine-tune LLMs on NVIDIA's Blackwell RTX 50 series and B200 GPUs with our comprehensive guide.
 
 Unsloth now supports NVIDIA’s Blackwell architecture GPUs, including RTX 50-series GPUs (5060–5090), RTX PRO 6000, and GPUS such as B200, B40, GB100, GB102 and more! You can read the official [NVIDIA blogpost here](https://developer.nvidia.com/blog/train-an-llm-on-an-nvidia-blackwell-desktop-with-unsloth-and-scale-it/).
 
@@ -11698,7 +11698,7 @@ model.push_to_hub_gguf("hf_username/directory", tokenizer, quantization_method =
 **URL:** llms-txt#how-to-fine-tune-llms-with-unsloth-&-docker
 
 **Contents:**
-  - ⚡ Step-by-Step Tutorial
+  - ⚡ detailed tutorial
   - 📖 Usage Example
 
 Learn how to fine-tune LLMs or do Reinforcement Learning (RL) with Unsloth's Docker image.
@@ -11718,7 +11718,7 @@ Unsloth’s Docker image is stable, up-to-date and works in [supported setups](h
 You can now use our main Docker image `unsloth/unsloth` for Blackwell and 50-series GPUs - no separate image needed.
 {% endhint %}
 
-### ⚡ Step-by-Step Tutorial
+### ⚡ Tutorial
 
 {% stepper %}
 {% step %}
@@ -11759,7 +11759,7 @@ Access the `unsloth-notebooks` tabs to see Unsloth notebooks.
 
 #### Start training with Unsloth
 
-If you're new, follow our step-by-step [Fine-tuning Guide](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide), [RL Guide](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) or just save/copy any of our premade [notebooks](https://docs.unsloth.ai/get-started/unsloth-notebooks).
+If you're new, follow our [Fine-tuning Guide](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide), [RL Guide](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) or just save/copy any of our premade [notebooks](https://docs.unsloth.ai/get-started/unsloth-notebooks).
 
 <figure><img src="https://3215535692-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FxhOjnexMCB3dmuQFQ2Zq%2Fuploads%2FlXvwMkWQ72p6nxFzD0ev%2FScreenshot_from_2025-09-30_21-40-29.png?alt=media&#x26;token=2a5f135d-6138-4670-aca7-ca22b5f730d7" alt=""><figcaption></figcaption></figure>
 {% endstep %}

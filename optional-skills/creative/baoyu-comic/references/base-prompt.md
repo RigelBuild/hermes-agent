@@ -39,7 +39,7 @@ Create a knowledge biography comic page following these guidelines:
 ### Thought Bubbles
 - Cloud-shaped with bubble trail leading to thinker
 - Softer outline than speech bubbles
-- For internal monologue
+- For a character's unspoken thoughts
 
 ### Caption Bars
 - Rectangular bars at panel edges

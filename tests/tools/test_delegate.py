@@ -188,6 +188,7 @@ class TestChildProcessGuidance(unittest.TestCase):
         _, kwargs = MockAgent.call_args
         assert CHILD_PROCESS_GUIDANCE in kwargs["ephemeral_system_prompt"]
 
+
 class TestDelegateTask(unittest.TestCase):
     def test_no_parent_agent(self):
         result = json.loads(delegate_task(goal="test"))

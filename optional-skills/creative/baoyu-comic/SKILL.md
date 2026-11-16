@@ -204,7 +204,7 @@ Use Hermes' built-in `image_generate` tool for all image rendering. Its schema a
 
 **Backup rule**: existing `prompts/…md` and `…png` files → rename with `-backup-YYYYMMDD-HHMMSS` suffix before regenerating.
 
-Full step-by-step workflow (analysis, storyboard, review gates, regeneration variants): [references/workflow.md](references/workflow.md).
+Full workflow in order (analysis, storyboard, review gates, regeneration variants): [references/workflow.md](references/workflow.md).
 
 ## References
 

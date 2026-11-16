@@ -131,7 +131,7 @@ terminal(command="opencode -s ses_abc123", workdir="~/project", background=true,
 | `--format json` | Machine-readable output/events |
 | `--file <path>` / `-f` | Attach file(s) to the message |
 | `--thinking` | Show model thinking blocks |
-| `--variant <level>` | Reasoning effort (high, max, minimal) |
+| `--variant <level>` | Effort level (high, max, minimal) |
 | `--title <name>` | Name the session |
 | `--attach <url>` | Connect to a running opencode server |
 

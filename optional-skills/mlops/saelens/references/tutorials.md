@@ -5,7 +5,7 @@
 ### Goal
 Load a pre-trained SAE and analyze which features activate on specific inputs.
 
-### Step-by-Step
+### In Order
 
 ```python
 from transformer_lens import HookedTransformer
@@ -58,7 +58,7 @@ print(f"\nReconstruction MSE: {mse.item():.6f}")
 ### Goal
 Train a Sparse Autoencoder on GPT-2 activations.
 
-### Step-by-Step
+### In Order
 
 ```python
 from sae_lens import LanguageModelSAERunnerConfig, SAETrainingRunner
@@ -125,7 +125,7 @@ sae.save_model("./my_trained_sae")
 ### Goal
 Identify which SAE features contribute to specific predictions and use them for steering.
 
-### Step-by-Step
+### In Order
 
 ```python
 from transformer_lens import HookedTransformer
@@ -196,7 +196,7 @@ print(steer_with_feature(top_feature_idx, strength=10.0))
 ### Goal
 Test the causal importance of features by ablating them.
 
-### Step-by-Step
+### In Order
 
 ```python
 from transformer_lens import HookedTransformer
@@ -249,7 +249,7 @@ for feat_idx in top_features:
 ### Goal
 Find which features activate consistently for a concept.
 
-### Step-by-Step
+### In Order
 
 ```python
 from transformer_lens import HookedTransformer

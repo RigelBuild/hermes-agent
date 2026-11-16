@@ -3,14 +3,13 @@
 Tests the _handle_background_command handler (run a prompt in a separate
 background session) across gateway messenger platforms.
 """
-from agent.delegation_prompt import CHILD_PROCESS_GUIDANCE
-
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.delegation_prompt import CHILD_PROCESS_GUIDANCE
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource

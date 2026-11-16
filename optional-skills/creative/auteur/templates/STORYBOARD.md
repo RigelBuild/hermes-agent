@@ -6,7 +6,7 @@
 - **The one feeling:** <!-- awe / calm / hunger / trust / momentum … -->
 - **Peak scene:** <!-- exactly one, intensity ≥8 -->
 - **Assets available up front:** <!-- footage / photos / 3D / none -->
-- **Sourced-asset findings:** <!-- what a sourced asset turned out to make possible that you did not plan for. Inspect before you write: a glTF's node names, an HDRI's actual light direction, a texture's tiling. "the mesh has 8 named nodes" is the kind of fact that changes the film, and it must not live only in one session's reasoning. -->
+- **Sourced-asset findings:** <!-- what a sourced asset turned out to make possible that you did not plan for. Inspect before you write: a glTF's node names, an HDRI's actual light direction, a texture's tiling. "the mesh has 8 named nodes" is the kind of fact that changes the film, and it must not live only in one session's working notes. -->
 - **Assumptions made:** <!-- if intake was autonomous, every answer you derived instead of asking goes HERE (direct.md §0a) -->
 - **References taken:** <!-- 2–3 from design/refs/REFERENCES.md: "site — the ONE mechanic — how it changes here". Only sites you looked at. -->
 - **Moodboard read:** <!-- one line: palette relationship + light character taken from design/moodboard, and the one thing on that sheet to avoid -->

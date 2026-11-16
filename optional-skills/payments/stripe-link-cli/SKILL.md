@@ -138,7 +138,7 @@ The file is written with `0600` perms; stdout shows only redacted fields (brand,
 
 ### 6. Use the credential
 
-- For web checkout: hand the file path to the user, OR pass it to a browser-driving tool that fills the form directly from disk. Never `read_file` or `cat` the card file into the agent's reasoning context.
+- For web checkout: hand the file path to the user, OR pass it to a browser-driving tool that fills the form directly from disk. Never `read_file` or `cat` the card file into the agent's working context.
 - For MPP merchants:
 
   ```

@@ -1,11 +1,11 @@
 # Desktop Engineering Guide
 
 How to build Hermes Desktop well. This is a judgment guide, not an inventory —
-it teaches the invariants and the reasoning behind them so a change fits the app
+it teaches the invariants and their rationale so a change fits the app
 even as files move. Read it with the repository `AGENTS.md` (root rules still
 apply), [`DESIGN.md`](./DESIGN.md) for the visual and interaction contract, and
 `src/AGENTS.md` for the backend contract, slash-palette curation, and Bot Mode.
-The reasoning behind the shorter sections below lives in [`ENGINEERING.md`](./ENGINEERING.md).
+The rationale behind the shorter sections below lives in [`ENGINEERING.md`](./ENGINEERING.md).
 
 When a rule here and the code disagree, trust the code and fix whichever is
 wrong — but never break an invariant to make a change easier.

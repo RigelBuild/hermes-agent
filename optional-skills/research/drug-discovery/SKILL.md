@@ -190,7 +190,7 @@ for row in assoc.get('rows',[]):
 "
 ```
 
-## Reasoning Guidelines
+## Analysis Guidelines
 
 When analysing drug-likeness or molecular properties, always:
 

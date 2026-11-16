@@ -31,7 +31,7 @@ class CustomModule(dspy.Module):
 
 ### dspy.Predict
 
-**Basic prediction module** - Makes LM calls without reasoning steps.
+**Basic prediction module** - Makes LM calls without intermediate steps.
 
 ```python
 # Inline signature
@@ -51,47 +51,47 @@ print(result.answer)  # "Paris"
 
 **When to use:**
 - Simple, direct predictions
-- No reasoning steps needed
+- No intermediate steps needed
 - Fast responses required
 
 ### dspy.ChainOfThought
 
-**Step-by-step reasoning** - Generates rationale before answer.
+**Rationale-first answers** - Generates a rationale before the answer.
 
 **Parameters:**
 - `signature`: Task signature
-- `rationale_field`: Custom reasoning field (optional)
+- `rationale_field`: Custom rationale field (optional)
 - `rationale_field_type`: Type for rationale (default: `str`)
 
 ```python
 # Basic usage
 cot = dspy.ChainOfThought("question -> answer")
 result = cot(question="If I have 5 apples and give away 2, how many remain?")
-print(result.rationale)  # "Let's think step by step..."
+print(result.rationale)  # Rationale text
 print(result.answer)     # "3"
 
 # Custom rationale field
 cot = dspy.ChainOfThought(
     signature="problem -> solution",
     rationale_field=dspy.OutputField(
-        prefix="Reasoning: Let's break this down step by step to"
+        prefix="Rationale: Let's break this down in order to"
     )
 )
 ```
 
 **When to use:**
-- Complex reasoning tasks
+- Complex multi-step tasks
 - Math word problems
 - Logical deduction
 - Quality > speed
 
 **Performance:**
 - ~2x slower than Predict
-- Significantly better accuracy on reasoning tasks
+- Significantly better accuracy on multi-step tasks
 
 ### dspy.ProgramOfThought
 
-**Code-based reasoning** - Generates and executes Python code.
+**Code-based answers** - Generates and executes Python code.
 
 ```python
 pot = dspy.ProgramOfThought("question -> answer")
@@ -119,7 +119,7 @@ print(result.answer)  # 150.0
 
 ### dspy.ReAct
 
-**Reasoning + Acting** - Agent that uses tools iteratively.
+**Interleaved acting** - Agent that uses tools iteratively.
 
 ```python
 from dspy.predict import ReAct
@@ -405,7 +405,7 @@ loaded_qa.load("models/qa_v1.json")
 |------|--------|--------|
 | Simple classification | Predict | Fast, direct |
 | Math word problems | ProgramOfThought | Reliable calculations |
-| Logical reasoning | ChainOfThought | Better with steps |
+| Logical deduction | ChainOfThought | Better with intermediate steps |
 | Multi-step research | ReAct | Tool usage |
 | High-stakes decisions | MultiChainComparison | Self-consistency |
 | Structured extraction | TypedPredictor | Type safety |
@@ -413,7 +413,7 @@ loaded_qa.load("models/qa_v1.json")
 
 ## Performance Tips
 
-1. **Start with Predict**, add reasoning only if needed
+1. **Start with Predict**, add a rationale step only if needed
 2. **Use batch processing** for multiple inputs
 3. **Cache predictions** for repeated queries
 4. **Profile token usage** with `track_usage=True`

@@ -122,9 +122,9 @@ a human in a browser.
 3. **Download ids vs installed names.** `actual models download` takes
    `repo/QUANT` and 409s without an explicit quantization;
    `actual models load` takes the INSTALLED name from `actual models list`.
-4. **Reasoning models returning empty content.** GLM/Qwen reasoning variants
+4. **Thinking-style models returning empty content.** GLM/Qwen thinking variants
    emit thinking in a separate `reasoning` field and can burn a small
-   `max_tokens` entirely on reasoning. Give generous max_tokens before
+   `max_tokens` entirely on that field. Give generous max_tokens before
    assuming failure.
 5. **Do not create a custom provider named `actual`.** Older setup guides
    (pre first-class support) wrote `providers.actual.*` config blocks. On

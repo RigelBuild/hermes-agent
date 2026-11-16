@@ -443,7 +443,7 @@ When guiding the user through a protocol:
 5. **Check in after** — run `npx neuroskill status --json` to see if metrics improved
 6. **Label the moment** — `npx neuroskill label "post-protocol: [name]"` for tracking
 
-### Timing Guidelines for Step-by-Step Guidance
+### Timing Guidelines for Guided Steps
 - Breath inhale: 3–5 seconds
 - Breath hold: 2–4 seconds
 - Breath exhale: 4–8 seconds

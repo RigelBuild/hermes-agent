@@ -70,7 +70,7 @@ In "Towards Monosemanticity", human evaluators found **70% of SAE features genui
 
 ## Workflow 1: Loading and Analyzing Pre-trained SAEs
 
-### Step-by-Step
+### In Order
 
 ```python
 from transformer_lens import HookedTransformer
@@ -124,7 +124,7 @@ reconstruction_error = (activations - reconstructed).norm()
 
 ## Workflow 2: Training a Custom SAE
 
-### Step-by-Step
+### In Order
 
 ```python
 from sae_lens import (
@@ -386,7 +386,7 @@ For detailed API documentation, tutorials, and advanced usage, see the `referenc
 |------|----------|
 | [references/README.md](references/README.md) | Overview and quick start guide |
 | [references/api.md](references/api.md) | Complete API reference for SAE, TrainingSAE, configurations |
-| [references/tutorials.md](references/tutorials.md) | Step-by-step tutorials for training, analysis, steering |
+| [references/tutorials.md](references/tutorials.md) | Tutorials for training, analysis, steering, one step at a time |
 
 ## External Resources
 

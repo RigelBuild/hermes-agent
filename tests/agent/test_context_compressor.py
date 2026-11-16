@@ -824,6 +824,7 @@ def test_recovery_footer_omits_prompt_to_search_old_messages():
     assert "earlier reasoning" not in footer.lower()
     assert "session_search" not in footer
 
+
 class TestGenerateSummaryNoneContent:
     """Regression: content=None (from tool-call-only assistant messages) must not crash."""
 

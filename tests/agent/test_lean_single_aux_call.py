@@ -7,8 +7,7 @@ and pushed compactions to 7-11 minutes on slow aux routes):
 (b) the single response's detailed-session-log section lands in the summary;
 (c) an oversized region is EVEN-SAMPLED into the one request's input (with
     explicit elision markers), never split into extra requests;
-(d) the LLM-free anchor index and the session_search recovery footer are
-    still appended.
+(d) the LLM-free anchor index and the recovery footer are still appended.
 """
 
 from unittest.mock import patch, MagicMock
@@ -114,7 +113,8 @@ class TestLeanSingleAuxiliaryCall:
             summary = c._generate_summary(turns)
         assert _LEAN_ANCHOR_HEADING in summary
         assert _LEAN_RECOVERY_HEADING in summary
-        assert "session_search" in summary
+        assert "remain fully preserved in session history" in summary
+        assert "Use session_search with these anchors for exact details." in summary
 
     def test_oversized_region_sampled_not_split_into_more_requests(self):
         c = _mk_compressor()

@@ -108,7 +108,7 @@ accelerate launch --config_file accelerate_configs/deepspeed_zero3.yaml \
   scripts/run_simpo.py training_configs/llama3-8b-instruct-simpo.yaml
 ```
 
-### Workflow 3: Reasoning-intensive tasks (lower LR)
+### Workflow 3: Hard multi-step tasks (lower LR)
 
 **For math/code tasks**:
 ```yaml
@@ -119,7 +119,7 @@ dataset_mixer:
 
 beta: 5.0                   # Higher for stronger signal
 gamma_beta_ratio: 0.7       # Larger margin
-learning_rate: 3e-7         # Lower LR for reasoning
+learning_rate: 3e-7         # Lower LR for multi-step tasks
 sft_weight: 0.0
 
 num_train_epochs: 1

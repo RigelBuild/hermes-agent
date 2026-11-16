@@ -42,7 +42,7 @@ Hand-drawn sketch aesthetic that feels authentic and in-progress. Pencil-on-pape
 - Include natural imperfections
 - Add handwritten annotations
 - Create diagram-style layouts
-- Show thinking process
+- Show the process of working things out
 
 ### Don't
 

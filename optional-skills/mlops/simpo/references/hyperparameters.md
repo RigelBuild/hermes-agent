@@ -26,8 +26,8 @@ Key hyperparameters in SimPO:
 | Task | Learning Rate | Reason |
 |------|---------------|--------|
 | General chat | 5e-7 | Standard |
-| Code generation | 3e-7 | **Precise reasoning** |
-| Math reasoning | 3e-7 | **Careful optimization** |
+| Code generation | 3e-7 | **Precise logic** |
+| Math problems | 3e-7 | **Careful optimization** |
 | Creative writing | 1e-6 | More aggressive OK |
 
 ### Why Learning Rate Matters
@@ -57,7 +57,7 @@ warmup_ratio: 0.1
 lr_scheduler_type: cosine
 ```
 
-**Llama 3 8B (reasoning)**:
+**Llama 3 8B (math/logic)**:
 ```yaml
 learning_rate: 3e-7
 num_train_epochs: 1
@@ -426,7 +426,7 @@ bf16: true
 gradient_checkpointing: true
 ```
 
-### Llama 3 8B Instruct (Reasoning)
+### Llama 3 8B Instruct (Math/Logic)
 
 ```yaml
 model_name_or_path: meta-llama/Meta-Llama-3-8B-Instruct

@@ -45,7 +45,7 @@ call), `turn_context_compaction`, `turn_recovery`, `turn_recovery_autorecover`
 `turn_stop_gates`, `turn_liveness`, `turn_usage`, `turn_final_response`, `turn_finalizer`,
 `turn_summary`. Find the phase with `grep -rn "def X" agent/turn_*.py`.
 
-Messages use OpenAI format `{"role": "system|user|assistant|tool", ...}`; reasoning content is stored
+Messages use OpenAI format `{"role": "system|user|assistant|tool", ...}`; provider thinking content is stored
 in `assistant_msg["reasoning"]`.
 
 **Agent-level tools** (`todo`, `memory`, ...) are intercepted by `agent/tool_executor.py` through the

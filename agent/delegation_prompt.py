@@ -5,5 +5,3 @@ CHILD_PROCESS_GUIDANCE = (
     "IDs, or final summaries. Do not ask them to describe their work process. Never put raw transcripts or private "
     "blocks into a prompt; pass only a model's final answer."
 )
-
-

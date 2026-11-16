@@ -1018,7 +1018,7 @@ HARD RULES for this section:
 Spend up to ~{_LEAN_SESSION_LOG_BUDGET_TOKENS} tokens here — this section is the detailed record; the sections above stay concise.]"""
 
 # Anchor ledger: mechanically harvested exact identifiers, no LLM, so needle facts
-# (SHAs, ids, error strings) cannot be paraphrased away; also a session_search map.
+# (SHAs, ids, error strings) cannot be paraphrased away and can anchor history searches.
 _LEAN_ANCHOR_HEADING = "## Anchor Index (mechanically extracted, exact)"
 _LEAN_ANCHOR_BUDGET_CHARS = 7_000
 _ANCHOR_PATTERNS: list[tuple[str, re.Pattern[str], int]] = [
@@ -1065,7 +1065,8 @@ def _build_anchor_index(turns: list[dict[str, Any]]) -> str:
     return (
         "\n\n" + _LEAN_ANCHOR_HEADING + "\n"
         + "\n".join(sections)
-        + "\n(Exact identifiers from the compacted region, retained as search anchors.)"
+        + "\n(Exact identifiers from the compacted region, retained as search anchors. "
+        + "Use session_search with these anchors for exact details.)"
     )
 
 
@@ -4234,14 +4235,14 @@ Write only the summary body. Do not include any preamble or prefix."""
         text = _content_text_for_contains(message.get("content")).strip()
         # Recovery nudges are scaffolding, not human turns; lazy import avoids an import cycle.
         from agent.conversation_loop import (
-            _CODEX_ACK_CONTINUATION_NUDGE, _CODEX_INCOMPLETE_NUDGE, _DEGENERATE_FINAL_NUDGE,
+            _CODEX_ACK_CONTINUATION_NUDGE, _DEGENERATE_FINAL_NUDGE, _is_codex_incomplete_nudge,
             _DROPPED_TOOLCALL_NUDGE_CONTENT, _EMPTY_TOOL_RESPONSE_NUDGE, _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX,
             _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB, _LENGTH_CONTINUATION_NETWORK_STUB,
             _LENGTH_CONTINUATION_OUTPUT_LIMIT,
         )
-        return text in {
+        return _is_codex_incomplete_nudge(text) or text in {
             COMPRESSION_CONTINUATION_USER_CONTENT, _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
-            MAX_ITERATIONS_SUMMARY_REQUEST, _CODEX_INCOMPLETE_NUDGE, _CODEX_ACK_CONTINUATION_NUDGE,
+            MAX_ITERATIONS_SUMMARY_REQUEST, _CODEX_ACK_CONTINUATION_NUDGE,
             _DEGENERATE_FINAL_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT, _EMPTY_TOOL_RESPONSE_NUDGE,
             _LENGTH_CONTINUATION_NETWORK_STUB, _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB,
             _LENGTH_CONTINUATION_OUTPUT_LIMIT,

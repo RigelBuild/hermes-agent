@@ -6,12 +6,12 @@ Complete guide to all 60+ evaluation tasks in lm-evaluation-harness, what they m
 
 The lm-evaluation-harness includes 60+ benchmarks spanning:
 - Language understanding (MMLU, GLUE)
-- Mathematical reasoning (GSM8K, MATH)
+- Math word problems (GSM8K, MATH)
 - Code generation (HumanEval, MBPP)
 - Instruction following (IFEval, AlpacaEval)
 - Long-context understanding (LongBench)
 - Multilingual capabilities (AfroBench, NorEval)
-- Reasoning (BBH, ARC)
+- Logic and science (BBH, ARC)
 - Truthfulness (TruthfulQA)
 
 **List all tasks**:
@@ -27,7 +27,7 @@ lm_eval --tasks list
 
 **Task variants**:
 - `mmlu`: Original 57-subject benchmark
-- `mmlu_pro`: More challenging version with reasoning-focused questions
+- `mmlu_pro`: More challenging version with questions that test multi-step thinking
 - `mmlu_prox`: Multilingual extension
 
 **Format**: Multiple choice (4 options)
@@ -60,11 +60,11 @@ lm_eval --model hf \
 
 ### GSM8K (Grade School Math 8K)
 
-**What it measures**: Mathematical reasoning on grade-school level word problems.
+**What it measures**: Math skills on grade-school level word problems.
 
 **Task variants**:
 - `gsm8k`: Base task
-- `gsm8k_cot`: With chain-of-thought prompting
+- `gsm8k_cot`: With worked-steps prompting
 - `gsm_plus`: Adversarial variant with perturbations
 
 **Format**: Free-form generation, extract numerical answer
@@ -89,7 +89,7 @@ lm_eval --model hf \
 - GPT-4: 92.0%
 - Llama 2 70B: 56.8%
 
-**Good for**: Testing multi-step reasoning and arithmetic.
+**Good for**: Testing multi-step problem solving and arithmetic.
 
 ### HumanEval
 
@@ -132,13 +132,13 @@ lm_eval --model hf \
 
 ### BBH (BIG-Bench Hard)
 
-**What it measures**: 23 challenging reasoning tasks where models previously failed to beat humans.
+**What it measures**: 23 challenging logic tasks where models previously failed to beat humans.
 
 **Categories**:
-- Logical reasoning
+- Logical deduction
 - Math word problems
 - Social understanding
-- Algorithmic reasoning
+- Algorithmic problem solving
 
 **Format**: Multiple choice and free-form
 
@@ -156,7 +156,7 @@ lm_eval --model hf \
 - PaLM 540B: 58.3%
 - GPT-4: 86.7%
 
-**Good for**: Testing advanced reasoning capabilities.
+**Good for**: Testing advanced problem-solving skills.
 
 ### IFEval (Instruction-Following Evaluation)
 
@@ -270,7 +270,7 @@ lm_eval --model hf \
 
 **Variants**:
 - `arc_easy`: Easier questions
-- `arc_challenge`: Harder questions requiring reasoning
+- `arc_challenge`: Harder questions requiring deeper thought
 
 **Command**:
 ```bash
@@ -287,7 +287,7 @@ lm_eval --model hf \
 
 ### HellaSwag
 
-**What it measures**: Commonsense reasoning about everyday situations.
+**What it measures**: Commonsense inference about everyday situations.
 
 **Format**: Choose most plausible continuation
 
@@ -306,7 +306,7 @@ lm_eval --model hf \
 
 ### WinoGrande
 
-**What it measures**: Commonsense reasoning via pronoun resolution.
+**What it measures**: Commonsense inference via pronoun resolution.
 
 **Example**:
 ```
@@ -325,7 +325,7 @@ lm_eval --model hf \
 
 ### PIQA
 
-**What it measures**: Physical commonsense reasoning.
+**What it measures**: Physical commonsense inference.
 
 **Example**: "To clean a keyboard, use compressed air or..."
 
@@ -342,7 +342,7 @@ lm_eval --model hf \
 
 **What it measures**: Performance across 64 African languages.
 
-**15 tasks**: NLU, text generation, knowledge, QA, math reasoning
+**15 tasks**: NLU, text generation, knowledge, QA, math problem solving
 
 **Command**:
 ```bash
@@ -395,7 +395,7 @@ lm_eval --model hf \
 
 ### DROP
 
-**What it measures**: Reading comprehension requiring discrete reasoning.
+**What it measures**: Reading comprehension requiring discrete inference.
 
 **Command**:
 ```bash

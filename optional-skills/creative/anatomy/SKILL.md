@@ -148,7 +148,7 @@ Pick the path that fits the project:
 
 ## Craft rules (short form)
 
-These are the rules that separate a crafted figure from a diagram. `references/craft.md` gives the full reasoning and recipes.
+These are the rules that separate a crafted figure from a diagram. `references/craft.md` gives the full rationale and recipes.
 
 - **Solids, not wireframes.** Every part is filled in paper colour and painted in order, so things in front hide things behind. No see-through edges and no dashed hidden lines.
 - **Let the kit shade.** `extrude` returns four side tones by facing plus a lighter top. Keep it for anything with height, and use `flat` only for floors and inlays thinner than 1 unit.
@@ -211,5 +211,5 @@ Read these as you need them:
 - `references/react.md`: the React/Next.js server/client split, element props and the large-payload key-warning trap.
 - `references/verify.md`: the `capture.mjs` and `drive.mjs` commands, the review checklist (including shaders) and common faults.
 - `references/webgl.md`: shaders inside the drawing: when one earns its place, the layer stack, the camera contract, ray-marching in the iso camera, the full API with a minimal page, the craft rules with the bugs that taught them, the light theme (inks on paper, per-phenomenon recipes, the reviewers' faults), and how to verify them.
-- `references/walkthrough.md`: how the test rig was designed, step by step, from concept to code.
+- `references/walkthrough.md`: how the test rig was designed, one step at a time, from concept to code.
 - `references/3d.md`: the optional 3D mode: groups and poses, live layers, convex parts and their rules, materials, free groups, hinge chains, painter's order, static clutter around a turntable, shaders that follow the turn, the orbit audit, browser checks, performance and limits.

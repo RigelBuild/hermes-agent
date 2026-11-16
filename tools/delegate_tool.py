@@ -798,9 +798,9 @@ _DESCRIPTION_HEAD = (
     "session, and toolset, and only its final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
     "(limit in the tasks description).\n\n"
     + _DESCRIPTION_DELIVERY +
-    "USE FOR: reasoning-heavy subtasks, work that would flood your context, or independent parallel workstreams.\n"
+    "USE FOR: complex analysis subtasks, work that would flood your context, or independent parallel workstreams.\n"
     "DO NOT USE FOR (use these instead):\n"
-    "- Mechanical multi-step work with no reasoning needed -> execute_code\n"
+    "- Mechanical multi-step work -> execute_code\n"
     "- A single tool call -> call the tool directly\n"
     "- Tasks needing user interaction -> subagents cannot ask questions\n"
     "- Durable work that must survive this session -> cronjob or terminal(background=True, notify=True); /stop, /new, "
@@ -889,7 +889,7 @@ DELEGATE_TASK_SCHEMA = {
                 "string",
                 "easy = routine lookups or mechanical edits\n"
                 "medium = ordinary multi-step work\n"
-                "hard = difficult reasoning or design.\n"
+                "hard = difficult analysis or design.\n"
                 "Required to spawn; ignored for control actions.",
                 enum=["easy", "medium", "hard"],
             ),
