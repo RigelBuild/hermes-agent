@@ -38,7 +38,7 @@ it. New commands land often; `/help` in-session is always authoritative.
 /config                  Show config (CLI)
 /model [name] [--global] Switch model (session-scoped by default)
 /personality [name]      Set a personality
-/reasoning [level|show|hide] Reasoning effort/display (none..xhigh|max|ultra)
+/reasoning [level|show|hide] Effort/display setting (none..xhigh|max|ultra)
 /fast [normal|fast]      Priority/fast processing tier
 /verbose                 Cycle tool progress: off → new → all → verbose → log (CLI)
 /voice [on|off|tts]      Voice mode

@@ -9,7 +9,7 @@ eq = MathTex(r"f(x) &= x^2 + 2x + 1 \\ &= (x + 1)^2")  # multi-line aligned
 
 **Always use raw strings (`r""`).**
 
-## Step-by-Step Derivations
+## Derivations
 
 ```python
 step1 = MathTex(r"a^2 + b^2 = c^2")

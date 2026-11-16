@@ -167,6 +167,27 @@ class TestStripBlockedTools(unittest.TestCase):
         )
 
 
+class TestChildProcessGuidance(unittest.TestCase):
+    def test_delegated_child_system_prompt_includes_shared_rule(self):
+        from agent.delegation_prompt import CHILD_PROCESS_GUIDANCE
+
+        parent = _make_mock_parent(depth=0)
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Collect evidence",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        assert CHILD_PROCESS_GUIDANCE in kwargs["ephemeral_system_prompt"]
+
 class TestDelegateTask(unittest.TestCase):
     def test_no_parent_agent(self):
         result = json.loads(delegate_task(goal="test"))

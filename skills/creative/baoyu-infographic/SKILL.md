@@ -91,7 +91,7 @@ Full definitions: `references/styles/<style>.md`
 | Content Type | Layout + Style |
 |--------------|----------------|
 | Timeline/History | `linear-progression` + `craft-handmade` |
-| Step-by-step | `linear-progression` + `ikea-manual` |
+| Process guide | `linear-progression` + `ikea-manual` |
 | A vs B | `binary-comparison` + `corporate-memphis` |
 | Hierarchy | `hierarchical-layers` + `craft-handmade` |
 | Overlap | `venn-diagram` + `craft-handmade` |

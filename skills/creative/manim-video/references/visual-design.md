@@ -35,7 +35,7 @@ Best for: comparison matrices, multi-step processes.
 
 ### PROGRESSIVE
 Elements appear one at a time, arranged DOWN with aligned_edge=LEFT.
-Best for: algorithms, proofs, step-by-step processes.
+Best for: algorithms, proofs, ordered processes.
 
 ### ANNOTATED_DIAGRAM
 Central diagram with floating labels connected by arrows.

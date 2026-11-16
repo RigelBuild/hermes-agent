@@ -34,7 +34,7 @@ Structure (include the sections that are relevant):
 - Goal — one sentence.
 - Current context / assumptions.
 - Architecture / proposed approach — 2-3 sentences.
-- Step-by-step tasks. Each task is bite-sized (2-5 minutes of focused work),
+- Ordered tasks. Each task is bite-sized (2-5 minutes of focused work),
   names exact file paths (`src/models/user.py`, not "the model file"),
   includes complete copy-pasteable code where code is needed, and exact
   commands with expected output for verification.

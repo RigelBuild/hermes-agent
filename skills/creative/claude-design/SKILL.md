@@ -169,7 +169,7 @@ When proceeding with assumptions, label only the important ones.
 
 The single highest-leverage anti-slop rule. Most AI design slop is **compositional, not cosmetic** — the model reaches for a centered hero + three equal-weight feature cards for *every* surface, then decorates. Recoloring or restyling that layout never fixes it, because the layout was wrong before a single color was chosen.
 
-Before you write any colors, type scale, or components, **commit out loud to exactly one surface archetype.** This conditions generation on a high-level plan first, which collapses the entropy of what gets produced — the same reason a chain-of-thought step improves reasoning.
+Before you write any colors, type scale, or components, choose exactly one surface archetype. A high-level layout decision first reduces the number of unsuitable component arrangements.
 
 The seven surfaces:
 

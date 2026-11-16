@@ -165,7 +165,7 @@ hermes webhook subscribe alerts \
 
 ### Direct delivery (no agent, zero LLM cost)
 
-For use cases where you just want to push a notification through to a user's chat — no reasoning, no agent loop — add `--deliver-only`. The rendered `--prompt` template becomes the literal message body and is dispatched directly to the target adapter.
+For notifications that should go directly to chat without an agent loop, add `--deliver-only`. The rendered `--prompt` template becomes the literal message body and is dispatched directly to the target adapter.
 
 Use this for:
 - External service push notifications (Supabase/Firebase webhooks → Telegram)

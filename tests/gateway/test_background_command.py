@@ -3,6 +3,7 @@
 Tests the _handle_background_command handler (run a prompt in a separate
 background session) across gateway messenger platforms.
 """
+from agent.delegation_prompt import CHILD_PROCESS_GUIDANCE
 
 import json
 from types import SimpleNamespace
@@ -152,6 +153,7 @@ class TestRunBackgroundTask:
         assert agent_kwargs["checkpoint_max_snapshots"] == 8
         assert agent_kwargs["checkpoint_max_total_size_mb"] == 222
         assert agent_kwargs["checkpoint_max_file_size_mb"] == 3
+        assert CHILD_PROCESS_GUIDANCE in agent_kwargs["ephemeral_system_prompt"]
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
 

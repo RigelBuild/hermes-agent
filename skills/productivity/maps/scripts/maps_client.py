@@ -1203,7 +1203,7 @@ def build_parser():
         "directions",
         help="Get turn-by-turn directions between two places.",
         description=(
-            "Get step-by-step navigation directions between two places.\n"
+            "Get turn-by-turn navigation directions between two places.\n"
             "Example: maps_client.py directions Paris --to Berlin --mode driving"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
