@@ -8,7 +8,6 @@ import os
 import threading
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
-from agent.delegation_prompt import CHILD_PROCESS_GUIDANCE
 from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -211,7 +210,6 @@ def _build_child_system_prompt(
         if _ctx_files.strip():
             parts.append(_CONTEXT_FILES_INTRO + _ctx_files.strip())
     parts.append(_COMPLETION_INSTRUCTIONS)
-    parts.append(CHILD_PROCESS_GUIDANCE)
     if role == "orchestrator":
         child_note = _LEAF_CHILDREN_NOTE if child_depth + 1 >= max_spawn_depth else _NESTED_CHILDREN_NOTE
         parts.append(
