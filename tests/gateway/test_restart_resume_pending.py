@@ -264,14 +264,13 @@ class TestResumePendingSystemNote:
             last_resume_marked_at=now,
         )
 
-    def test_empty_message_resumes_on_all_platforms(self):
-        for interactive in (False, True):
-            note = build_resume_recovery_note("restart_timeout", "", interactive=interactive)
-            assert "resumed after gateway restart" in note
-            assert "CONTINUE the interrupted task" in note
-            assert "outcome is unknown" in note
-            assert "check the state before retrying" in note
-            assert "already appear in the history" in note
+    def test_empty_message_resumes_task(self):
+        note = build_resume_recovery_note("restart_timeout", "")
+        assert "resumed after gateway restart" in note
+        assert "CONTINUE the interrupted task" in note
+        assert "outcome is unknown" in note
+        assert "check the state before retrying" in note
+        assert "already appear in the history" in note
 
 
 
@@ -279,7 +278,7 @@ class TestResumePendingSystemNote:
     def test_resume_note_is_persisted_instead_of_original_empty_message(self):
         """The auto-resume note must not leave an empty row in state.db."""
         message, persisted = _prepare_resume_pending_message(
-            "restart_timeout", "", interactive=False
+            "restart_timeout", ""
         )
 
         assert message
@@ -290,7 +289,7 @@ class TestResumePendingSystemNote:
         """A whitespace-only startup event is as blank as an empty one —
         persisting it verbatim would recreate the sanitizer loop (#86580)."""
         message, persisted = _prepare_resume_pending_message(
-            "shutdown_timeout", "   ", interactive=True
+            "shutdown_timeout", "   "
         )
 
         assert persisted == message
@@ -301,7 +300,7 @@ class TestResumePendingSystemNote:
         transcript keeps their clean words; only the MODEL sees the wrapped
         recovery note (transcript stays scaffold-free)."""
         message, persisted = _prepare_resume_pending_message(
-            "restart_timeout", "what were we doing?", interactive=True
+            "restart_timeout", "what were we doing?"
         )
 
         assert persisted == "what were we doing?"

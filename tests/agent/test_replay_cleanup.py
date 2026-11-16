@@ -89,16 +89,35 @@ def test_sanitize_replay_history_noop_on_clean_history():
     assert sanitize_replay_history(history) == history
 
 def test_partial_tool_batch_keeps_recorded_result_and_marks_unanswered_unknown():
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+    from agent.replay_cleanup import canonicalize_replay_history
+
     assistant = {"role": "assistant", "tool_calls": [
-        {"id": "done", "function": {"name": "terminal", "arguments": "{}"}},
-        {"id": "pending", "function": {"name": "write_file", "arguments": "{}"}},
+        {"id": "fc_done", "call_id": "call_done", "function": {"name": "terminal", "arguments": "{}"}},
+        {"id": "call_pending|fc_pending", "function": {"name": "write_file", "arguments": "{}"}},
     ]}
-    recorded = {"role": "tool", "tool_call_id": "done", "content": "side effect completed"}
-    recovered = sanitize_replay_history([_user("work"), assistant, recorded])
+    recorded = {"role": "tool", "tool_call_id": "call_done", "content": "side effect completed"}
+    recovered = canonicalize_replay_history([_user("work"), assistant, recorded])
     assert recovered[2] == recorded
-    assert recovered[3]["tool_call_id"] == "pending"
-    assert recovered[3]["content"] == "interrupted by gateway restart; outcome unknown — verify before retrying"
-    assert sanitize_replay_history(recovered) == recovered
+    assert recovered[3]["tool_call_id"] == "call_pending"
+    assert "outcome UNKNOWN. Verify state before retrying" in recovered[3]["content"]
+    assert canonicalize_replay_history(recovered) == recovered
+    items = _chat_messages_to_responses_input(recovered)
+    output = next(item for item in items if item.get("type") == "function_call_output" and item["call_id"] == "call_pending")
+    assert "outcome UNKNOWN" in output["output"]
+
+
+def test_fully_answered_openai_and_codex_batches_are_unchanged():
+    from agent.replay_cleanup import canonicalize_replay_history
+
+    for calls in (
+        [{"id": "call_a"}, {"id": "call_b"}],
+        [{"id": "fc_a", "call_id": "call_a"}, {"id": "fc_b", "call_id": "call_b"}],
+    ):
+        history = [_user("work"), {"role": "assistant", "tool_calls": calls},
+                   {"role": "tool", "tool_call_id": "call_a", "content": "done a"},
+                   {"role": "tool", "tool_call_id": "call_b", "content": "done b"}]
+        assert canonicalize_replay_history(history) == history
 
 
 

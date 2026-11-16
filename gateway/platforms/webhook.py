@@ -204,10 +204,6 @@ def _validate_svix_signature(body: bytes, secret: str, msg_id: str, timestamp: s
 class WebhookAdapter(BasePlatformAdapter):
     """Generic webhook receiver that triggers agent runs from HTTP POSTs."""
 
-    # Event-triggered, no human present: startup auto-resume must FINISH the interrupted work, not ask "what next?".
-    # The startup auto-resume turn must instruct the model to FINISH the interrupted work instead of
-    # emitting an interactive acknowledgement that abandons the task (#57056).
-    interactive_resume: bool = False
     # ``/p/<profile>/webhooks/<route>`` on the shared listener (``_resolve_request_profile``).
     serves_profile_prefix: bool = True
 

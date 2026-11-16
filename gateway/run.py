@@ -1035,7 +1035,7 @@ def _is_fresh_gateway_interruption(
 
 
 def build_resume_recovery_note(
-    reason: Optional[str], message: str = "", *, interactive: bool = True) -> str:
+    reason: Optional[str], message: str = "") -> str:
     """Build the resume-pending recovery system note for an interrupted turn (empty ``message`` = auto-resume).
 
     A startup resume continues the interrupted work on every platform.
@@ -1057,7 +1057,7 @@ def build_resume_recovery_note(
             "check the state before retrying it."
         )
     return (
-        f"[System note: {'resumed after gateway shutdown' if reason == 'shutdown_timeout' else 'resumed after gateway restart'}. The previous turn was interrupted by "
+        f"[System note: resumed after {reason_phrase.removeprefix('a ')}. The previous turn was interrupted by "
         f"{reason_phrase}; the gateway is now back online. "
         f"Any restart/shutdown command in the history has already "
         f"run — do NOT re-execute or verify it. {resume_guidance} {tail_guidance}]"
@@ -1065,7 +1065,7 @@ def build_resume_recovery_note(
 
 
 def _prepare_resume_pending_message(
-    reason: Optional[str], message: Optional[str], *, interactive: bool = True) -> tuple[str, str]:
+    reason: Optional[str], message: Optional[str]) -> tuple[str, str]:
     """Return the recovery message and the user text to persist.
 
     Empty original: persist the note (a "" user row trips the pre-call sanitizer). Real text: persist clean.
@@ -1077,7 +1077,7 @@ def _prepare_resume_pending_message(
     words: the transcript stays scaffold-free (the model still receives the wrapped note), and a non-empty
     row never trips the sanitizer.
     """
-    recovery_message = build_resume_recovery_note(reason, message or "", interactive=interactive)
+    recovery_message = build_resume_recovery_note(reason, message or "")
     persist_message = message if isinstance(message, str) and message.strip() else recovery_message
     return recovery_message, persist_message
 

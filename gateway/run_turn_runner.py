@@ -910,11 +910,6 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if note:
             ctx.message = note + "\n\n" + ctx.message
 
-    def _resume_note_interactive(self) -> bool:
-        """Interactive platforms report the restore and ask what next; event platforms (webhook,
-        API server) continue the work — nobody is present to answer."""
-        return bool(getattr(self._runner._delivery_adapter_for(self._ctx.source), "interactive_resume", True))
-
     def _prepare_turn_message(self, agent_history):
         """Prepend recovery/notice guidance to ``ctx.message``.
 
@@ -956,9 +951,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         )
         if resume_pending and (interruption_is_fresh or mark_is_fresh):
             # Empty message = the startup auto-resume turn; there is no NEW user message.
-            ctx.message, persist_override = _prepare_resume_pending_message(
-                resume_reason, ctx.message, interactive=self._resume_note_interactive(),
-            )
+            ctx.message, persist_override = _prepare_resume_pending_message(resume_reason, ctx.message)
         elif agent_history and agent_history[-1].get("role") == "tool" and interruption_is_fresh:
             persist_override = ctx.message
             ctx.message = (
@@ -975,7 +968,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # did not fire (freshness signals disagreed, marker cleared) we must NOT hand the model a blank
         # user turn. Restricted to resume_pending sessions so caption-less image turns are untouched.
         if isinstance(ctx.message, str) and not ctx.message.strip() and resume_pending:
-            ctx.message = build_resume_recovery_note(resume_reason, "", interactive=self._resume_note_interactive())
+            ctx.message = build_resume_recovery_note(resume_reason, "")
         return persist_override, ctx.persist_user_timestamp
 
     def _native_image_run_message(self):

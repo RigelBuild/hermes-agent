@@ -1831,15 +1831,6 @@ class BasePlatformAdapter(ABC):
     # the whole-channel bucket ``(platform, chat_id, None)``; needs a flat-reply outbound gate too
     # (Slack ``reply_in_thread: false``). False fails SAFE -> ``thread``.
     supports_inchannel_continuable: bool = False
-    # A human can answer "session restored — what next?"; webhook-style platforms set False so
-    # auto-resume finishes the work instead of asking nobody.
-    # The startup auto-resume turn (``_schedule_resume_pending_sessions`` → the ``_is_resume_pending``
-    # branch in ``_handle_message_with_agent``) reads this to pick its guidance: interactive platforms
-    # (Telegram, Slack, Discord DMs, …) get "report the restore and ask what the user wants next";
-    # non-interactive event platforms (webhook) get "finish the interrupted work" because nobody is there to
-    # answer, and an acknowledgement would silently abandon the task (#57056). Read generically via
-    # ``getattr(adapter, "interactive_resume", True)`` — no per-platform branching at the call site.
-    interactive_resume: bool = True
     # Port-binding adapter that answers ``/p/<profile>/...`` for every served profile on the default
     # listener under ``gateway.multiplex_profiles``. Declared per adapter (not in a central list) so
     # ``hermes gateway migrate`` can tell "URL changes" from "this profile would be skipped" as new
