@@ -1010,6 +1010,9 @@ export interface HeartbeatSnapshot {
   created_at: number
   last_fired_at: number
   fire_count: number
+  schedule?: string | null
+  timezone?: string | null
+  next_fire_at?: number | null
 }
 /** ``action`` is validated by the handler (unknown / gate actions answer ``4004``), so it stays a string on the wire; ``SessionControlAction`` lists the accepted set. */
 export interface SessionControlParams {

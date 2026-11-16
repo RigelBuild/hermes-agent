@@ -77,8 +77,8 @@ export const SessionControlHeartbeatSection = memo(function SessionControlHeartb
 
   const stateLabel = heartbeat.status === 'paused' ? ctrl.heartbeatPaused : ctrl.heartbeatActive
   const now = useCountdownClock(heartbeat.status === 'active')
-  const intervalLabel = formatHeartbeatInterval(heartbeat.interval_seconds, t)
-  const nextDueTimestamp = (heartbeat.last_fired_at || heartbeat.created_at) + heartbeat.interval_seconds
+  const intervalLabel = heartbeat.schedule ? `${heartbeat.schedule} (${heartbeat.timezone || 'profile timezone'})` : formatHeartbeatInterval(heartbeat.interval_seconds, t)
+  const nextDueTimestamp = heartbeat.next_fire_at ?? (heartbeat.last_fired_at || heartbeat.created_at) + heartbeat.interval_seconds
   const nextDueMs = nextDueTimestamp > 1e11 ? nextDueTimestamp : nextDueTimestamp * 1_000
   const isDue = heartbeat.status === 'active' && nextDueMs <= now
 

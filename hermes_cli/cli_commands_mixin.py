@@ -1611,7 +1611,6 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
         Gateway routes retain their heartbeat across resets and restarts.
         """
-        from hermes_cli.heartbeat import format_interval
         arg = _command_arg(cmd)
         lower = arg.lower()
         mgr = self._session_manager(self._get_heartbeat_manager, _t("heartbeat.label"))
@@ -1633,7 +1632,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                 _cp(_dim_line(_t("heartbeat.none_to_resume")))
             else:
                 self._start_heartbeat_watchdog()
-                _cp(f"  {_t('heartbeat.resumed', interval=format_interval(state.interval_seconds), prompt=state.prompt)}")
+                _cp(f"  {_t('heartbeat.resumed', interval=state.cadence_label(), prompt=state.prompt)}")
         elif lower in {"clear", "stop", "off"}:
             cleared = _attempt(_t("heartbeat.invalid_label"), RuntimeError, mgr.clear)
             if cleared is _FAILED:
@@ -1644,21 +1643,21 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     def _heartbeat_set(self, mgr, arg: str) -> None:
         """Set a recurring heartbeat, optionally choosing idle or steer delivery."""
-        from hermes_cli.heartbeat import parse_heartbeat_set, format_interval
-        interval, prompt, delivery_mode = parse_heartbeat_set(arg)
-        if interval is None:
+        from hermes_cli.heartbeat import parse_heartbeat_set
+        interval, schedule, timezone, prompt, delivery_mode = parse_heartbeat_set(arg)
+        if interval is None and schedule is None:
             return _cp(f"  {_t('heartbeat.usage')}", _dim_line(_t('heartbeat.usage_also')))
-        if interval < 0:
+        if interval is not None and interval < 0:
             from hermes_cli.heartbeat import MIN_INTERVAL_SECONDS
             return _cp(f"  {_t('heartbeat.interval_too_small', min_seconds=MIN_INTERVAL_SECONDS)}")
         if not prompt.strip():
             return _cp(f"  {_t('heartbeat.prompt_required')}")
         state = _attempt(_t("heartbeat.invalid_label"), (ValueError, RuntimeError), mgr.set, prompt, interval,
-                         delivery_mode=delivery_mode)
+                         schedule=schedule, timezone=timezone, delivery_mode=delivery_mode)
         if state is _FAILED:
             return
         self._start_heartbeat_watchdog()
-        _cp(f"  {_t('heartbeat.set', interval=format_interval(state.interval_seconds), prompt=state.prompt)}",
+        _cp(f"  {_t('heartbeat.set', interval=state.cadence_label(), prompt=state.prompt)}",
             _dim_line(_t('heartbeat.set_note')))
 
     def _handle_refine_command(self, cmd: str) -> None:

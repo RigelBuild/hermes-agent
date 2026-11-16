@@ -66,7 +66,7 @@ async def restore_heartbeat_watches(runner) -> None:
                             if not isinstance(data, dict) or data.get("status") not in {"active", "paused"}:
                                 continue
                             state = HeartbeatState.from_json(raw)
-                            if not state.prompt.strip() or state.interval_seconds < 60:
+                            if not state.prompt.strip() or not state.valid_cadence():
                                 continue
                             route, archived = _legacy_route(session_id, db, store._routing_db, store._routing_scope())
                             if route and not archived:

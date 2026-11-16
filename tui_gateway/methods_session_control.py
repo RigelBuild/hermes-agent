@@ -126,7 +126,7 @@ def _safe_heartbeat_snapshot(state) -> dict | None:
     """Return only the persisted HeartbeatState fields the Desktop renders."""
     if state is None or state.status == "cleared":
         return None
-    return {
+    snapshot = {
         "prompt": state.prompt,
         "status": state.status,
         "interval_seconds": state.interval_seconds,
@@ -134,6 +134,9 @@ def _safe_heartbeat_snapshot(state) -> dict | None:
         "last_fired_at": state.last_fired_at,
         "fire_count": state.fire_count,
     }
+    if state.schedule:
+        snapshot.update(schedule=state.schedule, timezone=state.timezone, next_fire_at=state.next_fire())
+    return snapshot
 
 
 def _snapshot_control(session_key: str) -> dict:

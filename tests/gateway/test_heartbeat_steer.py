@@ -315,12 +315,12 @@ def test_heartbeat_legacy_state_and_prompt_parsing():
     state = HeartbeatState.from_json('{"prompt":"check","interval_seconds":60}')
     assert state.delivery_mode == "idle"
     assert parse_heartbeat_set("every 10m --steer check   --steer  later") == (
-        600, "check   --steer  later", "steer"
+        600, None, None, "check   --steer  later", "steer"
     )
     assert parse_heartbeat_set("10m check   --steer  later") == (
-        600, "check   --steer  later", "steer"
+        600, None, None, "check   --steer  later", "steer"
     )
-    assert parse_heartbeat_set("10m --idle check") == (600, "check", "idle")
+    assert parse_heartbeat_set("10m --idle check") == (600, None, None, "check", "idle")
 
 
 def test_heartbeat_status_names_gateway_only_mode(poller):
