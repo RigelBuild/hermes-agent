@@ -20,13 +20,15 @@ def test_live_child_is_adopted(monkeypatch, tmp_path):
         path.write_text(json.dumps([entry]))
         assert registry.recover_from_checkpoint() == 1
         assert registry.get('proc_live') is not None
-        assert not registry.pending_watchers
+        assert len(registry.pending_watchers) == 1
+        assert registry.pending_watchers[0]['check_interval'] == 5
         assert json.loads(path.read_text())[0]['attempt_status'] == 'running'
     finally:
         child.terminate()
         child.wait()
 
-def test_adopted_child_death_queues_unknown(monkeypatch, tmp_path):
+@pytest.mark.parametrize('systemd_unit', ['', 'hermes-worker-test.scope'])
+def test_adopted_child_death_queues_unknown(monkeypatch, tmp_path, systemd_unit):
     from tools import process_registry as module
     path = tmp_path / 'processes.json'
     monkeypatch.setattr(module, 'CHECKPOINT_PATH', path)
@@ -34,12 +36,15 @@ def test_adopted_child_death_queues_unknown(monkeypatch, tmp_path):
     try:
         registry = ProcessRegistry()
         path.write_text(json.dumps([{'session_id': 'proc_live', 'attempt_token': 'token',
-            'attempt_status': 'running', 'pid': child.pid,
+            'attempt_status': 'running', 'pid': child.pid, 'systemd_unit': systemd_unit,
             'host_start_time': registry._safe_host_start_time(child.pid)}]))
         assert registry.recover_from_checkpoint() == 1
+        assert len(registry.pending_watchers) == 1
+        registry.pending_watchers.clear()
         child.terminate()
         child.wait()
-        assert registry.get('proc_live') is None
+        result = registry.get('proc_live')
+        assert (result is not None) == bool(systemd_unit)
         assert json.loads(path.read_text())[0]['attempt_status'] == 'unknown'
         assert len(registry.pending_watchers) == 1
     finally:
@@ -87,6 +92,33 @@ async def test_notice_settles_original_profile(monkeypatch, tmp_path):
     assert json.loads(primary.read_text()) == []
 
 
+def test_adopted_child_uses_original_checkpoint(monkeypatch, tmp_path):
+    from tools import process_registry as module
+    secondary = tmp_path / 'secondary.json'
+    primary = tmp_path / 'primary.json'
+    monkeypatch.setattr(module, 'CHECKPOINT_PATH', secondary)
+    child = subprocess.Popen(['sleep', '30'])
+    try:
+        registry = ProcessRegistry()
+        secondary.write_text(json.dumps([{'session_id': 'proc_live', 'attempt_token': 'token',
+            'attempt_status': 'running', 'pid': child.pid,
+            'host_start_time': registry._safe_host_start_time(child.pid)}]))
+        primary.write_text('[]')
+        assert registry.recover_from_checkpoint() == 1
+        registry.pending_watchers.clear()
+        monkeypatch.setattr(module, 'CHECKPOINT_PATH', primary)
+        child.terminate()
+        child.wait()
+        registry.get('proc_live')
+        assert json.loads(secondary.read_text())[0]['attempt_status'] == 'unknown'
+        assert json.loads(primary.read_text()) == []
+        assert registry.pending_watchers[0]['checkpoint_path'] == str(secondary)
+    finally:
+        if child.poll() is None:
+            child.terminate()
+            child.wait()
+
+
 @pytest.mark.parametrize('status', ['running', 'unknown'])
 def test_recorded_exit_is_adopted(monkeypatch, tmp_path, status):
     from tools import process_registry as module
@@ -105,7 +137,7 @@ def test_recorded_exit_is_adopted(monkeypatch, tmp_path, status):
     monkeypatch.setattr(registry, '_track_started', lambda session, *a: adopted.append(session))
     assert registry.recover_from_checkpoint() == 1
     assert adopted[0].id == 'proc_finished'
-    assert not registry.pending_watchers
+    assert len(registry.pending_watchers) == 1
 
 
 @pytest.mark.asyncio

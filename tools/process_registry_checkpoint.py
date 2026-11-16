@@ -17,7 +17,7 @@ class ProcessCheckpointMixin:
 
     # ----- Checkpoint (crash recovery) -----
 
-    def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None):
+    def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None, *, checkpoint_path=None, preserve_ids=None):
         """Write running process metadata to the checkpoint file atomically."""
         from tools.process_registry import _checkpoint_path, _CHECKPOINT_FIELDS
 
@@ -45,10 +45,11 @@ class ProcessCheckpointMixin:
                 if extra_entries:
                     tracked_ids = {item.get("session_id") for item in entries}
                     entries.extend(item for item in extra_entries if item.get("session_id") not in tracked_ids)
-                known = {*self._running, *self._finished}
+                known = {*self._running, *self._finished} - (preserve_ids or set())
             from hermes_cli.active_sessions import _FileLock
             from utils import atomic_json_write
-            path = _checkpoint_path()
+            from pathlib import Path
+            path = Path(checkpoint_path) if checkpoint_path else _checkpoint_path()
             # Every interpreter of the profile (owner, each managed worker) rewrites this file from
             # its own table; a worker's output-log handoff is its only path to the next one, so a
             # writer keeps the handoffs it does not track (read-merge-write under one file lock).
@@ -107,7 +108,7 @@ class ProcessCheckpointMixin:
                        and entry.get("session_id") == session_id and entry.get("attempt_token") == attempt_token)]
             atomic_json_write(path, entries)
 
-    def _recover_interrupted_attempts(self, only_session_id=None):
+    def _recover_interrupted_attempts(self, only_session_id=None, checkpoint_path=None):
         """Mark interrupted attempts unknown and replay notices at least once on each boot."""
         from pathlib import Path
         from hermes_cli.active_sessions import _FileLock
@@ -115,7 +116,7 @@ class ProcessCheckpointMixin:
         from tools.process_registry_output_log import _exit_path, adoptable_log
         from utils import atomic_json_write
 
-        path = _checkpoint_path()
+        path = Path(checkpoint_path) if checkpoint_path else _checkpoint_path()
         notices = []
         with _FileLock(path.with_name(path.name + '.lock')):
             try:
@@ -246,6 +247,7 @@ class ProcessCheckpointMixin:
             # (and recorded exit) outlives its spawner, so tail it from the start.
             fields["output_log"] = log
             session = ProcessSession(id=entry["session_id"], detached=True, **fields)
+            session.recovered_checkpoint_path = str(checkpoint_path)
             if session.output_log:
                 self._track_started(session, self._log_reader_loop, f"proc-log-reader-{session.id}")
             else:
@@ -254,10 +256,10 @@ class ProcessCheckpointMixin:
             recovered += 1
             logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
             # Re-enqueue watcher so gateway can resume notifications
-            if session.watcher_interval > 0:
+            if session.watcher_interval > 0 or session.attempt_token:
                 self.pending_watchers.append({
                     "session_id": session.id,
-                    "check_interval": session.watcher_interval,
+                    "check_interval": session.watcher_interval or 5,
                     "session_key": session.session_key,
                     **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
                     "notify_on_complete": session.notify_on_complete,
