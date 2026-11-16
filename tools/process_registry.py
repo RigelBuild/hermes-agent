@@ -2175,6 +2175,17 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             "status": status, "command": session.command,
             **ProcessRegistry._exit_fields(session), **_completion_output(session)}
 
+    @staticmethod
+    def _shutdown_resume_entries(session: ProcessSession, source: str) -> list[dict[str, Any]]:
+        """Keep an admitted attempt killed by gateway shutdown as ``unknown`` so boot can resume it."""
+        from agent.redact import redact_sensitive_text
+        if source != "gateway_shutdown" or not session.attempt_token or not session.argv:
+            return []
+        entry = {"session_id": session.id, **{f: getattr(session, f) for f in _CHECKPOINT_FIELDS}}
+        entry.update(attempt_status="unknown", command=redact_sensitive_text(session.command, code_file=True),
+                     owner_task_id=session.owner_task_id or session.task_id)
+        return [entry]
+
     def kill_process(
         self, session_id: str, *, source: str = "process.kill", consume_output: bool = True,
     ) -> dict:
@@ -2264,7 +2275,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # so the durable record matches what the caller was told.
             if not self._move_to_finished(session):
                 save_completed_result(session)
-            self._write_checkpoint()
+            self._write_checkpoint(extra_entries=self._shutdown_resume_entries(session, source))
             return {
                 "status": "killed", "session_id": session.id, "completion_reason": session.completion_reason,
                 "termination_source": session.termination_source, **output}

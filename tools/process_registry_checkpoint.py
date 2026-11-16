@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import shlex
 import time
 from typing import Any, Dict, List, Optional
 
@@ -212,6 +213,76 @@ class ProcessCheckpointMixin:
             for notice in notices:
                 if runner is None or not runner.arm_process_watcher(notice):
                     self.pending_watchers.append(notice)
+    _SHUTDOWN_RESUME_CAP = 3
+
+    def _chat_session_id_for_request(self, checkpoint_path, request_id) -> Optional[str]:
+        """The chat session id stored in this profile's creation receipt for request_id, else None."""
+        from pathlib import Path
+        from hermes_state import SessionDB
+        from hermes_state_local import POLICY_PREFIX
+
+        home_db = Path(checkpoint_path).parent / "state.db"
+        if not home_db.is_file():
+            return None
+        db = SessionDB(db_path=home_db, read_only=True)
+        try:
+            for key, raw in db.list_meta_prefix(POLICY_PREFIX):
+                try:
+                    receipt = json.loads(raw)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(receipt, dict) and receipt.get("request_id") == request_id:
+                    return key[len(POLICY_PREFIX):]
+            return None
+        finally:
+            db.close()
+
+    def _relaunch_shutdown_killed(self, entry: dict[str, Any], checkpoint_path) -> bool:
+        """Resume a dead, shutdown-killed admitted chat attempt with --resume, up to the cap.
+        Returns True when a relaunch was spawned; otherwise the notice path still applies."""
+        from tools.process_resumable import resumable_chat_argv
+        from tools.process_registry import ProcessSession, _CHECKPOINT_FIELDS, _CHECKPOINT_DEFAULTS
+
+        argv = entry.get("argv") or []
+        if not argv or int(entry.get("resume_count") or 0) >= self._SHUTDOWN_RESUME_CAP:
+            return False
+        # Spawn admits the command before it appends --request-id, so admit the same shape here.
+        if "--request-id" not in argv:
+            return False
+        rid_at = argv.index("--request-id")
+        admitted = argv[:rid_at] + argv[rid_at + 2:]
+        if resumable_chat_argv(" ".join(admitted)) is None:
+            return False
+        sid = self._chat_session_id_for_request(checkpoint_path, entry.get("request_id"))
+        if not sid:
+            logger.warning("Not resuming background chat %s: no chat session for its request", entry.get("session_id"))
+            return False
+        fields = {f: entry.get(f, _CHECKPOINT_DEFAULTS[f]) for f in _CHECKPOINT_FIELDS}
+        fields.update(command=entry.get("command", "unknown"), argv=[*argv, "--resume", sid],
+                      owner_task_id=entry.get("owner_task_id", "") or entry.get("task_id", ""),
+                      started_at=entry.get("started_at", time.time()), attempt_status="pending",
+                      resume_count=int(entry.get("resume_count") or 0) + 1, pid=None, pid_scope="host",
+                      host_start_time=None, output_log="")
+        session = ProcessSession(id=entry["session_id"], **fields)
+        session.recovered_checkpoint_path = str(checkpoint_path)
+        self._persist_resume_count(checkpoint_path, session.id, session.attempt_token, session.resume_count)
+        self._spawn_local_admitted(session, shlex.join(session.argv), None, False, False)
+        return True
+
+    def _persist_resume_count(self, checkpoint_path, session_id, attempt_token, resume_count) -> None:
+        from hermes_cli.active_sessions import _FileLock
+        from utils import atomic_json_write
+        from pathlib import Path
+        path = Path(checkpoint_path)
+        with _FileLock(path.with_name(path.name + ".lock")):
+            entries = json.loads(path.read_text(encoding="utf-8-sig"))
+            for item in entries:
+                if (isinstance(item, dict) and item.get("session_id") == session_id
+                        and item.get("attempt_token") == attempt_token):
+                    item["resume_count"] = resume_count
+                    item["attempt_status"] = "pending"
+            atomic_json_write(path, entries)
+
 
     def recover_from_checkpoint(self) -> int:
         """On gateway startup, probe PIDs from the checkpoint file; returns how many
@@ -245,6 +316,8 @@ class ProcessCheckpointMixin:
                 pid = entry.get('pid')
                 if not ((log and _exit_path(log).exists()) or
                         (pid and self._detached_host_fate(pid, entry.get('host_start_time')) == 'running')):
+                    if self._relaunch_shutdown_killed(entry, checkpoint_path):
+                        recovered += 1
                     continue
             pid, pid_scope = entry.get("pid"), entry.get("pid_scope", "host")
             if not pid:
