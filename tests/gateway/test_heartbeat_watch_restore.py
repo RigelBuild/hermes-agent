@@ -114,6 +114,25 @@ async def test_restore_retries_persisted_routes_in_their_own_profiles(tmp_path, 
         await restore_heartbeat_watches(runner)
         assert runner._heartbeat_watch == expected
         with _profile_runtime_scope(named):
+            db = dbs[str(named)]
+            sid = entries[1].session_id
+            legacy_key = 'heartbeat:' + sid
+            route_key = 'heartbeat:route:' + entries[1].session_key
+            db.set_meta(legacy_key, HeartbeatState(prompt='bad', interval_seconds=0, schedule='bad cron').to_json())
+            writes = []
+            original_set_meta = db.set_meta
+            def counted(key, value):
+                if key == legacy_key:
+                    writes.append(key)
+                return original_set_meta(key, value)
+            with monkeypatch.context() as patch:
+                patch.setattr(db, 'set_meta', counted)
+                await restore_heartbeat_watches(runner)
+                await restore_heartbeat_watches(runner)
+            assert writes == [legacy_key]
+            assert HeartbeatState.from_json(db.get_meta(legacy_key)).last_error
+            assert HeartbeatState.from_json(db.get_meta(route_key)).last_error == ''
+        with _profile_runtime_scope(named):
             from hermes_cli.heartbeat import list_heartbeats
             route = entries[1].session_key
             db = dbs[str(named)]

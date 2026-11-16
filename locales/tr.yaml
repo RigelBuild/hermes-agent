@@ -922,6 +922,7 @@ gateway:
     prompt_required: "Kullanım: /heartbeat every <interval> <prompt> — istem zorunludur."
     invalid_prefix: "Geçersiz heartbeat"
     set: "♥ Heartbeat ayarlandı (her {interval}): {prompt}\nBu oturum boştayken ve aralık dolduğunda normal bir tur olarak tetiklenir. Gateway çalıştığı sürece yaşar — kalıcı zamanlamalar için `hermes cron` kullanın."
+    set_note: "Bu oturum boştayken ve aralık dolduğunda normal bir tur olarak tetiklenir. Gateway çalıştığı sürece yaşar — kalıcı zamanlamalar için `hermes cron` kullanın."
   refine:
     unavailable: "Refine kullanılamıyor (oturum yok)."
     nothing_yet: "Henüz iyileştirilecek bir şey yok — önce bir mesaj gönderin."

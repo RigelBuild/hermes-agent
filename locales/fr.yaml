@@ -1107,6 +1107,7 @@ gateway:
     set: |-
       ♥ Heartbeat défini (toutes les {interval}) : {prompt}
       Se déclenche comme un tour normal dès que cette session est inactive et que l'intervalle est écoulé. Il ne vit que tant que le gateway tourne — utilisez `hermes cron` pour des planifications durables.
+    set_note: "Se déclenche comme un tour normal dès que cette session est inactive et que l'intervalle est écoulé. Il ne vit que tant que le gateway tourne — utilisez `hermes cron` pour des planifications durables."
   refine:
     unavailable: "Refine indisponible (aucune session)."
     nothing_yet: "Rien à affiner pour l'instant — envoyez d'abord un message."

@@ -936,6 +936,7 @@ gateway:
     prompt_required: "Használat: /heartbeat every <interval> <prompt> — a prompt megadása kötelező."
     invalid_prefix: "Érvénytelen szívverés"
     set: "♥ Szívverés beállítva ({interval} időközönként): {prompt}\nNormál körként fut le, amikor ez a munkamenet üresjáratban van, és letelt az időköz. Csak amíg az átjáró fut — tartós ütemezéshez használd a `hermes cron` parancsot."
+    set_note: "Normál körként fut le, amikor ez a munkamenet üresjáratban van, és letelt az időköz. Csak amíg az átjáró fut — tartós ütemezéshez használd a `hermes cron` parancsot."
   refine:
     unavailable: "A finomítás nem érhető el (nincs munkamenet)."
     nothing_yet: "Még nincs mit finomítani — küldj először egy üzenetet."

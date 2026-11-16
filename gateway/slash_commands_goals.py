@@ -167,7 +167,7 @@ class GatewayGoalCommandsMixin:
         if err:
             return err
         _watch()
-        return t("gateway.heartbeat.set_scheduled" if state.schedule else "gateway.heartbeat.set", interval=state.cadence_label(), schedule=state.cadence_label(), prompt=state.prompt)
+        return t("gateway.heartbeat.set_scheduled" if state.schedule else "gateway.heartbeat.set", interval=state.cadence_label(), schedule=state.cadence_label(), prompt=state.prompt).split("\n", 1)[0] + "\n" + t("gateway.heartbeat.set_note")
 
     def _idle_cached_agent_or_error(self, event: MessageEvent, verb: str):
         """``(session_key, cached_agent, None)`` for /refine and /review, or ``(_, _, error_text)``:

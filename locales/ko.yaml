@@ -922,6 +922,7 @@ gateway:
     prompt_required: "사용법: /heartbeat every <interval> <prompt> — 프롬프트는 필수예요."
     invalid_prefix: "잘못된 하트비트"
     set: "♥ 하트비트 설정됨 ({interval}마다): {prompt}\n이 세션이 유휴 상태이고 간격이 지나면 일반 턴으로 실행돼요. 게이트웨이가 실행되는 동안만 유지돼요 — 영구적인 예약은 `hermes cron`을 사용하세요."
+    set_note: "이 세션이 유휴 상태이고 간격이 지나면 일반 턴으로 실행돼요. 게이트웨이가 실행되는 동안만 유지돼요 — 영구적인 예약은 `hermes cron`을 사용하세요."
   refine:
     unavailable: "다듬기를 사용할 수 없어요 (세션 없음)."
     nothing_yet: "아직 다듬을 내용이 없어요 — 먼저 메시지를 보내 주세요."

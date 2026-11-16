@@ -922,6 +922,7 @@ gateway:
     prompt_required: "用法：/heartbeat every <间隔> <提示词>——提示词不能为空。"
     invalid_prefix: "无效的心跳"
     set: "♥ 心跳已设置（每 {interval}）：{prompt}\n只要此会话空闲且间隔已到，就会作为普通回合触发。仅在网关运行期间有效——持久化调度请使用 `hermes cron`。"
+    set_note: "只要此会话空闲且间隔已到，就会作为普通回合触发。仅在网关运行期间有效——持久化调度请使用 `hermes cron`。"
   refine:
     unavailable: "精炼不可用（没有会话）。"
     nothing_yet: "暂无可精炼的内容——请先发送一条消息。"

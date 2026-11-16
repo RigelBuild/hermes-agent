@@ -172,7 +172,7 @@ def _get_session_db() -> Optional[Any]:
 
 _META_PREFIX = "heartbeat:"
 _ROUTE_PREFIX = _META_PREFIX + "route:"
-_CLAIM_LOCK = threading.RLock()  # every driver of a session's heartbeat runs in its owning gateway process
+_CLAIM_LOCK = threading.Lock()  # every driver of a session's heartbeat runs in its owning gateway process
 
 
 _ROUTING_SCOPE_CACHE: dict[str, str] = {}
@@ -527,7 +527,7 @@ class HeartbeatManager:
             if not s.is_due(now):
                 s.next_fire_or_none()
                 if s.last_error != previous_error:
-                    self.record_error(s.last_error)
+                    self._record_error_locked(s.last_error)
                 return None
             # Compare-and-set on the stored row: the gateway poller and a viewer's due_prompt RPC each hold
             # their own manager over it, and only one may take the tick. A row cleared or paused since is lost too.
@@ -560,16 +560,19 @@ class HeartbeatManager:
             self._save(current)
             return True
 
-    def record_error(self, error: object) -> None:
+    def _record_error_locked(self, error: object) -> None:
         from hermes_cli.debug_redaction import redact_debug_support_text
+        current = self._load()
+        if current is None:
+            self._state = None
+            return
+        current.last_error = redact_debug_support_text(error, max_chars=500) if error else ""
+        self._state = current
+        self._save(current)
+
+    def record_error(self, error: object) -> None:
         with _CLAIM_LOCK:
-            current = self._load()
-            if current is None:
-                self._state = None
-                return
-            current.last_error = redact_debug_support_text(error, max_chars=500) if error else ""
-            self._state = current
-            self._save(current)
+            self._record_error_locked(error)
 
 
 def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bool:

@@ -135,6 +135,16 @@ def test_corrupt_schedule_is_safe():
     assert _safe_heartbeat_snapshot(state)["next_fire_at"] is None
 
 
+def test_invalid_stale_manager_does_not_resume_paused_heartbeat():
+    from hermes_cli.heartbeat import save_heartbeat
+
+    state = HeartbeatState(prompt='check', interval_seconds=0, schedule='bad cron', created_at=time.time())
+    save_heartbeat('invalid-stale', state)
+    stale = HeartbeatManager('invalid-stale')
+    HeartbeatManager('invalid-stale').pause()
+    assert stale.due_prompt() is None
+    assert load_heartbeat('invalid-stale').status == 'paused'
+
 def test_old_gateway_rejects_schedule_with_clear_error():
     from hermes_cli.gateway_automation import GatewayHeartbeatManager
 

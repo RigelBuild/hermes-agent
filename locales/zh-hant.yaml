@@ -922,6 +922,7 @@ gateway:
     prompt_required: "用法：/heartbeat every <interval> <prompt> — 必須提供提示。"
     invalid_prefix: "無效的心跳"
     set: "♥ 心跳已設定（每 {interval}）：{prompt}\n只要此工作階段閒置且間隔已到，就會以一般回合觸發。僅在閘道執行期間有效 — 需要持久排程請使用 `hermes cron`。"
+    set_note: "只要此工作階段閒置且間隔已到，就會以一般回合觸發。僅在閘道執行期間有效 — 需要持久排程請使用 `hermes cron`。"
   refine:
     unavailable: "Refine 無法使用（沒有工作階段）。"
     nothing_yet: "還沒有可精煉的內容 — 請先傳送一則訊息。"

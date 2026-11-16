@@ -922,6 +922,7 @@ gateway:
     prompt_required: "Verwendung: /heartbeat every <interval> <prompt> — der Prompt ist erforderlich."
     invalid_prefix: "Ungültiger Heartbeat"
     set: "♥ Heartbeat gesetzt (alle {interval}): {prompt}\nWird als normaler Zug ausgelöst, sobald diese Sitzung inaktiv ist und das Intervall abgelaufen ist. Besteht nur, solange das Gateway läuft — verwenden Sie `hermes cron` für dauerhafte Zeitpläne."
+    set_note: "Wird als normaler Zug ausgelöst, sobald diese Sitzung inaktiv ist und das Intervall abgelaufen ist. Besteht nur, solange das Gateway läuft — verwenden Sie `hermes cron` für dauerhafte Zeitpläne."
   refine:
     unavailable: "Refine nicht verfügbar (keine Sitzung)."
     nothing_yet: "Noch nichts zu verfeinern — senden Sie zuerst eine Nachricht."

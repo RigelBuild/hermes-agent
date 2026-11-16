@@ -956,6 +956,7 @@ gateway:
     invalid_prefix: "Invalid heartbeat"
     set: "♥ Heartbeat set (every {interval}): {prompt}"
     set_scheduled: "♥ Heartbeat set (on schedule {schedule}): {prompt}"
+    set_note: "Reaches busy gateway sessions by default; use --idle to wait for idle. The route retains its heartbeat across reset and gateway restart."
 
   refine:
     unavailable: "Refine unavailable (no session)."
