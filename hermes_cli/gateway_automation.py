@@ -236,9 +236,14 @@ class GatewayHeartbeatManager(_Remote):
         kwargs = {"delivery_mode": delivery_mode}
         if schedule:
             kwargs.update(schedule=schedule, timezone=timezone)
-        result = self._rpc("set", prompt, interval_seconds, **kwargs)
+        try:
+            result = self._rpc("set", prompt, interval_seconds, **kwargs)
+        except (TypeError, RuntimeError) as exc:
+            if schedule and (isinstance(exc, TypeError) or "unexpected keyword" in str(exc)):
+                raise RuntimeError("gateway does not support scheduled heartbeats; update the gateway") from exc
+            raise
         if schedule and result is None:
-            raise RuntimeError("gateway unavailable or does not support scheduled heartbeats")
+            raise RuntimeError("gateway unavailable or does not support scheduled heartbeats; update the gateway")
         return result
 
     def pause(self):

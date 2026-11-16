@@ -113,6 +113,15 @@ async def test_restore_retries_persisted_routes_in_their_own_profiles(tmp_path, 
         runner._heartbeat_watch.clear()
         await restore_heartbeat_watches(runner)
         assert runner._heartbeat_watch == expected
+        with _profile_runtime_scope(named):
+            from hermes_cli.heartbeat import list_heartbeats
+            route = entries[1].session_key
+            db = dbs[str(named)]
+            key = 'heartbeat:route:' + route
+            db.set_meta(key, HeartbeatState(prompt='bad', interval_seconds=0, schedule='bad cron').to_json())
+            await restore_heartbeat_watches(runner)
+            assert HeartbeatState.from_json(db.get_meta(key)).last_error.startswith('Invalid heartbeat cadence:')
+            assert any(item[0] == route and item[1].last_error for item in list_heartbeats(db))
     finally:
         store.close_all_db_handles()
         if 'runner' in locals():

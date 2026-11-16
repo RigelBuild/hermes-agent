@@ -135,6 +135,19 @@ def test_corrupt_schedule_is_safe():
     assert _safe_heartbeat_snapshot(state)["next_fire_at"] is None
 
 
+def test_old_gateway_rejects_schedule_with_clear_error():
+    from hermes_cli.gateway_automation import GatewayHeartbeatManager
+
+    class OldConnection:
+        def call(self, method, **kwargs):
+            assert method == "session.automation"
+            assert kwargs["kwargs"]["schedule"] == "30 7 * * *"
+            return {"state": None, "error": {"type": "TypeError", "message": "unexpected keyword argument 'schedule'"}}
+
+    manager = GatewayHeartbeatManager("old", OldConnection(), load=False)
+    with pytest.raises(RuntimeError, match="gateway does not support scheduled heartbeats; update the gateway"):
+        manager.set("check", schedule="30 7 * * *")
+
 @pytest.mark.parametrize(
     ("start", "expected"),
     [

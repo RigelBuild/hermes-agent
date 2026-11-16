@@ -59,6 +59,13 @@ async def restore_heartbeat_watches(runner) -> None:
                         continue
                     for meta_key, raw in db.list_meta_prefix("heartbeat:"):
                         if meta_key.startswith("heartbeat:route:"):
+                            try:
+                                state = HeartbeatState.from_json(raw)
+                                before = state.last_error
+                                if state.schedule and state.next_fire_or_none() is None and state.last_error != before:
+                                    db.set_meta(meta_key, state.to_json())
+                            except (ValueError, TypeError, AttributeError):
+                                pass
                             continue
                         session_id = meta_key[len("heartbeat:"):]
                         try:
@@ -66,7 +73,10 @@ async def restore_heartbeat_watches(runner) -> None:
                             if not isinstance(data, dict) or data.get("status") not in {"active", "paused"}:
                                 continue
                             state = HeartbeatState.from_json(raw)
-                            if not state.prompt.strip() or not state.valid_cadence():
+                            if not state.prompt.strip():
+                                continue
+                            if not state.valid_cadence():
+                                db.set_meta(meta_key, state.to_json())
                                 continue
                             route, archived = _legacy_route(session_id, db, store._routing_db, store._routing_scope())
                             if route and not archived:
