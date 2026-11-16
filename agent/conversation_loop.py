@@ -1032,7 +1032,8 @@ _LEGACY_CODEX_INCOMPLETE_NUDGE = (
 )
 
 
-def _is_codex_incomplete_nudge(content):
+def _is_codex_incomplete_nudge(content: Any) -> bool:
+    """Recognize current and historical Codex continuation nudges."""
     return content in (_CODEX_INCOMPLETE_NUDGE, _LEGACY_CODEX_INCOMPLETE_NUDGE)
 
 

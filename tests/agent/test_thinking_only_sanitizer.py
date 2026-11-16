@@ -76,19 +76,20 @@ class TestIsThinkingOnlyAssistant:
 
 # ---------------------------------------------------------------------------
 # _drop_thinking_only_and_merge_users — the full pass
+# ---------------------------------------------------------------------------
+
 
 def test_legacy_codex_nudge_is_not_replayed_after_route_switch():
-    from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE, _LEGACY_CODEX_INCOMPLETE_NUDGE
+    from agent.conversation_loop import _LEGACY_CODEX_INCOMPLETE_NUDGE
 
     messages = [
         {"role": "user", "content": "original request"},
         {"role": "assistant", "content": "", "reasoning": "hidden"},
         {"role": "user", "content": _LEGACY_CODEX_INCOMPLETE_NUDGE},
     ]
-    result = AIAgent._drop_thinking_only_and_merge_users(messages, drop_nudge_marker=_CODEX_INCOMPLETE_NUDGE)
+    result = AIAgent._drop_thinking_only_and_merge_users(messages, drop_codex_nudges=True)
     assert result == [{"role": "user", "content": "original request"}]
 
-# ---------------------------------------------------------------------------
 
 
 class TestDropThinkingOnlyAndMergeUsers:

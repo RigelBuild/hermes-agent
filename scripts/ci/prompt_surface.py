@@ -80,6 +80,8 @@ def _pin_environment() -> None:
     socket.create_connection = refuse  # type: ignore[assignment]
     socket.getaddrinfo = refuse  # type: ignore[assignment]
     sys.platform = "linux"  # skills index ``platforms:`` gate
+    import hermes_platform.host.runtime as host_runtime
+    host_runtime._wsl_detected = False
 
     import hermes_time
     hermes_time.now = lambda: FIXED_NOW  # type: ignore[assignment]
