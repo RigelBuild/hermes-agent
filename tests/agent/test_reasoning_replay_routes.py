@@ -32,40 +32,41 @@ def _wire(provider, base_url, model="m", rejected=()):
     return ChatCompletionsTransport().convert_messages(out, model=model, base_url=base_url, provider=provider)
 
 
-@pytest.mark.parametrize("provider,base_url,model,expected", [
+@pytest.mark.parametrize("provider,base_url,model,expected,pad", [
     # strict schemas: nothing, not even the must-echo pad (#45655, #70233)
-    ("mistral", "https://api.mistral.ai/v1", "deepseek-r1", set()),
-    ("custom", "https://api.groq.com/openai/v1", "m", set()),
-    ("custom", "https://api.cerebras.ai/v1", "m", set()),
-    ("fireworks", "https://api.fireworks.ai/inference/v1", "m", {"reasoning_content"}),
+    ("mistral", "https://api.mistral.ai/v1", "deepseek-r1", set(), None),
+    ("custom", "https://api.groq.com/openai/v1", "m", set(), None),
+    ("custom", "https://api.cerebras.ai/v1", "m", set(), None),
+    ("fireworks", "https://api.fireworks.ai/inference/v1", "m", {"reasoning_content"}, None),
     # OpenRouter-format gateways, incl. the Portal (#118182 does not reproduce)
     ("nous", "https://inference-api.nousresearch.com/v1", "z-ai/glm-5.3",
-     {"reasoning_content", "reasoning", "reasoning_details"}),
-    ("kilocode", "https://api.kilo.ai/api/gateway", "m", {"reasoning_content", "reasoning", "reasoning_details"}),
-    ("novita", "https://api.novita.ai/openai/v1", "m", {"reasoning_content", "reasoning_details"}),
-    ("ollama-cloud", "https://ollama.com/v1", "m", {"reasoning_content", "reasoning"}),
-    ("custom", "http://127.0.0.1:8080/v1", "m", {"reasoning_content", "reasoning"}),
+     {"reasoning_content", "reasoning", "reasoning_details"}, None),
+    ("kilocode", "https://api.kilo.ai/api/gateway", "m", {"reasoning_content", "reasoning", "reasoning_details"}, None),
+    ("novita", "https://api.novita.ai/openai/v1", "m", {"reasoning_content", "reasoning_details"}, None),
+    ("ollama-cloud", "https://ollama.com/v1", "m", {"reasoning_content", "reasoning"}, None),
+    ("custom", "http://127.0.0.1:8080/v1", "m", {"reasoning_content", "reasoning"}, None),
     # everyone else: the de-facto standard alias
-    ("zai", "https://api.z.ai/api/paas/v4", "glm-5.3", {"reasoning_content"}),
-    ("openai-api", "https://api.openai.com/v1", "gpt-5", {"reasoning_content"}),
-    # Anthropic refuses replayed reasoning text sent through this gateway, so only Claude models on
-    # the gateway host are stripped. Other models served there keep the carriers and pad they had.
-    ("litellm", "https://llm-gateway.internal.rigel.build/v1", "claude-opus-5-5", set()),
-    ("custom", "https://llm-gateway.internal.rigel.build/v1", "claude-opus-5-5", set()),
-    ("custom", "https://llm-gateway.internal.rigel.build/v1", "openrouter/deepseek/deepseek-v4", {"reasoning_content", "reasoning"}),
-    ("custom", "https://llm-gateway.internal.rigel.build/v1", "gpt-6-luna", {"reasoning_content", "reasoning"}),
-    (None, "https://llm-gateway.internal.rigel.build/v1", "claude-opus-5-5", set()),
+    ("zai", "https://api.z.ai/api/paas/v4", "glm-5.3", {"reasoning_content"}, None),
+    ("openai-api", "https://api.openai.com/v1", "gpt-5", {"reasoning_content"}, None),
+    # must-echo DeepSeek: the pad is required, a missing reasoning_content is an HTTP 400
+    ("deepseek", "https://api.deepseek.com/v1", "deepseek-v4-flash", {"reasoning_content"}, " "),
+    # Anthropic refuses replayed reasoning text through the gateway for Claude models only. The
+    # same host serves other models, which keep their carriers, and a DeepSeek model keeps its pad.
+    ("litellm", "https://llm-gateway.internal.rigel.build/v1", "claude-opus-5-5", set(), None),
+    ("custom", "https://llm-gateway.internal.rigel.build/v1", "claude-opus-5-5", set(), None),
+    ("custom", "https://llm-gateway.internal.rigel.build/v1", "openrouter/deepseek/deepseek-v4",
+     {"reasoning_content", "reasoning"}, " "),
+    ("custom", "https://llm-gateway.internal.rigel.build/v1", "gpt-6-luna", {"reasoning_content", "reasoning"}, None),
+    (None, "https://llm-gateway.internal.rigel.build/v1", "claude-opus-5-5", set(), None),
 ])
-def test_each_route_gets_exactly_the_carriers_it_reads(provider, base_url, model, expected):
+def test_each_route_gets_exactly_the_carriers_it_reads(provider, base_url, model, expected, pad):
     turn, bare = _wire(provider, base_url, model)
+    # The pad is pinned as a literal per row, checked first: " " on a must-echo route, absent elsewhere.
+    assert bare.get("reasoning_content") == pad
     assert {k for k in ("reasoning_content", "reasoning", "reasoning_details") if k in turn} == expected
     if "reasoning_content" in expected:
         assert turn["reasoning_content"] == "thought"
     assert "extra_content" not in turn["tool_calls"][0]  # Gemini routes only
-    # A reasoning-less turn is padded only when the route reads reasoning_content and the model is
-    # must-echo (DeepSeek/Kimi/MiMo). A strict route never gets the pad (#45655).
-    route = reasoning_replay_route("chat_completions", provider, model, base_url)
-    assert (bare.get("reasoning_content") == " ") is (route.pad and "reasoning_content" in route.carriers)
     assert _TURN["reasoning_details"] is _DETAILS and "reasoning" in _TURN  # history untouched
 
 
@@ -111,6 +112,27 @@ def test_litellm_gateway_sends_no_replayed_reasoning_on_any_assistant_turn(provi
     for msg in assistant:
         assert not {"reasoning", "reasoning_content", "reasoning_details"} & set(msg)
     assert _TURN["reasoning"] == "thought"  # stored history untouched
+
+
+def test_gateway_model_switch_recomputes_the_real_mixin_route():
+    """A model switch on the same agent and gateway host changes the carriers: Claude is stripped, GPT
+    keeps them. This drives the real ``ReasoningParamsMixin._reasoning_replay_route`` and its cache."""
+    from agent.reasoning_params import ReasoningParamsMixin
+
+    class _Agent(ReasoningParamsMixin):
+        def __init__(self):
+            self.provider = "custom"
+            self.model = "claude-opus-5-5"
+            self.base_url = "https://llm-gateway.internal.rigel.build/v1"
+            self.api_mode = "chat_completions"
+            self.session_id = None
+
+    agent = _Agent()
+    assert agent._reasoning_replay_route().carriers == frozenset()
+    agent.model = "gpt-6-luna"
+    assert agent._reasoning_replay_route().carriers == {"reasoning_content", "reasoning"}
+    agent.model = "claude-opus-5-5"
+    assert agent._reasoning_replay_route().carriers == frozenset()
 
 
 def test_litellm_gateway_profile_cannot_reintroduce_native_details():
