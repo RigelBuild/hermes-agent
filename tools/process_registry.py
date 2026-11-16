@@ -571,6 +571,11 @@ class ProcessSession:
     persist_on_release: bool = False           # opt out of agent-lifecycle cleanup (release()/turn-abandon kill
                                                 # sweeps), per terminal(background=true, persist_on_release=true) (#41225)
     output_log: str = ""                        # file the process writes to (worker spawns; no pipe to lose)
+    argv: Optional[list[str]] = None
+    request_id: str = ""
+    attempt_token: str = ""
+    resume_count: int = 0
+    status: str = ""
     pty_fallback: str = ""                      # why a pty=true local spawn runs in pipe mode instead
     # Watcher/notification routing (persisted for crash recovery)
     watcher_platform: str = ""
@@ -659,7 +664,8 @@ _CHECKPOINT_FIELDS = (
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
-    "heartbeat_seconds", "persist_on_release", "output_log")
+    "heartbeat_seconds", "persist_on_release", "output_log", "argv", "request_id",
+    "attempt_token", "resume_count", "status")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -1144,6 +1150,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         reader = threading.Thread(target=copy_context().run, args=(reader_target, session, *extra_args),
                                   daemon=True, name=reader_name)
         session._reader_thread = reader
+        if session.attempt_token:
+            session.status = "running"
         with self._lock:
             self._prune_if_needed()
             # Completion takes this lock too. Starting here also leaves no
@@ -1190,6 +1198,27 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         safe_command = _append_dropped_path_entries(_rewrite_bg(command), self._spawn_env(env_vars).get("PATH", "") if restore_login_path else "")
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
                                     persist_on_release=persist_on_release)
+        from tools.process_resumable import resumable_chat_argv
+        argv = resumable_chat_argv(command)
+        attempt = None
+        if argv:
+            request_id = uuid.uuid4().hex
+            argv.extend(["--request-id", request_id])
+            attempt = {"session_id": session.id, "argv": argv, "request_id": request_id,
+                       "attempt_token": uuid.uuid4().hex, "resume_count": 0, "status": "pending",
+                       "cwd": session.cwd, "task_id": task_id, "owner_task_id": owner_task_id,
+                       "session_key": session_key, "parent_session_id": session.parent_session_id}
+            try:
+                self._write_resumable_entry(attempt)
+            except Exception:
+                logger.warning("Could not checkpoint background chat; starting without recovery", exc_info=True)
+                attempt = None
+            else:
+                session.argv = argv
+                session.request_id = request_id
+                session.attempt_token = attempt["attempt_token"]
+                session.status = "pending"
+                safe_command = _append_dropped_path_entries(shlex.join(argv), self._spawn_env(env_vars).get("PATH", "") if restore_login_path else "")
         pty_scope_attempted = False
         # A worker's pipe or PTY dies with the worker (the child's next write is SIGPIPE): write to a log.
         log = worker_output_log(session.id)

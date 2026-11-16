@@ -89,7 +89,7 @@ async def test_creation_preserves_advertised_cwd_model_and_toolsets(monkeypatch,
     # create (the classic client is a gateway client; nothing is refused or dropped).
     monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
     args = argparse.Namespace(query="literal", model="explicit-model", toolsets="terminal, file", quiet=True,
-                              skills=["a,b", "a"], checkpoints=True, pass_session_id=True)
+                              skills=["a,b", "a"], checkpoints=True, pass_session_id=True, request_id="requested-id")
     assert await gateway_chat.run_gateway_chat(args) == 0
     create = calls[1][1]
     assert create["cwd"] == str(tmp_path)
@@ -97,7 +97,7 @@ async def test_creation_preserves_advertised_cwd_model_and_toolsets(monkeypatch,
     assert create["toolsets"] == ["terminal", "file"]
     assert create["skills"] == ["a", "b"] and create["checkpoints"] is create["pass_session_id"] is True
     assert create["accept_hooks"] is True
-    assert create["source"] == "cli" and create["request_id"]
+    assert create["source"] == "cli" and create["request_id"] == "requested-id"
 
 
 @pytest.mark.asyncio

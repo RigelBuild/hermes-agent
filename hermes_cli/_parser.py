@@ -243,6 +243,7 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "('-' reads stdin). Safe for arbitrary text: nothing is shell-"
         "interpreted, so quotes, $(...), and backticks are preserved "
         "verbatim. Mutually exclusive with -q."))
+    add("--request-id", default=SUPPRESS, help=argparse.SUPPRESS)
     # Distinct dest: the top-level `-z/--oneshot PROMPT` is value-taking and its dispatch sites do
     # read `args.oneshot` as the prompt — a shared boolean dest would be passed as the prompt.
     add("--oneshot", dest="oneshot_exit", action="store_true", default=False, help=(
