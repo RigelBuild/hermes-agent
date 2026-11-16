@@ -64,7 +64,8 @@ def test_foreign_writer_preserves_pending_attempt(monkeypatch, tmp_path):
     assert [item["session_id"] for item in written] == ["pending"]
     assert written[0]["attempt_status"] == "pending"
     assert written[0]["attempt_owner_pid"] == os.getpid()
-    assert "attempt_owner_started_at" in written[0]
+    assert written[0]["attempt_owner_started_at"] == ProcessRegistry._safe_host_start_time(os.getpid())
+    assert written[0]["attempt_owner_started_at"] is not None
 
 
 def test_live_foreign_owner_pending_attempt_is_not_classified_as_interrupted(monkeypatch, tmp_path):
@@ -140,7 +141,7 @@ def test_pending_owner_start_time_distinguishes_live_pid_reuse(
 
     entry = json.loads(path.read_text())[0]
     assert entry['attempt_status'] == expected_status
-
+    assert len(registry.pending_watchers) == expected_notices
 
 def test_spawn_records_pending_before_launch(monkeypatch, tmp_path):
     from tools import process_registry as module
@@ -164,7 +165,7 @@ def test_spawn_records_pending_before_launch(monkeypatch, tmp_path):
     assert running["attempt_status"] == "running" and running["pid"] == 12345
     assert running["argv"] == entry[0]["argv"]
     assert running["attempt_owner_pid"] == os.getpid()
-    assert "attempt_owner_started_at" in running
+    assert running["attempt_owner_started_at"] is None
 
 
 def test_ineligible_spawn_is_unchanged(monkeypatch, tmp_path):

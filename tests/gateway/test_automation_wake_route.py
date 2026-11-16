@@ -36,7 +36,6 @@ async def test_wake_admits_as_the_committed_turn_when_the_origin_drifted(tmp_pat
 async def test_recovery_notice_routes_to_its_persisted_session(tmp_path, monkeypatch):
     import json
     from unittest.mock import AsyncMock
-
     from tools import process_registry as process_registry_module
     from tools.process_registry import ProcessRegistry
     from gateway.run_notifications import GatewayNotificationsMixin
@@ -61,23 +60,26 @@ async def test_recovery_notice_routes_to_its_persisted_session(tmp_path, monkeyp
 
     monkeypatch.setattr(asyncio, 'sleep', no_sleep)
     refuse = AsyncMock(return_value=False)
+    enqueue = runner._enqueue_process_completion_notification
     runner._enqueue_process_completion_notification = refuse
     try:
         await GatewayNotificationsMixin._watch_process(runner, watcher)
         assert refuse.await_count == 8
         assert json.loads(path.read_text())[0]['attempt_status'] == 'unknown'
-
-        accept = AsyncMock(return_value=True)
-        runner._enqueue_process_completion_notification = accept
+        runner._enqueue_process_completion_notification = enqueue
         await GatewayNotificationsMixin._watch_process(runner, watcher)
-        assert accept.await_count == 1
-        text, event = accept.await_args.args
-        assert text.startswith('Background job proc_recovered:')
-        assert event['session_key'] == route
-        assert route == runner.session_store._generate_session_key(source)
+        rows = list_session_admissions(
+            authority.db, session_id=authority.logical_owner(sid), pending_only=False)
+        notice_rows = [row for row in rows if row['payload'].get('text', '').startswith(
+            'Background job proc_recovered:')]
+        assert len(notice_rows) == 1
+        assert notice_rows[0]['payload']['text'].startswith('Background job proc_recovered:')
+        assert notice_rows[0]['payload']['native_text_v1']['source'] == {
+            **source.to_dict(), 'is_bot': source.is_bot}
         assert json.loads(path.read_text()) == []
     finally:
         authority.db.close()
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('thread_id', [None, '9'])
