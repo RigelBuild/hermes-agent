@@ -4427,9 +4427,10 @@ def _main_route_target(runtime: dict[str, Any], task: Optional[str]) -> tuple[st
 
 
 def _auto_request_model_limited(main_provider: str, base_url: Optional[str], model: Optional[str]) -> bool:
-    """True when the main provider is unhealthy for the auto route's requested model, i.e. a usage limit on that
-    model. A provider-wide mark also makes this True, because it hides the provider for every model. The route
-    then substitutes for the requested model, and the substitute is not cached under that model's key."""
+    """The auto route's usage-limit gate for ``model``: True when the main provider is unhealthy for that model,
+    i.e. a usage limit on it. A provider-wide mark also makes this True, because it hides the provider for every
+    model. The route reads the gate once and tags its client with it (see ``_tag_auto_gate``). The cache serves
+    that client only while the gate still reads the same value."""
     if not model:
         return False
     label = _normalize_chain_label(main_provider)
@@ -4526,37 +4527,44 @@ def _try_discovery_chain() -> tuple[Optional[OpenAI], Optional[str], str]:
 def _resolve_auto_route(
     main_runtime: Optional[dict[str, Any]] = None, task: Optional[str] = None, model: Optional[str] = None,
 ) -> tuple[Optional[OpenAI], Optional[str], str]:
-    """Auto route for ``model`` (see ``_resolve_auto_route_substitution``). The returned client is tagged with
-    whether the route substituted a model for ``model``, so the client cache can decide from that one fact."""
-    client, route_model, provider, substituted = _resolve_auto_route_substitution(main_runtime, task, model)
+    """Auto route for ``model`` (see ``_resolve_auto_route_gate``). The returned client is tagged with the gate
+    the route read at build time, so the client cache can decide from that one fact."""
+    client, route_model, provider, gate = _resolve_auto_route_gate(main_runtime, task, model)
     if client is not None:
-        _tag_auto_substitution(client, substituted)
+        _tag_auto_gate(client, gate)
     return client, route_model, provider
 
 
-def _tag_auto_substitution(client: Any, substituted: bool) -> None:
-    """Record on an auto-routed client whether its route served a model other than the requested one."""
+def _tag_auto_gate(client: Any, gate: bool) -> None:
+    """Record on an auto-routed client the usage-limit gate its route read at build time. If the client cannot carry
+    the tag, it keeps none, and the client cache does not store it (see ``_auto_route_tagged``)."""
     try:
-        client._hermes_aux_substituted = substituted
+        client._hermes_aux_gate = gate
     except (AttributeError, TypeError):
-        logger.debug("Auxiliary client %s cannot retain the substitution flag", type(client).__name__)
+        logger.debug("Auxiliary client %s cannot retain the gate tag", type(client).__name__)
 
 
-def _auto_route_substituted(client: Any) -> bool:
-    """True when the auto route that built ``client`` served a model other than the requested one. Such a
-    client is never cached under the requested model's key."""
-    return getattr(client, "_hermes_aux_substituted", False) is True
+def _auto_route_gate(client: Any) -> bool:
+    """The gate tag on ``client``: the usage-limit gate its auto route read when it was built. The cache serves the
+    client only while the current gate equals this value."""
+    return getattr(client, "_hermes_aux_gate", False) is True
 
 
-def _resolve_auto_route_substitution(
+def _auto_route_tagged(client: Any) -> bool:
+    """True when the auto route recorded its gate tag on ``client``. Only a tagged client may be cached."""
+    return isinstance(getattr(client, "_hermes_aux_gate", None), bool)
+
+
+def _resolve_auto_route_gate(
     main_runtime: Optional[dict[str, Any]] = None, task: Optional[str] = None, model: Optional[str] = None,
 ) -> tuple[Optional[OpenAI], Optional[str], str, bool]:
     """Full auto-detection chain, including the selected provider identity. Priority: (1) main provider +
     main model, regardless of provider type ("auto" means "my main model for side tasks too"; explicit
     per-task overrides still win); (2) configured fallback policy — task chain, then the main agent's
     top-level chain; (3) OpenRouter → Nous → custom → Codex → API-key providers, only with no policy
-    and no working main client. Returns (client, model, provider, substituted): ``substituted`` is True when
-    the route sends a model other than the requested ``model`` (a usage limit on X, or a fallback entry's own model)."""
+    and no working main client. Returns (client, model, provider, gate): ``gate`` is the usage-limit gate read once at
+    route start (see ``_auto_request_model_limited``). It is tagged on the client, so the cache serves the client only
+    while the gate reads the same value."""
     runtime = _normalize_main_runtime(main_runtime)
     _warn_stale_openai_base_url(runtime.get("provider", ""))
     main_provider, main_model, base_url, api_key, api_mode = _main_route_target(runtime, task)
@@ -4915,7 +4923,7 @@ def _resolve_auto_branch(req: _ResolveRequest) -> _ResolveResult:
         return None, None
     routed_client, routed_model = _route_client(req, client, route_model)
     if routed_client is not None:
-        _tag_auto_substitution(routed_client, _auto_route_substituted(client))  # async rebuild is a new object
+        _tag_auto_gate(routed_client, _auto_route_gate(client))  # async rebuild is a new object
     if routed_client is not None and effective_provider:
         try:
             routed_client._hermes_aux_effective_provider = effective_provider
@@ -5950,27 +5958,32 @@ def _get_cached_client(
         provider, async_mode=async_mode, base_url=base_url, api_key=api_key, api_mode=api_mode,
         main_runtime=main_runtime, is_vision=is_vision, task=task, model=model,
     )
-    # A cached entry is served only when its route state matches. A substitute built under a usage limit on the
-    # requested model is kept under that model's key; once the limit clears, the entry no longer matches and is
-    # evicted, so the next call builds through the main route and sends the requested model.
+    # A cached entry is served only while its gate tag matches the usage-limit gate read now. The tag is the gate the
+    # route read when it built the client. Once the gate flips, the entry is popped and the next call rebuilds under
+    # the current gate.
     auto_route = str(provider or "").strip().lower() == "auto"
     compat_request = None if auto_route else model
-    substituting = False
+    gate = False
     if auto_route and model:
         main_provider, _main_model, main_base_url, _key, _mode = _main_route_target(runtime, task)
-        substituting = _auto_request_model_limited(main_provider, main_base_url, model)
+        gate = _auto_request_model_limited(main_provider, main_base_url, model)
     with _client_cache_lock:
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]
             loop_ok = not async_mode or (
                 cached_loop is not None and cached_loop is current_loop and not cached_loop.is_closed()
             )
-            if loop_ok and _auto_route_substituted(cached_client) == substituting:
+            if not loop_ok:
+                # Stale async entry: its owner loop is closed or is not the current loop. Only a closed owner loop
+                # may be awaited here; a live foreign loop stays force-neutered.
+                _close_cached_client(cached_client, close_async=cached_loop is not None and cached_loop.is_closed())
+                del _client_cache[cache_key]
+            elif _auto_route_gate(cached_client) == gate:
                 return cached_client, _compat_model(cached_client, compat_request, cached_default)
-            # Stale async entry, or a substitute whose limit has cleared: evict. Only a closed owner loop may be
-            # awaited here; a live foreign loop stays force-neutered.
-            _close_cached_client(cached_client, close_async=cached_loop is not None and cached_loop.is_closed())
-            del _client_cache[cache_key]
+            else:
+                # The gate flipped since this entry was built. Pop it and do not close it: another caller may still
+                # hold it mid-request, as in _evict_cached_clients.
+                del _client_cache[cache_key]
     # Build outside the lock. For pool-backed providers derive the key from the pool entry:
     # resolve_api_key_provider_credentials prefers env vars, which would bypass pool rotation
     # and retry an exhausted key. A pinned ``custom:<name>`` peeks only its entry's rows.
@@ -5990,9 +6003,9 @@ def _get_cached_client(
         # next probe dies in _compat_model() on stub attribute access, so check_fns flip to
         # False and vision tools vanish for the process lifetime (#87654).
         return client, model or default_model
-    # A substitute is cached under the requested model's key too. The lookup above serves it only while the
-    # route is still marked for that model, and drops it once the mark clears.
-    if client is not None:
+    # Cache the client under the requested model's key, with its gate tag. A client that cannot carry the tag is
+    # returned uncached, because the lookup could not check its gate later.
+    if client is not None and (not auto_route or _auto_route_tagged(client)):
         with _client_cache_lock:
             existing = _client_cache.get(cache_key)
             if existing is None:
@@ -6001,12 +6014,12 @@ def _get_cached_client(
                 while len(_client_cache) >= _CLIENT_CACHE_MAX_SIZE:
                     del _client_cache[next(iter(_client_cache))]
                 _client_cache[cache_key] = (client, default_model, current_loop)
-            elif _auto_route_substituted(existing[0]) == _auto_route_substituted(client):
+            elif _auto_route_gate(existing[0]) == _auto_route_gate(client):
                 built_client = client
                 client, default_model, _ = existing
                 # Race loser was never exposed to a caller — safe to close now.
                 _close_cached_client(built_client, close_async=async_mode)
-            # else: a concurrent build holds the other route state; this build is served uncached.
+            # else: a concurrent build holds the other gate state; this build is served uncached.
     return client, _compat_model(client, compat_request, default_model)
 
 

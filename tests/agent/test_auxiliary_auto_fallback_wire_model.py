@@ -321,6 +321,34 @@ def test_limit_expiring_during_build_does_not_cache_substitute(monkeypatch):
     assert sent[-1] == (MAIN_URL, "cheap-model-x")
 
 
+def test_gate_flip_pops_held_client_without_closing_it(monkeypatch):
+    """M1: a client one caller still holds is not closed when the gate flips. The next lookup pops the stale entry
+    and rebuilds on the main route; the held client stays open for its holder."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    built = []
+
+    def construct(*, api_key, base_url, **_kwargs):
+        client = MagicMock()
+        client.api_key = api_key
+        client.base_url = base_url
+        built.append(base_url)
+        return client
+
+    runtime = {"provider": "custom", "model": "gpt-6-luna", "base_url": MAIN_URL, "api_key": "sk-main"}
+    with patch("agent.auxiliary_client._create_openai_client", side_effect=construct), \
+         patch("agent.auxiliary_client._transient_retry_count", return_value=0):
+        held_client = ac._get_cached_client(
+            "auto", "cheap-model-x", main_runtime=runtime, task="title_generation")[0]
+        ac._mark_provider_unhealthy("custom", base_url=MAIN_URL, model="cheap-model-x",
+                                    reason=aux_errors.USAGE_LIMIT_REASON)
+        rebuilt_client = ac._get_cached_client(
+            "auto", "cheap-model-x", main_runtime=runtime, task="title_generation")[0]
+
+    assert built == [MAIN_URL, MAIN_URL]
+    assert rebuilt_client is not held_client
+    held_client.close.assert_not_called()
+
+
 def test_provider_wide_mark_second_call_reuses_cached_client(monkeypatch):
     """A provider-wide mark on the main endpoint: the first call sends the fallback entry's own model. The
     second call reuses the cached fallback client and builds no new client while the mark holds."""
@@ -335,6 +363,50 @@ def test_provider_wide_mark_second_call_reuses_cached_client(monkeypatch):
          patch("agent.auxiliary_client._transient_retry_count", return_value=0):
         call_llm(task="title_generation", messages=[{"role": "user", "content": "one"}], main_runtime=runtime)
         call_llm(task="title_generation", messages=[{"role": "user", "content": "two"}], main_runtime=runtime)
+
+    assert sent == [(FALLBACK_URL, "claude-haiku-5-5"), (FALLBACK_URL, "claude-haiku-5-5")]
+    assert built == [FALLBACK_URL]
+
+
+def test_provider_wide_mark_async_two_calls_build_once(monkeypatch):
+    """Async variant of test_provider_wide_mark_second_call_reuses_cached_client. ``_to_async_client`` rebuilds the
+    sync client as a new object, so the route must tag that object too. Two async calls on one loop build the
+    fallback client once."""
+    import asyncio
+    from openai.resources.chat.completions import AsyncCompletions
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    sent, built = [], []
+
+    class _PlainSyncClient:
+        # No HERMES_SKIP_ASYNC_WRAP, so the async call takes the rebuild path and gets a new object.
+        def __init__(self, api_key, base_url):
+            self.api_key = api_key
+            self.base_url = base_url
+
+    def construct(*, api_key, base_url, **_kwargs):
+        built.append(base_url)
+        return _PlainSyncClient(api_key, base_url)
+
+    async def fake_create(self, *, model, **_kwargs):
+        # Replaces only the SDK request method; the real AsyncOpenAI rebuild stays in place.
+        sent.append((str(self._client.base_url).rstrip("/"), model))
+        return _ok_response("OK")
+
+    runtime = {"provider": "custom", "model": "gpt-6-luna", "base_url": MAIN_URL, "api_key": "sk-main"}
+    ac._mark_provider_unhealthy("custom", base_url=MAIN_URL)  # provider-wide: no model
+
+    async def two_calls():
+        for text in ("one", "two"):
+            await ac.async_call_llm(task="title_generation",
+                                    messages=[{"role": "user", "content": text}], main_runtime=runtime)
+
+    with patch("agent.auxiliary_client._create_openai_client", side_effect=construct), \
+         patch.object(AsyncCompletions, "create", fake_create), \
+         patch("agent.auxiliary_client._resolve_task_provider_model",
+               return_value=("auto", "cheap-model-x", None, None, None)), \
+         patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": FALLBACK_CHAIN}), \
+         patch("agent.auxiliary_client._transient_retry_count", return_value=0):
+        asyncio.run(two_calls())
 
     assert sent == [(FALLBACK_URL, "claude-haiku-5-5"), (FALLBACK_URL, "claude-haiku-5-5")]
     assert built == [FALLBACK_URL]
@@ -385,3 +457,44 @@ def test_provider_wide_mark_keeps_auto_client_cached(monkeypatch):
 
     assert sent == [(openrouter_url, "cheap-model-x"), (openrouter_url, "cheap-model-x")]
     assert built == [openrouter_url]
+
+
+class _SlottedClient:
+    """A client that cannot carry the gate tag: no instance dict, the same shape as ``_AuxProbeClientStub``."""
+    __slots__ = ("_hermes_aux_backend_provider", "_hermes_aux_effective_provider", "api_key", "base_url", "chat")
+
+    def __init__(self, api_key, base_url, chat):
+        self.api_key = api_key
+        self.base_url = base_url
+        self.chat = chat
+        self._hermes_aux_backend_provider = self._hermes_aux_effective_provider = ""
+
+
+def test_untaggable_client_is_served_uncached(monkeypatch):
+    """L2: a client that cannot carry the gate tag is returned uncached. The cache could not check its gate later,
+    so the next call builds again."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    sent, built = [], []
+
+    def construct(*, api_key, base_url, **_kwargs):
+        built.append(base_url)
+        chat = MagicMock()
+
+        def create(*, model, **_kwargs):
+            sent.append((base_url, model))
+            return _ok_response("OK")
+
+        chat.completions.create = MagicMock(side_effect=create)
+        return _SlottedClient(api_key, base_url, chat)
+
+    runtime = {"provider": "custom", "model": "gpt-6-luna", "base_url": MAIN_URL, "api_key": "sk-main"}
+    with patch("agent.auxiliary_client._create_openai_client", side_effect=construct), \
+         patch("agent.auxiliary_client._resolve_task_provider_model",
+               return_value=("auto", "cheap-model-x", None, None, None)), \
+         patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}), \
+         patch("agent.auxiliary_client._transient_retry_count", return_value=0):
+        call_llm(task="title_generation", messages=[{"role": "user", "content": "one"}], main_runtime=runtime)
+        call_llm(task="title_generation", messages=[{"role": "user", "content": "two"}], main_runtime=runtime)
+
+    assert sent == [(MAIN_URL, "cheap-model-x"), (MAIN_URL, "cheap-model-x")]
+    assert built == [MAIN_URL, MAIN_URL]
