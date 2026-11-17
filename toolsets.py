@@ -23,7 +23,7 @@ _HERMES_CORE_TOOLS = [
     "session_search",
     "clarify",
     "execute_code", "delegate_task",
-    "cronjob_manage",
+    "cronjob_manage", "heartbeat",
     "kanban_show", "kanban_list",
     "kanban_complete", "kanban_block", "kanban_request_review",
     "kanban_request_changes",
@@ -120,6 +120,10 @@ TOOLSETS = {
         "Cronjob management tool - create, list, update, pause, resume, remove, and "
         "trigger scheduled tasks",
         ["cronjob_manage"],
+    ),
+    "heartbeat": _ts(
+        "Heartbeat tool - set, clear, check and list recurring heartbeats on a routed session or Discord channel",
+        ["heartbeat"],
     ),
     "file": _ts(
         "File manipulation tools: read, write, patch (with fuzzy matching), and "

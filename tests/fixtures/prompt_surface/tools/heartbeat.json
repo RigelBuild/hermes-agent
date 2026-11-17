@@ -1,0 +1,34 @@
+{
+  "description": "Set, clear, check or list recurring heartbeats. A heartbeat re-enters a session with a prompt on an interval. The target is a session id, or discord:<channel_id> for a channel that already has a session. A target with no session is refused.",
+  "name": "heartbeat",
+  "parameters": {
+    "properties": {
+      "action": {
+        "description": "set, clear, status or list.",
+        "enum": [
+          "set",
+          "clear",
+          "status",
+          "list"
+        ],
+        "type": "string"
+      },
+      "interval": {
+        "description": "For set: e.g. 10m or 2h. At least 60s.",
+        "type": "string"
+      },
+      "prompt": {
+        "description": "For set: the heartbeat prompt.",
+        "type": "string"
+      },
+      "target": {
+        "description": "A session id, or discord:<channel_id>.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "type": "object"
+  }
+}
