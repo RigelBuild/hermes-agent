@@ -7,7 +7,6 @@ creates a session. Every set and clear is logged.
 
 import json
 import logging
-import os
 import sys
 from dataclasses import asdict
 from typing import Any, Callable, Optional
@@ -48,18 +47,29 @@ def _resolve_target(target: str, entries: list[dict]) -> Optional[dict]:
     return matches[0] if len(matches) == 1 else None
 
 
+def _distinct_dbs(dbs: list[Any]) -> list[Any]:
+    """The non-None stores in *dbs*, one per database file."""
+    out: dict[str, Any] = {}
+    for db in dbs:
+        if db is not None:
+            out.setdefault(str(getattr(db, "db_path", id(db))), db)
+    return list(out.values())
+
+
 def heartbeat_action(
     args: dict,
     *,
-    db: Any = None,
+    db_for_key: Callable[[Optional[str]], Any],
     routing_db: Any = None,
     routing_scope: Optional[str] = None,
     admission_check: Callable[[dict], bool],
 ) -> str:
     """Run one heartbeat action and return a JSON string.
 
-    *db* holds the ``heartbeat:route:`` rows; *routing_db* and *routing_scope* locate the routed sessions.
-    *admission_check* must return True only when the route has validated native admission.
+    *db_for_key* returns the store holding a route's rows (the gateway's ``SessionStore._db_for_key``), so a
+    named-profile route is read and written in its own profile's store. *routing_db* and *routing_scope*
+    locate the routed sessions. *admission_check* must return True only when the route has validated native
+    admission.
     """
     from hermes_cli.heartbeat import (
         HeartbeatManager, MIN_INTERVAL_SECONDS, list_heartbeats, load_route_heartbeat, parse_interval,
@@ -68,17 +78,26 @@ def heartbeat_action(
     action = str(args.get("action") or "").strip().lower()
     if action not in _ACTIONS:
         return tool_error(f"unknown action {action!r}; use one of: {', '.join(_ACTIONS)}", success=False)
+    entries = _route_entries(routing_db, routing_scope)
     if action == "list":
-        heartbeats = [{"route": key, **asdict(state)} for key, state in list_heartbeats(db)]
+        stores = _distinct_dbs([routing_db, *(db_for_key(entry["session_key"]) for entry in entries)])
+        found: dict[str, Any] = {}
+        for store in stores:
+            for key, state in list_heartbeats(store):
+                found.setdefault(key, state)
+        heartbeats = [{"route": key, **asdict(found[key])} for key in sorted(found)]
         return json.dumps({"success": True, "heartbeats": heartbeats})
 
     target = str(args.get("target") or "").strip()
     if not target:
         return tool_error("target is required: a session id or discord:<channel_id>", success=False)
-    entry = _resolve_target(target, _route_entries(routing_db, routing_scope))
+    entry = _resolve_target(target, entries)
     if entry is None:
         return tool_error(f"no routed session for {target}", success=False)
     route = entry["session_key"]
+    db = db_for_key(route)
+    if db is None:
+        return tool_error(f"no session store for {target}; retry", success=False)
     manager = HeartbeatManager(entry["session_id"], route_key=route, db=db)
 
     if action == "status":
@@ -89,9 +108,10 @@ def heartbeat_action(
     if action == "clear":
         cleared = manager.clear()
         logger.info("heartbeat clear route=%s target=%s cleared=%s", route, target, cleared)
-        if not cleared:
+        # Verify the row: a write that did not land leaves an active heartbeat behind.
+        if load_route_heartbeat(route, db) is not None:
             return tool_error("heartbeat clear did not persist; retry", success=False)
-        return json.dumps({"success": True, "route": route, "cleared": True})
+        return json.dumps({"success": True, "route": route, "cleared": cleared})
 
     prompt = str(args.get("prompt") or "").strip()
     if not prompt:
@@ -106,8 +126,9 @@ def heartbeat_action(
         return tool_error(
             "this route has no native admission yet; send a normal message in the channel first", success=False)
     state = manager.set(prompt, seconds)
+    # Compare the whole state, not only the prompt: a failed write leaves the previous row behind.
     persisted = load_route_heartbeat(route, db)
-    if persisted is None or persisted.prompt != prompt:
+    if persisted is None or persisted.to_json() != state.to_json():
         return tool_error("heartbeat set did not persist; retry", success=False)
     logger.info("heartbeat set route=%s target=%s interval=%ss", route, target, seconds)
     return json.dumps({"success": True, "route": route, "heartbeat": asdict(persisted)})
@@ -116,21 +137,22 @@ def heartbeat_action(
 def _native_admission(runner: Any) -> Callable[[dict], bool]:
     """Admission from the live gateway: the same validated committed-envelope check the poller uses.
 
-    The route's source and adapter come from the stored routing entry's origin, so the envelope is checked
-    against this route and not merely for the presence of a provenance key. Any failure denies admission.
+    The authority is the one owning the route's profile, so a named-profile route is checked against its own
+    store. The route's source and adapter come from the stored routing entry's origin, so the envelope is
+    checked against this route and not merely for the presence of a provenance key. Any failure denies.
     """
     def check(entry: dict) -> bool:
         from datetime import datetime
 
         from gateway.session import SessionEntry, SessionSource
         from gateway.session_automation import validated_committed_route_envelope
-        from gateway.session_authorities import active_authority
+        from gateway.session_detached import _route_authority
 
-        authority = active_authority(runner)
-        origin = entry.get("origin")
-        if authority is None or not origin:
-            return False
         try:
+            authority = _route_authority(runner, runner.session_store, entry.get("session_key"))
+            origin = entry.get("origin")
+            if authority is None or not origin:
+                return False
             source = SessionSource.from_dict(origin)
             adapter = runner._delivery_adapter_for(source)
             if adapter is None:
@@ -147,10 +169,10 @@ def _native_admission(runner: Any) -> Callable[[dict], bool]:
 
 
 def _gateway_runner() -> Optional[Any]:
-    """The live gateway runner, or None. The tool only runs inside the gateway process."""
-    if os.environ.get("_HERMES_GATEWAY") != "1":
-        return None
-    runner_ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
+    """The live gateway runner, or None. Only the gateway process has one: a child that inherited
+    ``_HERMES_GATEWAY`` never imports ``gateway.run``, so it gets None."""
+    module = sys.modules.get("gateway.run")
+    runner_ref = getattr(module, "_gateway_runner_ref", None) if module is not None else None
     return runner_ref() if callable(runner_ref) else None
 
 
@@ -161,7 +183,7 @@ def _handler(args, **kw):
     store = runner.session_store
     return heartbeat_action(
         args,
-        db=store._routing_db,
+        db_for_key=store._db_for_key,
         routing_db=store._routing_db,
         routing_scope=store._routing_scope(),
         admission_check=_native_admission(runner),
@@ -169,8 +191,9 @@ def _handler(args, **kw):
 
 
 def check_heartbeat_requirements() -> bool:
-    """Registered only inside the gateway process, which sets ``_HERMES_GATEWAY=1`` (gateway/run.py)."""
-    return os.environ.get("_HERMES_GATEWAY") == "1"
+    """Advertised only while a live gateway runner exists. ``_HERMES_GATEWAY`` alone is not enough: it is
+    inherited by gateway-spawned children, which have no runner."""
+    return _gateway_runner() is not None
 
 
 HEARTBEAT_SCHEMA = {
