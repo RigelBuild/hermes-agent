@@ -132,6 +132,33 @@ def test_assemble_keeps_upstream_path_narinfo_and_uses_absolute_nar_url(tmp_path
     assert any(url.endswith(f"/{upstream_hash}.narinfo") for url in requests)
 
 
+def test_assemble_accepts_upstream_narinfo_without_references(tmp_path: Path) -> None:
+    upstream_record = _upstream_record().replace(b"References: \n", b"")
+    assert b"References" not in upstream_record
+    platform = _platform(
+        tmp_path / "platforms",
+        "hermes-agent-v2026.11.1-rigel.1-linux-x64",
+        [(SHARED_HASH, "local-upstream.nar.xz", "sha256:shared")],
+    )
+
+    def open_url(request, timeout):
+        if request.full_url.endswith(f"/{SHARED_HASH}.narinfo"):
+            return _Response(upstream_record)
+        raise HTTPError(request.full_url, 404, "not found", {}, None)
+
+    output = tmp_path / "release-assets"
+    count = assemble(
+        [platform], output, upstream_url="https://cache.nixos.org", opener=open_url, sleeper=lambda _: None
+    )
+
+    upstream_narinfo = (output / f"{SHARED_HASH}.narinfo").read_text(encoding="utf-8")
+    assert "URL: https://cache.nixos.org/nar/upstream-real.nar.zst\n" in upstream_narinfo
+    assert "References: \n" in upstream_narinfo
+    assert "Sig: cache-release-1:OURS\n" in upstream_narinfo
+    assert not (output / "local-upstream.nar.xz").exists()
+    assert count == 4
+
+
 def test_upstream_get_retries_transient_response_with_bounded_attempts() -> None:
     attempts = 0
     waits: list[float] = []
