@@ -79,7 +79,7 @@ def _settled_notice(turn: dict[str, Any]) -> str:
     """The notice for a recorded turn that settled while its job was orphaned: its outcome and reply."""
     from tools.process_registry import COMPLETION_OUTPUT_CHARS
     text = str((turn.get("result") or {}).get("final_response") or "").strip()
-    head = f"finished while the gateway was down (outcome: {turn.get('outcome') or 'unknown'})"
+    head = f"finished while unwatched (outcome: {turn.get('outcome') or 'unknown'})"
     return f"{head}:\n{text[:COMPLETION_OUTPUT_CHARS]}" if text else head
 
 
