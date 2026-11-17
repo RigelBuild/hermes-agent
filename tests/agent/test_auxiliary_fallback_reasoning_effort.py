@@ -159,13 +159,25 @@ def test_async_fallback_entry_reasoning_effort_low_is_sent(monkeypatch):
 
 
 def test_async_explicit_provider_unavailable_sends_entry_level(monkeypatch):
-    """Async call, explicit task provider with no credentials: the chain entry serves it and its ``low`` is sent."""
+    """Async call, explicit task provider with no credentials: the chain entry serves it and its ``low`` is sent
+    on the base wire shape: top-level ``reasoning_effort``, the same as every other path."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     sent = _run(chain=[_entry("custom", "claude-haiku-5-5", reasoning_effort="low")],
                 main_marked=False, task_provider="deepseek", async_mode=True)
-    # The served label ``fallback_chain[0](custom)`` has no profile, so the generic nested shape is sent.
-    assert [(url, kw["extra_body"]["reasoning"]["effort"]) for url, kw in sent] == [(FALLBACK_URL, "low")]
+    assert [(url, kw["reasoning_effort"]) for url, kw in sent] == [(FALLBACK_URL, "low")]
+    assert "reasoning" not in (sent[0][1].get("extra_body") or {})
+
+
+def test_sync_explicit_provider_unavailable_sends_entry_level(monkeypatch):
+    """Sync call, explicit task provider with no credentials: the chain entry serves it and its ``low`` is sent
+    on the base wire shape: top-level ``reasoning_effort``, no nested ``extra_body.reasoning``."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    sent = _run(chain=[_entry("custom", "claude-haiku-5-5", reasoning_effort="low")],
+                main_marked=False, task_provider="deepseek")
+    assert [(url, kw["reasoning_effort"]) for url, kw in sent] == [(FALLBACK_URL, "low")]
+    assert "reasoning" not in (sent[0][1].get("extra_body") or {})
 
 
 def test_carry_fallback_entry_ignores_untagged_source():
