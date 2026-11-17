@@ -45,6 +45,13 @@ def build_exec_approval_view(discord, base, *, unauthorized):
                 self.remove_item(self.allow_always)
             if not allow_once:  # Deny-only card: the command could not be shown in full
                 self.remove_item(self.allow_once)
+            if request_id:
+                # Stable ids let a press after a reconnect find its request (see the adapter's listener).
+                for attr, choice in (("allow_once", "once"), ("allow_session", "session"),
+                                     ("allow_always", "always"), ("deny", "deny")):
+                    item = getattr(self, attr, None)
+                    if item is not None and hasattr(item, "custom_id"):
+                        item.custom_id = f"hermes:exec:{request_id}:{choice}"
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Base admission always required; with ``require_admin`` the clicker must
@@ -150,6 +157,24 @@ def build_exec_approval_view(discord, base, *, unauthorized):
                     self._backend_settled = False
                     await self.retire("resolved")
                 raise
+
+        async def press(self, interaction: discord.Interaction, custom_id: str) -> bool:
+            """Run the button whose ``custom_id`` is ``custom_id``. A press that reached a dead client's view
+            routes here. Returns False, acting on nothing, when this card has no such live button: it was
+            removed for this card, it is disabled, or the id is unknown."""
+            button = next((child for child in self.children if getattr(child, "custom_id", None) == custom_id), None)
+            if button is None or getattr(button, "disabled", False):
+                return False
+            choice = custom_id.rpartition(":")[2]
+            labels = {
+                "once": (discord.Color.green(), "platform.discord.approval.resolved_once"),
+                "session": (discord.Color.blue(), "platform.discord.approval.resolved_session"),
+                "always": (discord.Color.purple(), "platform.discord.approval.resolved_always"),
+                "deny": (discord.Color.red(), "platform.discord.approval.resolved_deny"),
+            }
+            color, label_key = labels[choice]
+            await self._resolve(interaction, choice, color, label_key)
+            return True
 
         # Decorator labels are placeholders; ``_localize_buttons`` in __init__ sets the real text.
         @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)

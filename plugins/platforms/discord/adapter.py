@@ -1297,6 +1297,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         index_channel_id = str(extra.get("approval_index_channel") or "").strip()
         from .approval_index import DiscordApprovalIndex
         self._approval_index = DiscordApprovalIndex(self, index_channel_id) if index_channel_id else None
+        # Exec-approval cards by request id, so a press after a reconnect can find its view (bounded).
+        self._exec_approval_views: dict[str, Any] = {}
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
         # Bot's last message ID per channel: lets history backfill skip the full channel.history() scan.
         self._last_self_message_id: dict[str, str] = {}
@@ -1502,6 +1504,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             @self._client.event
             async def on_message_delete(message: DiscordMessage):
                 await adapter_self._on_platform_message_delete(message)
+
+            @self._client.event
+            async def on_interaction(interaction):
+                await adapter_self._on_platform_interaction(interaction)
 
             @self._client.event
             async def on_thread_create(thread):
@@ -5718,6 +5724,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
         try:
+            client = self._client
             channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             send_kwargs, view = build(channel)
             if view is not None:
@@ -5725,6 +5732,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             msg = await channel.send(**send_kwargs)
             if view is not None:
                 view._message = msg
+                view.bound_client = client
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             if fail_log:
@@ -5769,6 +5777,65 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     def _exec_approval_uses_command_attachment(self) -> bool:
         return True
 
+    _EXEC_APPROVAL_VIEW_CAP = 256
+
+    def _register_exec_approval_view(self, request_id: str, view) -> None:
+        """Keep the card's view by request id; drop settled views first, then the oldest, past the cap."""
+        self._exec_approval_views[request_id] = view
+        for rid in [r for r, v in self._exec_approval_views.items() if v.is_finished()]:
+            self._exec_approval_views.pop(rid, None)
+        while len(self._exec_approval_views) > self._EXEC_APPROVAL_VIEW_CAP:
+            self._exec_approval_views.pop(next(iter(self._exec_approval_views)))
+
+    async def _on_platform_interaction(self, interaction) -> None:
+        """Answer component presses that the live view store cannot route (a view sent before a
+        reconnect). Never raises: a failed reply is logged."""
+        data = getattr(interaction, "data", None) or {}
+        custom_id = str(data.get("custom_id") or "")
+        if not custom_id:
+            return
+        logger.debug("[Discord] component interaction custom_id=%s", custom_id)
+        if not custom_id.startswith("hermes:exec:"):
+            return
+        logger.info("[Discord] component interaction custom_id=%s user=%s", custom_id,
+                    getattr(getattr(interaction, "user", None), "id", None))
+        request_id = custom_id[len("hermes:exec:"):].rpartition(":")[0]
+        view = self._exec_approval_views.get(request_id)
+        if view is not None and not view.is_finished():
+            if view.bound_client is self._client:
+                # A live view on this client: discord.py's store routes the press.
+                return
+            press_message_id = getattr(getattr(interaction, "message", None), "id", None)
+            if press_message_id is not None and press_message_id == getattr(view._message, "id", None):
+                # Orphan: sent before a reconnect, so its buttons are not in the live store.
+                reply = t("platform.discord.approval.no_longer_pending")
+                try:
+                    if await view.press(interaction, custom_id):
+                        return
+                    logger.warning("[Discord] orphaned approval press matched no live button: custom_id=%s", custom_id)
+                except Exception:
+                    logger.warning("[Discord] orphaned approval press failed: custom_id=%s", custom_id, exc_info=True)
+                    # A recorded answer whose card edit failed: say it was recorded, not that the click failed.
+                    recorded = view.resolved or view._backend_settled
+                    reply = t("platform.discord.approval.already_resolved" if recorded else "platform.discord.approval.click_failed")
+                await self._reply_unanswered_approval_press(interaction, custom_id, reply)
+                return
+        if interaction.response.is_done():
+            # Answered already (a live Approve, or discord.py's own callback): nothing left to say.
+            logger.info("[Discord] approval press already answered: custom_id=%s", custom_id)
+            return
+        logger.warning("[Discord] component press matched no pending approval: custom_id=%s", custom_id)
+        await self._reply_unanswered_approval_press(
+            interaction, custom_id, t("platform.discord.approval.no_longer_pending"))
+
+    async def _reply_unanswered_approval_press(self, interaction, custom_id: str, text: str) -> None:
+        """Send ``text`` ephemerally unless the interaction was already answered. Never raises."""
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(text, ephemeral=True)
+        except Exception:
+            logger.warning("[Discord] could not reply to unmatched approval press: custom_id=%s",
+                           custom_id, exc_info=True)
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Send an approval with content as its canonical payload and an embed for state."""
@@ -5820,6 +5887,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 approval_index.discard_pending_reservation(request_id)
             raise
         view = view_slot.get("view")
+        if result.success and view is not None and view.request_id:
+            self._register_exec_approval_view(view.request_id, view)
         if result.success and prompt.command_preview != prompt.command and prompt.request_id and "once" in prompt.choices:
             from tools.approval import restrict_gateway_approval_card_to_deny
             restrict_gateway_approval_card_to_deny(prompt.session_key, str(prompt.request_id), restricted=False)
@@ -6509,6 +6578,8 @@ def _define_discord_view_classes() -> None:
             self.live_auth, self.answer_extra = None, {}
             self.resolved = False
             self._message = None
+            # The client whose view store holds this view's buttons (set when the view is sent).
+            self.bound_client = None
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             from plugins.platforms.discord.adapter_component_auth import _component_check_auth
