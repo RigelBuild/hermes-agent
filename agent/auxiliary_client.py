@@ -7494,16 +7494,18 @@ def _prepare_aux_request(
         if isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)) else None
     )
     request_provider = effective_provider or resolved_provider
+    # The fallback label is a display name; the attempt-level provider is the bare name (RIG-10737).
+    attempt_provider = _fallback_provider_from_label(request_provider)
     if not async_mode:
         compression_config = _get_auxiliary_task_config(task) if task == "compression" else {}  # authoritative: no aux route
         _, effective_extra_body = _compression_fast_lane_controls(
-            task, actual_provider=request_provider, actual_model=final_model,
+            task, actual_provider=attempt_provider, actual_model=final_model,
             requested_provider=provider, requested_model=model, route_config=compression_config,
             leak_guard_config=compression_config, max_tokens=max_tokens,
             extra_body=effective_extra_body,
         )
-    _set_relay_auxiliary_route(request_provider, final_model, resolved_api_mode)
-    _record_route_info(route_info, _fallback_provider_from_label(request_provider), final_model)
+    _set_relay_auxiliary_route(attempt_provider, final_model, resolved_api_mode)
+    _record_route_info(route_info, attempt_provider, final_model)
     if async_mode:
         base_info = str(getattr(client, "base_url", "") or "")
     else:
@@ -7518,7 +7520,7 @@ def _prepare_aux_request(
     # this request (RIG-10585); the entry travels on the client, never in the provider name.
     served_reasoning = _served_reasoning(client, reasoning_config)
     kwargs = _build_call_kwargs(
-        _fallback_provider_from_label(request_provider), final_model, messages, temperature=temperature, max_tokens=max_tokens,
+        attempt_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=served_reasoning, base_url=base_info or resolved_base_url, task=task,
         no_progress_timeout=no_progress_timeout)
@@ -7526,10 +7528,10 @@ def _prepare_aux_request(
         kwargs["extra_headers"] = dict(extra_headers)
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     client_base = str(getattr(client, "base_url", "") or "")
-    if _is_anthropic_compat_endpoint(request_provider, client_base):
+    if _is_anthropic_compat_endpoint(attempt_provider, client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
     return _PreparedAuxRequest(
-        client, final_model, kwargs, resolved_provider, request_provider, resolved_model,
+        client, final_model, kwargs, resolved_provider, attempt_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, effective_timeout,
         effective_extra_body, base_info)
 
