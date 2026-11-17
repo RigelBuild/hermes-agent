@@ -5918,8 +5918,9 @@ def _get_cached_client(
         provider, async_mode=async_mode, base_url=base_url, api_key=api_key, api_mode=api_mode,
         main_runtime=main_runtime, is_vision=is_vision, task=task, model=model,
     )
-    # An auto route resolves its own wire model. When the requested model is usage-limited on the main
-    # provider the route sends a substitute; it bypasses the cache so X is sent again once the limit clears.
+    # An auto route resolves its own wire model. When the main provider is marked unhealthy for the
+    # requested model (X's usage window, or a provider-wide mark) the route may send a substitute; it
+    # bypasses the cache so X is sent again once the mark clears.
     auto_route = str(provider or "").strip().lower() == "auto"
     substitute_route = False
     if auto_route and model:
@@ -5959,6 +5960,10 @@ def _get_cached_client(
         return client, model or default_model
     if client is not None and not substitute_route:
         with _client_cache_lock:
+            # A mark can land during the build; the route then sent a substitute. Marks clear only by
+            # expiry or reset, so re-checking here sees it and keeps the substitute out of X's key.
+            if auto_route and model and _auto_request_model_limited(main_provider, main_base_url, model):
+                return client, _compat_model(client, compat_request, default_model)
             if cache_key not in _client_cache:
                 # FIFO safety-belt eviction. Do NOT close evicted clients: another caller may be
                 # mid-request on one; refcount/GC handles it.

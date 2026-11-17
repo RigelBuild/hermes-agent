@@ -1,7 +1,8 @@
-"""RIG-10494: an auto route sends the requested model only when the main client served the route.
+"""RIG-10494: an auto route sends the requested model when the main client or discovery serves the route.
 
 Main model M is usage-limited, so the route falls back to the configured entry F. The request asks for X.
-F's client must receive F's model, not X: F may not serve X. A main-served route keeps X (#94).
+F's client must receive F's model, not X: F may not serve X. A fallback entry sends its own model; a
+main-served or discovery route keeps X (#94).
 """
 from unittest.mock import MagicMock, patch
 
@@ -228,3 +229,47 @@ def test_main_marked_request_x_sends_x_again_after_limit_clears(monkeypatch):
         call_llm(task="title_generation", messages=[{"role": "user", "content": "two"}], main_runtime=runtime)
 
     assert sent == [(MAIN_URL, "gpt-6-luna"), (MAIN_URL, "cheap-model-x")]
+
+
+def test_limit_mark_during_build_does_not_cache_substitute(monkeypatch):
+    """A concurrent call marks X limited while this call builds the client. The route then sends M; that
+    substitute must not be cached under X's key, so X is sent again once the limit clears."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    sent = []
+
+    def construct(*, api_key, base_url, **_kwargs):
+        client = MagicMock()
+        client.api_key = api_key
+        client.base_url = base_url
+
+        def create(*, model, **_kwargs):
+            sent.append((base_url, model))
+            return _ok_response("OK")
+
+        client.chat.completions.create = MagicMock(side_effect=create)
+        return client
+
+    real_resolve = ac.resolve_provider_client
+    marked = []
+
+    def resolve_with_race(*args, **kwargs):
+        if not marked:
+            marked.append(True)
+            ac._mark_provider_unhealthy("custom", base_url=MAIN_URL, model="cheap-model-x",
+                                        reason=aux_errors.USAGE_LIMIT_REASON)
+            ac._evict_cached_clients("auto", "cheap-model-x")
+        return real_resolve(*args, **kwargs)
+
+    runtime = {"provider": "custom", "model": "gpt-6-luna", "base_url": MAIN_URL, "api_key": "sk-main"}
+    with patch("agent.auxiliary_client._create_openai_client", side_effect=construct), \
+         patch("agent.auxiliary_client.resolve_provider_client", side_effect=resolve_with_race), \
+         patch("agent.auxiliary_client._resolve_task_provider_model",
+               return_value=("auto", "cheap-model-x", None, None, None)), \
+         patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}), \
+         patch("agent.auxiliary_client._transient_retry_count", return_value=0):
+        call_llm(task="title_generation", messages=[{"role": "user", "content": "one"}], main_runtime=runtime)
+        ac._reset_aux_unhealthy_cache()
+        call_llm(task="title_generation", messages=[{"role": "user", "content": "two"}], main_runtime=runtime)
+        call_llm(task="title_generation", messages=[{"role": "user", "content": "three"}], main_runtime=runtime)
+
+    assert sent == [(MAIN_URL, "gpt-6-luna"), (MAIN_URL, "cheap-model-x"), (MAIN_URL, "cheap-model-x")]
