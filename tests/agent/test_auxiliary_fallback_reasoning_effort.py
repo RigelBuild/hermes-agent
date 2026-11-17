@@ -279,3 +279,45 @@ def test_same_provider_retry_on_entry_client_keeps_entry_level():
         )
     assert client is retry_client
     assert kwargs["reasoning_effort"] == "low"
+
+
+def _minimax_label_request(request_provider: str):
+    """Prepare one sync title request on a minimax client. Its ``/v1`` base has no ``/anthropic`` path,
+    so only the provider name can mark it anthropic-compat. ``request_provider`` is the label an
+    explicit-provider fallback sets (RIG-10737)."""
+    client = MagicMock()
+    client.base_url = "https://api.minimax.io/v1"
+    image_message = {"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}]}
+    with (
+        patch("agent.auxiliary_client._resolve_task_provider_model",
+              return_value=("minimax", "minimax-m2", None, None, None)),
+        patch("agent.auxiliary_client._resolve_call_client",
+              return_value=ac._ResolvedAuxRoute(client, "minimax-m2", request_provider, request_provider)),
+        patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={}),
+        patch("hermes_cli.config.load_config_readonly", return_value={}),
+    ):
+        with ac._relay_aux_call_scope((), {"task": "title_generation"}):
+            req = ac._prepare_aux_request(
+                "title_generation", provider=None, model=None, base_url=None, api_key=None,
+                main_runtime={}, messages=[image_message], temperature=None, max_tokens=None, tools=None,
+                timeout=None, extra_body=None, reasoning_config=None, extra_headers=None, api_mode=None,
+                route_info=None, async_mode=False)
+            relay = dict(ac._RELAY_AUX_CALL_CONTEXT.get())
+    return req, relay
+
+
+@pytest.mark.parametrize("request_provider", ["minimax", "fallback_chain[0](minimax)"])
+def test_minimax_label_request_converts_images_for_anthropic_compat(request_provider):
+    """A fallback-labelled minimax request is anthropic-compat: its image block becomes an Anthropic ``image``."""
+    req, _relay = _minimax_label_request(request_provider)
+    block = req.kwargs["messages"][0]["content"][0]
+    assert block["type"] == "image"
+    assert block["source"] == {"type": "url", "url": "https://example.com/img.png"}
+
+
+@pytest.mark.parametrize("request_provider", ["minimax", "fallback_chain[0](minimax)"])
+def test_minimax_label_request_relay_route_names_bare_provider(request_provider):
+    """A fallback-labelled minimax request records the bare provider on the relay route, not the label."""
+    _req, relay = _minimax_label_request(request_provider)
+    assert relay["provider"] == "minimax"

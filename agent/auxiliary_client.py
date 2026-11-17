@@ -7502,7 +7502,7 @@ def _prepare_aux_request(
             leak_guard_config=compression_config, max_tokens=max_tokens,
             extra_body=effective_extra_body,
         )
-    _set_relay_auxiliary_route(request_provider, final_model, resolved_api_mode)
+    _set_relay_auxiliary_route(_fallback_provider_from_label(request_provider), final_model, resolved_api_mode)
     _record_route_info(route_info, _fallback_provider_from_label(request_provider), final_model)
     if async_mode:
         base_info = str(getattr(client, "base_url", "") or "")
@@ -7526,7 +7526,7 @@ def _prepare_aux_request(
         kwargs["extra_headers"] = dict(extra_headers)
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     client_base = str(getattr(client, "base_url", "") or "")
-    if _is_anthropic_compat_endpoint(request_provider, client_base):
+    if _is_anthropic_compat_endpoint(_fallback_provider_from_label(request_provider), client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
     return _PreparedAuxRequest(
         client, final_model, kwargs, resolved_provider, request_provider, resolved_model,
