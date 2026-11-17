@@ -7518,7 +7518,7 @@ def _prepare_aux_request(
     # this request (RIG-10585); the entry travels on the client, never in the provider name.
     served_reasoning = _served_reasoning(client, reasoning_config)
     kwargs = _build_call_kwargs(
-        request_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
+        _fallback_provider_from_label(request_provider), final_model, messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=served_reasoning, base_url=base_info or resolved_base_url, task=task,
         no_progress_timeout=no_progress_timeout)
