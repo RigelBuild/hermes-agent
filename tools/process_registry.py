@@ -573,6 +573,7 @@ class ProcessSession:
     output_log: str = ""                        # file the process writes to (worker spawns; no pipe to lose)
     argv: Optional[list[str]] = None
     request_id: str = ""
+    input_id: str = ""                          # parent-minted id of this attempt's prompt turn
     attempt_token: str = ""
     resume_count: int = 0
     resume_session_id: str = ""                  # chat session a shutdown-killed attempt resumes
@@ -669,7 +670,7 @@ _CHECKPOINT_FIELDS = (
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
-    "heartbeat_seconds", "persist_on_release", "output_log", "argv", "request_id",
+    "heartbeat_seconds", "persist_on_release", "output_log", "argv", "request_id", "input_id",
     "attempt_token", "resume_count", "resume_session_id", "attempt_status", "attempt_owner_pid",
     "attempt_owner_started_at")
 _CHECKPOINT_DEFAULTS = {
@@ -1220,8 +1221,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         attempt = None
         if argv:
             request_id = uuid.uuid4().hex
-            argv.extend(["--request-id", request_id])
+            input_id = uuid.uuid4().hex
+            argv.extend(["--request-id", request_id, "--input-id", input_id])
             attempt = {"session_id": session.id, "argv": argv, "request_id": request_id,
+                       "input_id": input_id,
                        "attempt_token": uuid.uuid4().hex, "resume_count": 0, "attempt_status": "pending",
                        "cwd": session.cwd, "task_id": task_id, "owner_task_id": owner_task_id,
                        "session_key": session_key, "parent_session_id": session.parent_session_id}
@@ -1233,6 +1236,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             else:
                 session.argv = argv
                 session.request_id = request_id
+                session.input_id = input_id
                 session.attempt_token = attempt["attempt_token"]
                 session.attempt_status = "pending"
                 session.attempt_owner_pid = attempt["attempt_owner_pid"]

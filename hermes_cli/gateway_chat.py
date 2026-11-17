@@ -180,6 +180,7 @@ async def run_gateway_chat(args, emitter=None):
     # Finite: answer one prompt and exit (-z, --oneshot, -Q, stream-json, or -q off a TTY).
     oneshot = bool(oneshot_prompt or getattr(args, "oneshot_exit", False) or quiet or
                    (query and not (sys.stdin.isatty() and sys.stdout.isatty())))
+    attach_input = getattr(args, "attach_input", None)
     async with connect_gateway() as client:
         description = await client.rpc("runtime.describe")
         title = continue_title(args)
@@ -244,7 +245,8 @@ async def run_gateway_chat(args, emitter=None):
         if emitter is not None:
             emitter.bind_session(snapshot["stored_session_id"])
         view = GatewayChatView(client, snapshot, quiet=quiet, emitter=emitter,
-                               usage_file=getattr(args, "usage_file", None))
+                               usage_file=getattr(args, "usage_file", None),
+                               input_id=getattr(args, "input_id", None))
         view.launch_api_key = getattr(args, "api_key", None)  # /new keeps this launch's key
         view.unattended = isinstance(oneshot_prompt, str)
         view.resume_footer = oneshot and not quiet
@@ -256,6 +258,8 @@ async def run_gateway_chat(args, emitter=None):
                 merged = isinstance(metadata, dict) and metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY)
                 if row.get("role") in {"user", "assistant"} and isinstance(row.get("content"), str) and not merged:
                     print(f"{row['role']}: {row['content']}")
+        if attach_input is not None:
+            return await view.attach(attach_input)
         return await view.run(query, oneshot=oneshot)
 
 

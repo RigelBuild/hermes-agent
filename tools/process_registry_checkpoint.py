@@ -15,7 +15,7 @@ SHUTDOWN_RESUME_REASON = "gateway_shutdown"
 SHUTDOWN_RESUME_CAP = 3
 RESUME_NOTE = ("The gateway restarted while this run was in progress. "
                "Check what is already done, then continue the task.")
-_DROPPED_DESTS = frozenset({"query", "query_file", "image"})
+_DROPPED_DESTS = frozenset({"query", "query_file", "image", "input_id"})
 
 
 def checkpoint_entry(s) -> dict[str, Any]:
@@ -23,7 +23,7 @@ def checkpoint_entry(s) -> dict[str, Any]:
     from tools.process_registry import _CHECKPOINT_FIELDS
     entry = {"session_id": s.id, **{f: getattr(s, f) for f in _CHECKPOINT_FIELDS}}
     if not s.attempt_token:
-        for field in ("argv", "request_id", "attempt_token", "resume_count", "resume_session_id", "attempt_status"):
+        for field in ("argv", "request_id", "input_id", "attempt_token", "resume_count", "resume_session_id", "attempt_status"):
             entry.pop(field, None)
     # Redact inline credentials before persisting (~/.hermes/processes.json). Recovery uses
     # command only for display (adoption re-validates the PID, never re-runs it). See #77484.
@@ -55,8 +55,9 @@ def _dropped_option(options: dict[str, str], arg: str) -> tuple[bool, bool]:
     return options.get(arg[:2]) in _DROPPED_DESTS, True
 
 
-def resume_launch_argv(argv: list[str], chat_session_id: str) -> list[str]:
-    """The stored argv without its query source or image, resuming the chat with the continuation note."""
+def resume_launch_argv(argv: list[str], chat_session_id: str, attach_input: str = "") -> list[str]:
+    """The stored argv without its query source or image, resuming the chat with the continuation note;
+    with ``attach_input``, attaching to that recorded turn instead of submitting anything (RIG-10342)."""
     from tools.process_resumable import _chat_parser
     options = {option: action.dest for action in _chat_parser()._actions for option in action.option_strings}
     out, skip = list(argv[:2]), False
@@ -69,7 +70,17 @@ def resume_launch_argv(argv: list[str], chat_session_id: str) -> list[str]:
             skip = not glued  # a value glued on (--query-file=x, -qtext) needs no second token
             continue
         out.append(arg)
+    if attach_input:
+        return [*out, "--resume", chat_session_id, "--attach-input", attach_input]
     return [*out, "--resume", chat_session_id, "--discard-unknown", "--query", RESUME_NOTE]
+
+
+def _settled_notice(turn: dict[str, Any]) -> str:
+    """The notice for a recorded turn that settled while its job was orphaned: its outcome and reply."""
+    from tools.process_registry import COMPLETION_OUTPUT_CHARS
+    text = str((turn.get("result") or {}).get("final_response") or "").strip()
+    head = f"finished while unwatched (outcome: {turn.get('outcome') or 'unknown'})"
+    return f"{head}:\n{text[:COMPLETION_OUTPUT_CHARS]}" if text else head
 
 
 class ProcessCheckpointMixin:
@@ -202,8 +213,48 @@ class ProcessCheckpointMixin:
                     entry['attempt_status'] = 'running'
             atomic_json_write(path, entries)
 
-    def _recover_interrupted_attempts(self, only_session_id=None, checkpoint_path=None):
-        """Mark interrupted attempts unknown and replay notices at least once on each boot."""
+    @staticmethod
+    def _attach_recorded_turn(db_path, entry) -> Optional[dict[str, Any]]:
+        """The recorded turn, read from this profile's state.db, or None (RIG-10342).
+
+        Read-only: it never submits, resolves, or writes. The local creation receipt for the recorded
+        request id names the turn's principal and session; the admission is then found at its exact
+        (principal, session, input id) identity. A settled turn yields its outcome and result; a queued
+        or started one yields its status and chat session, so boot can attach to it. None when there is
+        no receipt or no admission, or the turn is in any other state: the caller keeps the unknown notice."""
+        from pathlib import Path
+        from hermes_state import SessionDB
+        from hermes_state_local import POLICY_PREFIX
+        from hermes_state_runtime import find_session_admission
+        from gateway.session_results import admission_result
+        input_id, request_id = entry.get("input_id"), entry.get("request_id")
+        if not input_id or not request_id or not Path(db_path).is_file():
+            return None
+        db = SessionDB(db_path=Path(db_path), read_only=True)
+        try:
+            rows = db._read_all(
+                "SELECT value FROM state_meta WHERE key GLOB ? AND json_valid(value) "
+                "AND json_extract(value, '$.request_id') = ? LIMIT 1", (POLICY_PREFIX + "*", request_id))
+            if not rows:
+                return None
+            policy = json.loads(rows[0][0])
+            admission = find_session_admission(db, principal_id=policy["principal_id"],
+                                               session_id=policy["session_id"], request_id=input_id)
+            if admission is None or admission["status"] not in {"terminal", "queued", "started"}:
+                return None
+            turn = {"status": admission["status"], "admission_id": admission["admission_id"],
+                    "chat_session_id": policy["session_id"]}
+            if admission["status"] == "terminal":
+                turn.update(outcome=admission.get("outcome"),
+                            result=admission_result(db, admission["admission_id"]) or {})
+            return turn
+        finally:
+            db.close()
+
+    def _recover_interrupted_attempts(self, only_session_id=None, checkpoint_path=None, attach=False):
+        """Mark interrupted attempts unknown and replay notices at least once on each boot. A recorded
+        turn that settled is reported with its result; with ``attach`` (gateway boot only), a recorded
+        turn still queued or running is claimed for an attach-only relaunch instead (RIG-10342)."""
         from pathlib import Path
         from hermes_cli.active_sessions import _FileLock
         from tools.process_registry import _checkpoint_path, _WATCHER_ROUTE_KEYS
@@ -211,7 +262,7 @@ class ProcessCheckpointMixin:
         from utils import atomic_json_write
 
         path = Path(checkpoint_path) if checkpoint_path else _checkpoint_path()
-        notices = []
+        notices, attaches = [], []
         with _FileLock(path.with_name(path.name + '.lock')):
             try:
                 entries = json.loads(path.read_text(encoding='utf-8-sig'))
@@ -238,10 +289,14 @@ class ProcessCheckpointMixin:
                     if self._pending_attempt_owner_is_live(
                             owner_pid, entry.get('attempt_owner_started_at')):
                         continue
+                # A job the gateway's own shutdown stopped is left to the shutdown relaunch path
+                # (RIG-10319, RIG-10528): its turn settled 'interrupted' by that stop, never attached.
+                shutdown_killed = entry.get('resume_reason') == SHUTDOWN_RESUME_REASON
+                turn = None if shutdown_killed else self._attach_recorded_turn(path.parent / 'state.db', entry)
                 if status != 'unknown':
                     entry['attempt_status'] = 'unknown'
                     changed = True
-                notices.append({
+                notice = {
                     'session_id': entry['session_id'], 'session_key': entry.get('session_key', ''),
                     'parent_session_id': entry.get('parent_session_id', ''),
                     'attempt_token': entry['attempt_token'],
@@ -250,10 +305,21 @@ class ProcessCheckpointMixin:
                     'command': entry.get('command', ''),
                     'started_at': entry.get('started_at', 0),
                     'recovery_notice': 'outcome UNKNOWN, verify before retrying',
+                    'input_id': entry.get('input_id', ''),
                     **{key: entry.get('watcher_' + key, '') for key in _WATCHER_ROUTE_KEYS},
-                })
+                }
+                if turn is not None and turn['status'] == 'terminal':
+                    # Delivered like the unknown notice: the entry leaves the checkpoint only once it is sent.
+                    notice['recovery_notice'] = _settled_notice(turn)
+                elif turn is not None and attach and only_session_id is None:
+                    attaches.append((dict(entry), turn['chat_session_id'], notice))
+                    continue
+                notices.append(notice)
             if changed:
                 atomic_json_write(path, entries)
+        for entry, chat_session_id, notice in attaches:
+            if not self._claim_attach(path, entry, chat_session_id, notice):
+                notices.append(notice)
         if only_session_id is None:
             self.pending_watchers.extend(notices)
         else:
@@ -318,20 +384,52 @@ class ProcessCheckpointMixin:
                     or count >= SHUTDOWN_RESUME_CAP):
                 return False
             item.pop("resume_reason")
+            # The relaunch submits a fresh continuation turn, so the recorded input id no longer names
+            # this attempt's turn: clear it, so a later boot never attaches to the old one (RIG-10342).
             item.update(attempt_status="pending", resume_count=count + 1, resume_session_id=chat_session_id,
-                        attempt_owner_pid=owner_pid, attempt_owner_started_at=owner_started)
+                        attempt_owner_pid=owner_pid, attempt_owner_started_at=owner_started, input_id="")
             return True
         return self._update_attempt(checkpoint_path, entry, claim)
 
     def _give_back_shutdown_resume(self, checkpoint_path, claimed) -> None:
         """Undo a claim whose spawn failed, so the next boot can try again."""
         def give_back(item):
+            if item.get("attach_input"):
+                if item.get("attempt_status") != "pending":
+                    return False
+                item.pop("attach_input")
+                item["attempt_status"] = "unknown"
+                return True
             if item.get("attempt_status") != "pending" or item.get("resume_count") != claimed["resume_count"]:
                 return False
             item.update(attempt_status="unknown", resume_count=claimed["resume_count"] - 1,
                         resume_reason=SHUTDOWN_RESUME_REASON)
             return True
         self._update_attempt(checkpoint_path, claimed, give_back)
+
+    def record_attach_outcome(self, entry, outcome, checkpoint_path=None) -> Optional[dict[str, Any]]:
+        """Record how an attached turn ended, fenced by this attempt's session id and attempt token the
+        way ``_update_attempt`` is (RIG-10342). A stale or foreign token refuses and leaves the file as it was.
+        ``checkpoint_path`` is the file the caller read the entry from; None means the active profile's."""
+        from tools.process_registry import _checkpoint_path
+        def record(item):
+            item.update(outcome)
+            return True
+        return self._update_attempt(checkpoint_path or _checkpoint_path(), entry, record)
+
+    def _claim_attach(self, checkpoint_path, entry, chat_session_id, notice) -> bool:
+        """Claim a dead attempt whose recorded turn is still queued or running for an attach-only
+        relaunch, spawned after READY; False when the claim failed (the unknown notice then applies)."""
+        import contextvars
+        owner_pid = os.getpid()
+        claimed = self.record_attach_outcome(entry, {
+            "attempt_status": "pending", "attach_input": entry["input_id"], "resume_session_id": chat_session_id,
+            "attempt_owner_pid": owner_pid, "attempt_owner_started_at": self._safe_host_start_time(owner_pid)},
+            checkpoint_path)
+        if claimed is None:
+            return False
+        self.pending_relaunches.append((contextvars.copy_context(), claimed, str(checkpoint_path), [notice]))
+        return True
 
     def _relaunch_shutdown_killed(self, entry: dict[str, Any], checkpoint_path, lookup) -> bool:
         """Claim a dead attempt the gateway killed at shutdown, up to the cap, and queue its relaunch
@@ -372,7 +470,8 @@ class ProcessCheckpointMixin:
                 continue
             spawned += 1
             try:
-                notices.extend(self._resumed_watchers(session, checkpoint_path))
+                notices.extend(self._recovered_watchers(session) if claimed.get("attach_input")
+                               else self._resumed_watchers(session, checkpoint_path))
             except Exception:
                 logger.exception("Could not queue the resumed notice for %s", session.id)
         return spawned, notices
@@ -402,7 +501,7 @@ class ProcessCheckpointMixin:
             session.recovered_checkpoint_path = checkpoint_path
             # Same login-PATH fix-up as the original terminal spawn.
             command = _append_dropped_path_entries(
-                shlex.join(resume_launch_argv(argv, claimed["resume_session_id"])),
+                shlex.join(resume_launch_argv(argv, claimed["resume_session_id"], claimed.get("attach_input", ""))),
                 self._spawn_env(None).get("PATH", ""))
             return self._spawn_local_admitted(session, command, None, False, session.persist_on_release)
         except Exception:
@@ -464,7 +563,7 @@ class ProcessCheckpointMixin:
         if not checkpoint_path.exists():
             return 0
         try:
-            self._recover_interrupted_attempts()
+            self._recover_interrupted_attempts(attach=resume_shutdown_killed)
         except Exception:
             logger.exception('Could not classify interrupted background jobs')
         try:

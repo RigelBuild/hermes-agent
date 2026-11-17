@@ -899,7 +899,8 @@ class AuthorityConnection:
         return result
 
     async def receipt(self, ref, params):
-        receipt = await self.authority.receipt(self.actor, ref, params.get('admission_id'))
+        receipt = await self.authority.receipt(self.actor, ref, params.get('admission_id'),
+                                               input_id=params.get('input_id'))
         out = asdict(receipt)
         if params.get('include_result') is True and receipt.status == 'terminal':
             # The exact structured result the turn committed with settlement (`finish_result`):

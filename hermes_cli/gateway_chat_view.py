@@ -6,7 +6,7 @@ import sys
 import uuid
 
 from gateway.session_contract import GATEWAY_STOP_CAUSES
-from hermes_cli.gateway_client import GATEWAY_LOST_EXIT_CODE, GatewayClientError
+from hermes_cli.gateway_client import GATEWAY_LOST_EXIT_CODE, GatewayClientError, GatewayRPCError
 
 logger = logging.getLogger(__name__)
 
@@ -90,8 +90,10 @@ def lost_admission(snapshot, admission_id):
 
 
 class GatewayChatView:
-    def __init__(self, client, snapshot, *, quiet=False, emitter=None, usage_file=None):
+    def __init__(self, client, snapshot, *, quiet=False, emitter=None, usage_file=None, input_id=None):
         self.usage_file = usage_file
+        # The parent-minted id of this view's one turn; its first submit carries it (RIG-10342).
+        self.input_id = input_id
         self.client = client
         self.session_id = snapshot["stored_session_id"]
         self.generation = snapshot.get("execution_generation", 0)
@@ -344,8 +346,9 @@ class GatewayChatView:
     async def submit(self, text):
         self.mutations.retire(self.session_id)
         sid, gaps = self.session_id, self.gaps
+        input_id, self.input_id = self.input_id or uuid.uuid4().hex, None
         receipt = await self.client.rpc("prompt.submit", session_id=self.session_id,
-                                        input_id=uuid.uuid4().hex, text=text,
+                                        input_id=input_id, text=text,
                                         **({"finite": True} if self.finite else {}),
                                         **({"unattended": True} if self.finite and self.unattended else {}))
         if (receipt or {}).get("voice_stopped") is True:
@@ -552,52 +555,7 @@ class GatewayChatView:
                 admission = _oneshot_admission(receipt)
                 if admission is None:
                     return 0  # the voice chat ended; no turn was admitted, so none is awaited
-                self.finite_admission = admission
-                for kind, event_admission, payload in self._finite_events:
-                    if event_admission == admission and admission not in self.completions:
-                        self._dispatch_event(kind, event_admission, payload)
-                self._finite_events.clear()
-                self.changed.set()
-                while admission not in self.completions:
-                    self.changed.clear()
-                    if self.failure:
-                        raise self.failure
-                    blocked = self._finite_block(admission)
-                    if blocked:
-                        return self._detach(blocked)
-                    if admission not in self.completions:
-                        await self.changed.wait()
-                terminal = self.completions[admission]
-                outcome = terminal.get("outcome")
-                text = terminal.get("text") or terminal.get("content") or ""
-                # The outcome only says failed/cancelled; a turn stopped by --max-turns settles
-                # 'completed' with ``completed: False`` in its committed result. Judge both with the
-                # in-process exit contracts: `-z` 0/2/130 (1 = no text), `chat -q`/`-Q` 0/1/130.
-                from hermes_cli.oneshot import _oneshot_exit_code
-                from hermes_cli.turn_exit import turn_exit_code
-                recovered = terminal.get("_receipt")
-                result = dict(recovered.get("result") or {}) if recovered else await self._settled_result(admission)
-                result.update(failed=bool(result.get("failed")) or outcome not in ("completed", "cancelled"),
-                              interrupted=bool(result.get("interrupted")) or outcome == "cancelled")
-                exit_code = (_oneshot_exit_code(text, result) if self.unattended
-                             else turn_exit_code(result, kanban_worker=False))
-                if result.get("interrupted") and result.get("interrupt_message") in GATEWAY_STOP_CAUSES:
-                    # The gateway stopped this turn for its own shutdown: lost, not a user stop.
-                    exit_code = GATEWAY_LOST_EXIT_CODE
-                if self.usage_file:
-                    self._write_usage_file(result, outcome)
-                if self.emitter is not None:
-                    return self.emitter.emit_result({**result, "final_response": text,
-                                                     "replay_gap": bool(terminal.get("replay_gap"))},
-                                                    session_id=self.session_id, exit_code=exit_code)
-                self._report_silent_interrupt(text, result)
-                print(text, flush=True)
-                self._report_no_reply(exit_code)
-                # Same stderr exit contract as the legacy -Q path: automation wrappers read the
-                # durable id from this line, and it names the physical row (a compaction may have
-                # advanced it past the row printed at start).
-                self._print_exit_ids()
-                return exit_code
+                return await self._settle_oneshot(admission)
             from prompt_toolkit import PromptSession
             from prompt_toolkit.patch_stdout import patch_stdout
             from hermes_cli.skin_engine import get_active_prompt_symbol, get_active_skin
@@ -634,6 +592,89 @@ class GatewayChatView:
             renderer.cancel()
             with suppress(asyncio.CancelledError):
                 await renderer
+
+    async def _settle_oneshot(self, admission):
+        """Wait for a finite invocation's own admission, then report how it ended. The submit path and
+        the attach path (RIG-10342) both settle here, so a turn is reported the same way either way."""
+        self.finite_admission = admission
+        for kind, event_admission, payload in self._finite_events:
+            if event_admission == admission and admission not in self.completions:
+                self._dispatch_event(kind, event_admission, payload)
+        self._finite_events.clear()
+        self.changed.set()
+        while admission not in self.completions:
+            self.changed.clear()
+            if self.failure:
+                raise self.failure
+            blocked = self._finite_block(admission)
+            if blocked:
+                return self._detach(blocked)
+            if admission not in self.completions:
+                await self.changed.wait()
+        terminal = self.completions[admission]
+        outcome = terminal.get("outcome")
+        text = terminal.get("text") or terminal.get("content") or ""
+        # The outcome only says failed/cancelled; a turn stopped by --max-turns settles
+        # 'completed' with ``completed: False`` in its committed result. Judge both with the
+        # in-process exit contracts: `-z` 0/2/130 (1 = no text), `chat -q`/`-Q` 0/1/130.
+        from hermes_cli.oneshot import _oneshot_exit_code
+        from hermes_cli.turn_exit import turn_exit_code
+        recovered = terminal.get("_receipt")
+        result = dict(recovered.get("result") or {}) if recovered else await self._settled_result(admission)
+        result.update(failed=bool(result.get("failed")) or outcome not in ("completed", "cancelled"),
+                      interrupted=bool(result.get("interrupted")) or outcome == "cancelled")
+        exit_code = (_oneshot_exit_code(text, result) if self.unattended
+                     else turn_exit_code(result, kanban_worker=False))
+        if result.get("interrupted") and result.get("interrupt_message") in GATEWAY_STOP_CAUSES:
+            # The gateway stopped this turn for its own shutdown: lost, not a user stop.
+            exit_code = GATEWAY_LOST_EXIT_CODE
+        if self.usage_file:
+            self._write_usage_file(result, outcome)
+        if self.emitter is not None:
+            return self.emitter.emit_result({**result, "final_response": text,
+                                             "replay_gap": bool(terminal.get("replay_gap"))},
+                                            session_id=self.session_id, exit_code=exit_code)
+        self._report_silent_interrupt(text, result)
+        print(text, flush=True)
+        self._report_no_reply(exit_code)
+        # Same stderr exit contract as the legacy -Q path: automation wrappers read the
+        # durable id from this line, and it names the physical row (a compaction may have
+        # advanced it past the row printed at start).
+        self._print_exit_ids()
+        return exit_code
+
+    async def attach(self, input_id):
+        """Attach-only (RIG-10342): settle the turn ``input_id`` names without submitting it. A turn the
+        owner has settled reports its committed result; a queued or running one is waited for; a turn
+        the owner does not hold, or cannot confirm, takes the unknown outcome. It never resolves either."""
+        self.quiet = self.finite = True
+        self.show_pending()
+        for prompt in self.prompts.values():
+            self.show_prompt(prompt)
+        try:
+            receipt = await self.client.rpc("prompt.receipt", session_id=self.session_id,
+                                            input_id=input_id, include_result=True)
+        except GatewayRPCError as exc:
+            if str(exc) != "not_found":
+                raise
+            receipt = {"status": "unknown"}
+        admission = receipt.get("admission_id") or input_id
+        waiting = receipt.get("status") in ("queued", "started")
+        if receipt.get("status") == "terminal":
+            outcome = {"interrupted": "cancelled"}.get(receipt.get("outcome"), receipt.get("outcome"))
+            self.completions[admission] = {"outcome": outcome, "_receipt": receipt,
+                                           "text": (receipt.get("result") or {}).get("final_response") or ""}
+        elif not waiting:
+            self.completions[admission] = {"outcome": "unknown", "text": _UNKNOWN_OUTCOME,
+                                           "_receipt": {"status": "unknown"}}
+        renderer = asyncio.create_task(self.render()) if waiting else None
+        try:
+            return await self._settle_oneshot(admission)
+        finally:
+            if renderer is not None:
+                renderer.cancel()
+                with suppress(asyncio.CancelledError):
+                    await renderer
 
 
 def _oneshot_admission(receipt):

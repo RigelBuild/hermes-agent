@@ -804,19 +804,29 @@ class SessionAuthority:
             logging.getLogger(__name__).exception(
                 'Releasing refused attachments of request %s failed', request.request_id)
 
-    async def receipt(self, actor, ref, admission_id):
+    async def receipt(self, actor, ref, admission_id, *, input_id=None):
+        """The admission's receipt, by its id or by the ``prompt.submit`` input id the caller minted
+        (RIG-10342). An input id resolves at the caller's own principal and session, so no other
+        principal's admission is ever found by it; an unknown one is ``not_found``."""
         self.authorize(actor, ref, 'session:submit')
-        row = get_session_admission(self.db, admission_id=admission_id)
+        if admission_id is None and input_id is not None:
+            from hermes_state_runtime import find_session_admission
+            row = find_session_admission(self.db, principal_id=actor.subject, session_id=ref.session_id,
+                                         request_id=input_id)
+        else:
+            row = get_session_admission(self.db, admission_id=admission_id)
         if row is None or row['target_session_id'] != ref.session_id:
             raise RuntimeStoreError('not_found')
         from gateway.owner_identity import same_owner
         if not same_owner(row['principal_id'], actor.subject) and 'session:control' not in actor.capabilities:
             raise RuntimeStoreError('permission_denied')
-        live = self.sessions[ref.session_id]
+        live = self.sessions.get(ref.session_id)
+        if live is None:
+            return self._receipt(row)
         with live.event_stream.lock:
             # Read after the row: a terminal row whose completion is not yet published reads as
             # its claim, so a receipt poller never replays events that lack the completion frame.
-            row = live.settling.get(admission_id, row)
+            row = live.settling.get(row['admission_id'], row)
         return self._receipt(row)
 
     async def cancel_queued(self, actor, ref, admission_id):

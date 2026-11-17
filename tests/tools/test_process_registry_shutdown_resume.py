@@ -398,6 +398,13 @@ def test_launch_argv_drops_abbreviated_query_sources(source):
     assert argv == ["hermes", "chat", "-Q", "--yolo", "--resume", "sid", "--discard-unknown", "--query", RESUME_NOTE]
 
 
+def test_launch_argv_drops_input_id_for_a_fresh_continuation_note():
+    from tools.process_registry_checkpoint import resume_launch_argv
+    argv = resume_launch_argv(["hermes", "chat", "-Q", "--input-id", "X", "--yolo"], "sid")
+    assert "--input-id" not in argv and "X" not in argv, argv
+    assert argv == ["hermes", "chat", "-Q", "--yolo", "--resume", "sid", "--discard-unknown", "--query", RESUME_NOTE]
+
+
 def test_unspawned_claims_are_given_back(monkeypatch, checkpoint, chat_home):
     checkpoint.write_text(json.dumps([_boot_entry()]))
     registry = ProcessRegistry()
