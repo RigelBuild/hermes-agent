@@ -15,7 +15,7 @@ SHUTDOWN_RESUME_REASON = "gateway_shutdown"
 SHUTDOWN_RESUME_CAP = 3
 RESUME_NOTE = ("The gateway restarted while this run was in progress. "
                "Check what is already done, then continue the task.")
-_DROPPED_DESTS = frozenset({"query", "query_file", "image"})
+_DROPPED_DESTS = frozenset({"query", "query_file", "image", "input_id"})
 
 
 def checkpoint_entry(s) -> dict[str, Any]:
@@ -23,7 +23,7 @@ def checkpoint_entry(s) -> dict[str, Any]:
     from tools.process_registry import _CHECKPOINT_FIELDS
     entry = {"session_id": s.id, **{f: getattr(s, f) for f in _CHECKPOINT_FIELDS}}
     if not s.attempt_token:
-        for field in ("argv", "request_id", "attempt_token", "resume_count", "resume_session_id", "attempt_status"):
+        for field in ("argv", "request_id", "input_id", "attempt_token", "resume_count", "resume_session_id", "attempt_status"):
             entry.pop(field, None)
     # Redact inline credentials before persisting (~/.hermes/processes.json). Recovery uses
     # command only for display (adoption re-validates the PID, never re-runs it). See #77484.
@@ -250,6 +250,7 @@ class ProcessCheckpointMixin:
                     'command': entry.get('command', ''),
                     'started_at': entry.get('started_at', 0),
                     'recovery_notice': 'outcome UNKNOWN, verify before retrying',
+                    'input_id': entry.get('input_id', ''),
                     **{key: entry.get('watcher_' + key, '') for key in _WATCHER_ROUTE_KEYS},
                 })
             if changed:
@@ -332,6 +333,15 @@ class ProcessCheckpointMixin:
                         resume_reason=SHUTDOWN_RESUME_REASON)
             return True
         self._update_attempt(checkpoint_path, claimed, give_back)
+
+    def record_attach_outcome(self, entry, outcome) -> Optional[dict[str, Any]]:
+        """Record how an attached turn ended, fenced by this attempt's session id and attempt token the
+        way ``_update_attempt`` is (RIG-10342). A stale or foreign token refuses and leaves the file as it was."""
+        from tools.process_registry import _checkpoint_path
+        def record(item):
+            item.update(outcome)
+            return True
+        return self._update_attempt(_checkpoint_path(), entry, record)
 
     def _relaunch_shutdown_killed(self, entry: dict[str, Any], checkpoint_path, lookup) -> bool:
         """Claim a dead attempt the gateway killed at shutdown, up to the cap, and queue its relaunch

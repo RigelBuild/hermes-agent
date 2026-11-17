@@ -244,6 +244,10 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "interpreted, so quotes, $(...), and backticks are preserved "
         "verbatim. Mutually exclusive with -q."))
     add("--request-id", default=SUPPRESS, help=argparse.SUPPRESS)
+    # Hidden: the input id the background spawn minted for this turn (RIG-10342).
+    add("--input-id", default=SUPPRESS, help=argparse.SUPPRESS)
+    # Hidden: attach-only. Names the input whose receipt to read instead of submitting (RIG-10342).
+    add("--attach-input", default=SUPPRESS, help=argparse.SUPPRESS)
     # A gateway relaunch of a shutdown-killed job acknowledges the lost turn before its note.
     add("--discard-unknown", action="store_true", default=SUPPRESS, help=argparse.SUPPRESS)
     # Distinct dest: the top-level `-z/--oneshot PROMPT` is value-taking and its dispatch sites do
