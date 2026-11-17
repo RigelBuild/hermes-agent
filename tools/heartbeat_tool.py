@@ -7,6 +7,7 @@ creates a session. Every set and clear is logged.
 
 import json
 import logging
+import os
 import sys
 from dataclasses import asdict
 from typing import Any, Callable, Optional
@@ -47,10 +48,6 @@ def _resolve_target(target: str, entries: list[dict]) -> Optional[dict]:
     return matches[0] if len(matches) == 1 else None
 
 
-def _state_dict(state: Any) -> Optional[dict]:
-    return asdict(state) if state is not None else None
-
-
 def heartbeat_action(
     args: dict,
     *,
@@ -62,7 +59,7 @@ def heartbeat_action(
     """Run one heartbeat action and return a JSON string.
 
     *db* holds the ``heartbeat:route:`` rows; *routing_db* and *routing_scope* locate the routed sessions.
-    *admission_check* must return True only when the route has native admission (see ``_native_admission``).
+    *admission_check* must return True only when the route has validated native admission.
     """
     from hermes_cli.heartbeat import (
         HeartbeatManager, MIN_INTERVAL_SECONDS, list_heartbeats, load_route_heartbeat, parse_interval,
@@ -85,13 +82,16 @@ def heartbeat_action(
     manager = HeartbeatManager(entry["session_id"], route_key=route, db=db)
 
     if action == "status":
+        state = load_route_heartbeat(route, db)
         return json.dumps({"success": True, "route": route,
-                           "heartbeat": _state_dict(load_route_heartbeat(route, db))})
+                           "heartbeat": asdict(state) if state else None})
 
     if action == "clear":
         cleared = manager.clear()
-        logger.info("heartbeat clear route=%s target=%s", route, target)
-        return json.dumps({"success": True, "route": route, "cleared": cleared})
+        logger.info("heartbeat clear route=%s target=%s cleared=%s", route, target, cleared)
+        if not cleared:
+            return tool_error("heartbeat clear did not persist; retry", success=False)
+        return json.dumps({"success": True, "route": route, "cleared": True})
 
     prompt = str(args.get("prompt") or "").strip()
     if not prompt:
@@ -106,30 +106,56 @@ def heartbeat_action(
         return tool_error(
             "this route has no native admission yet; send a normal message in the channel first", success=False)
     state = manager.set(prompt, seconds)
+    persisted = load_route_heartbeat(route, db)
+    if persisted is None or persisted.prompt != prompt:
+        return tool_error("heartbeat set did not persist; retry", success=False)
     logger.info("heartbeat set route=%s target=%s interval=%ss", route, target, seconds)
-    return json.dumps({"success": True, "route": route, "heartbeat": asdict(state)})
+    return json.dumps({"success": True, "route": route, "heartbeat": asdict(persisted)})
 
 
 def _native_admission(runner: Any) -> Callable[[dict], bool]:
-    """Admission check backed by the live gateway: the route's committed native envelope must exist."""
+    """Admission from the live gateway: the same validated committed-envelope check the poller uses.
+
+    The route's source and adapter come from the stored routing entry's origin, so the envelope is checked
+    against this route and not merely for the presence of a provenance key. Any failure denies admission.
+    """
     def check(entry: dict) -> bool:
-        from gateway.session import SessionEntry
-        from gateway.session_automation import committed_route_envelope
-        from gateway.session_authorities import active_authority
         from datetime import datetime
 
+        from gateway.session import SessionEntry, SessionSource
+        from gateway.session_automation import validated_committed_route_envelope
+        from gateway.session_authorities import active_authority
+
         authority = active_authority(runner)
-        if authority is None:
+        origin = entry.get("origin")
+        if authority is None or not origin:
             return False
-        now = datetime.now()
-        stub = SessionEntry(entry["session_key"], entry["session_id"], now, now)
-        return committed_route_envelope(authority, stub) is not None
+        try:
+            source = SessionSource.from_dict(origin)
+            adapter = runner._delivery_adapter_for(source)
+            if adapter is None:
+                return False
+            now = datetime.now()
+            stored = SessionEntry(entry["session_key"], entry["session_id"], now, now,
+                                  origin=source, platform=source.platform)
+            validated_committed_route_envelope(authority, adapter, source, stored)
+            return True
+        except Exception as exc:
+            logger.debug("heartbeat admission denied for %s: %s", entry.get("session_key"), exc)
+            return False
     return check
 
 
-def _handler(args, **kw):
+def _gateway_runner() -> Optional[Any]:
+    """The live gateway runner, or None. The tool only runs inside the gateway process."""
+    if os.environ.get("_HERMES_GATEWAY") != "1":
+        return None
     runner_ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
-    runner = runner_ref() if callable(runner_ref) else None
+    return runner_ref() if callable(runner_ref) else None
+
+
+def _handler(args, **kw):
+    runner = _gateway_runner()
     if runner is None:
         return tool_error("heartbeat needs a running gateway", success=False)
     store = runner.session_store
@@ -143,9 +169,8 @@ def _handler(args, **kw):
 
 
 def check_heartbeat_requirements() -> bool:
-    """Only a gateway session can own a route heartbeat."""
-    from utils import env_var_enabled
-    return env_var_enabled("HERMES_GATEWAY_SESSION")
+    """Registered only inside the gateway process, which sets ``_HERMES_GATEWAY=1`` (gateway/run.py)."""
+    return os.environ.get("_HERMES_GATEWAY") == "1"
 
 
 HEARTBEAT_SCHEMA = {

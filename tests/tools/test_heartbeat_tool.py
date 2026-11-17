@@ -163,3 +163,57 @@ def test_set_and_clear_are_logged(ctx, caplog):
 def test_unknown_action_is_an_error(ctx):
     out = _call(ctx, {"action": "explode", "target": f"discord:{CHANNEL}"})
     assert out["success"] is False
+
+
+def test_tool_is_registered_only_inside_the_gateway_process(monkeypatch):
+    from tools import heartbeat_tool as mod
+
+    monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+    assert mod.check_heartbeat_requirements() is False
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    assert mod.check_heartbeat_requirements() is True
+
+
+def test_handler_refuses_outside_the_gateway(monkeypatch):
+    from tools import heartbeat_tool as mod
+
+    monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+    out = json.loads(mod._handler({"action": "list"}))
+    assert out["success"] is False
+    assert "gateway" in out["error"]
+
+
+def test_native_admission_denies_when_no_authority(ctx):
+    from tools import heartbeat_tool as mod
+
+    class _Runner:
+        session_authority = None
+        session_authorities = None
+
+    check = mod._native_admission(_Runner())
+    assert check({"session_key": "k", "session_id": "s", "origin": {"platform": "discord", "chat_id": "1"}}) is False
+
+
+def test_native_admission_denies_without_origin(ctx):
+    from tools import heartbeat_tool as mod
+
+    class _Runner:
+        session_authority = object()
+        session_authorities = None
+
+    check = mod._native_admission(_Runner())
+    assert check({"session_key": "k", "session_id": "s"}) is False
+
+
+def test_set_reports_failure_when_the_write_does_not_persist(ctx, monkeypatch):
+    db, scope = ctx
+    _route(db, scope, CHANNEL, "sess-overseer")
+
+    def _lost(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr("hermes_cli.heartbeat.save_route_heartbeat", _lost)
+    out = _call(ctx, {"action": "set", "target": f"discord:{CHANNEL}", "interval": "10m", "prompt": "x"})
+
+    assert out["success"] is False
+    assert "did not persist" in out["error"]
