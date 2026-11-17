@@ -1778,6 +1778,7 @@ Each entry supports the same three knobs as any auxiliary task config:
 | `provider` | Provider name (`nous`, `openrouter`, `anthropic`, `gemini`, `main`, etc.) |
 | `model` | Model name for that provider |
 | `base_url` | (Optional) Custom OpenAI-compatible endpoint |
+| `reasoning_effort` | (Optional) Thinking level for calls this entry serves (`none`, `low`, `medium`, `high`, …). Replaces the main route's level for those calls; an entry without it keeps the main level. |
 
 `fallback_chain` is available on any auxiliary task — `compression`, `vision`, `approval`, `mcp`, etc.
 
