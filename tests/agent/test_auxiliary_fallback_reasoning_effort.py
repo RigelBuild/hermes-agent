@@ -58,7 +58,7 @@ def _entry(provider: str, model: str, *, base_url: str = FALLBACK_URL, reasoning
 
 
 def _run(*, chain=(), main_chain=(), reasoning_config=MAIN_EFFORT, main_marked=True,
-         primary_error=None, auto_runtime=False, async_mode=False) -> list:
+         primary_error=None, auto_runtime=False, async_mode=False, task_provider="auto") -> list:
     """Run one auxiliary call. Return ``(base_url, wire kwargs)`` for each send, in order. ``async_mode`` drives
     ``async_call_llm`` through the real ``_to_async_client`` with ``openai.AsyncOpenAI`` patched."""
     sent = []
@@ -96,11 +96,11 @@ def _run(*, chain=(), main_chain=(), reasoning_config=MAIN_EFFORT, main_marked=T
     if main_marked:
         ac._mark_provider_unhealthy(
             "custom", base_url=MAIN_URL, model="gpt-6-luna", reason=aux_errors.USAGE_LIMIT_REASON)
-    request_model = "cheap-model-x" if main_marked or auto_runtime else "gpt-6-luna"
+    request_model = "cheap-model-x" if main_marked or auto_runtime or task_provider != "auto" else "gpt-6-luna"
     with (
         patch("agent.auxiliary_client._create_openai_client", side_effect=construct),
         patch("agent.auxiliary_client._resolve_task_provider_model",
-              return_value=("auto", request_model, None, None, None)),
+              return_value=(task_provider, request_model, None, None, None)),
         patch("agent.auxiliary_client._get_auxiliary_task_config",
               return_value={"fallback_chain": list(chain)}),
         patch("agent.auxiliary_client._transient_retry_count", return_value=0),
@@ -149,6 +149,34 @@ def test_fallback_entry_reasoning_effort_low_is_sent(monkeypatch):
     kwargs = sent[0][1]
     assert kwargs["reasoning_effort"] == "low"
     assert "reasoning" not in (kwargs.get("extra_body") or {})
+
+
+def test_async_fallback_entry_reasoning_effort_low_is_sent(monkeypatch):
+    """Async auto route served by a ``fallback_chain`` entry: the async rebuild keeps the entry, so ``low``."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    sent = _run(chain=[_entry("custom", "claude-haiku-5-5", reasoning_effort="low")], async_mode=True)
+    assert [(url, kw["reasoning_effort"]) for url, kw in sent] == [(FALLBACK_URL, "low")]
+
+
+def test_async_explicit_provider_unavailable_sends_entry_level(monkeypatch):
+    """Async call, explicit task provider with no credentials: the chain entry serves it and its ``low`` is sent."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    sent = _run(chain=[_entry("custom", "claude-haiku-5-5", reasoning_effort="low")],
+                main_marked=False, task_provider="deepseek", async_mode=True)
+    # The deepseek label gives the nested ``extra_body.reasoning`` wire shape.
+    assert [(url, kw["extra_body"]["reasoning"]["effort"]) for url, kw in sent] == [(FALLBACK_URL, "low")]
+
+
+def test_carry_fallback_entry_ignores_untagged_source():
+    """A source with no entry: the routed client stays untagged and nothing raises."""
+    class Plain:
+        pass
+
+    source, routed = Plain(), Plain()
+    assert ac._carry_fallback_entry(source, routed) is routed
+    assert not hasattr(routed, "_hermes_fallback_entry")
+
 
 
 def test_fallback_providers_entry_low_is_sent(monkeypatch):
