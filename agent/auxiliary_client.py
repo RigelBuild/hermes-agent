@@ -4524,19 +4524,29 @@ def _try_discovery_chain() -> tuple[Optional[OpenAI], Optional[str], str]:
 
 
 def _resolve_auto_route(
-    main_runtime: Optional[dict[str, Any]] = None, task: Optional[str] = None
+    main_runtime: Optional[dict[str, Any]] = None, task: Optional[str] = None, model: Optional[str] = None,
 ) -> tuple[Optional[OpenAI], Optional[str], str]:
     """Full auto-detection chain, including the selected provider identity. Priority: (1) main provider +
     main model, regardless of provider type ("auto" means "my main model for side tasks too"; explicit
     per-task overrides still win); (2) configured fallback policy — task chain, then the main agent's
     top-level chain; (3) OpenRouter → Nous → custom → Codex → API-key providers, only with no policy
-    and no working main client."""
+    and no working main client. The returned model is the requested ``model`` only when the main client
+    serves the route; a fallback or discovery route returns the model it was built for."""
     runtime = _normalize_main_runtime(main_runtime)
     _warn_stale_openai_base_url(runtime.get("provider", ""))
     main_provider, main_model, base_url, api_key, api_mode = _main_route_target(runtime, task)
     routed = _try_main_provider_route(main_provider, main_model, base_url, api_key, api_mode)
     if routed is not None:
-        return routed
+        client, resolved, provider = routed
+        # The requested model stays unless it is itself usage-limited on the main provider.
+        wire = None if model and _auto_request_model_limited(runtime, task, model) else model
+        # An OpenRouter-format model override won't work on a non-OpenRouter provider (e.g. local
+        # server); drop it for the provider's default.
+        if wire and "/" in wire and resolved and "/" not in resolved:
+            logger.debug("Dropping OpenRouter-format model %r for non-OpenRouter "
+                         "auxiliary provider (using %r instead)", wire, resolved)
+            wire = None
+        return client, wire or resolved, provider
     if task:
         skipped = bool(main_model) and _is_provider_unhealthy(
             _normalize_chain_label(main_provider), _custom_health_base_url(main_provider, base_url), main_model)
@@ -4868,18 +4878,11 @@ def _route_or_warn(req: _ResolveRequest, client: Any, default: Optional[str], un
 
 def _resolve_auto_branch(req: _ResolveRequest) -> _ResolveResult:
     """Auto: try all providers in priority order; tag the client with the effective provider (survives cache reuse)."""
-    client, route_model, effective_provider = _resolve_auto_route(main_runtime=req.main_runtime, task=req.task)
+    client, route_model, effective_provider = _resolve_auto_route(
+        main_runtime=req.main_runtime, task=req.task, model=req.model)
     if client is None:
         return None, None
-    # An explicit requested model wins, unless it is the model the main route skipped as usage-limited.
-    model = None if _auto_request_model_limited(req.main_runtime, req.task, req.model) else req.model
-    # An OpenRouter-format model override won't work on a non-OpenRouter provider (e.g. local
-    # server); drop it for the provider's default.
-    if model and "/" in model and route_model and "/" not in route_model:
-        logger.debug("Dropping OpenRouter-format model %r for non-OpenRouter "
-                     "auxiliary provider (using %r instead)", model, route_model)
-        model = None
-    routed_client, routed_model = _route_client(req, client, model or route_model)
+    routed_client, routed_model = _route_client(req, client, route_model)
     if routed_client is not None and effective_provider:
         try:
             routed_client._hermes_aux_effective_provider = effective_provider
@@ -5914,10 +5917,14 @@ def _get_cached_client(
         provider, async_mode=async_mode, base_url=base_url, api_key=api_key, api_mode=api_mode,
         main_runtime=main_runtime, is_vision=is_vision, task=task, model=model,
     )
-    # An auto route keeps the requested model unless the main provider is marked usage-limited for it;
-    # then the model the route resolved (a fallback entry's own) is the one to send.
-    compat_request = None if str(provider or "").strip().lower() == "auto" and _auto_request_model_limited(
-        runtime, task, model) else model
+    # An auto route resolves its own wire model; a cached client on a model now usage-limited on the
+    # main provider is dropped so the rebuild routes past it.
+    auto_route = str(provider or "").strip().lower() == "auto"
+    if auto_route and cache_key in _client_cache and _auto_request_model_limited(runtime, task, model):
+        with _client_cache_lock:
+            if _client_cache.get(cache_key, (None, None, None))[1] == model:
+                _client_cache.pop(cache_key, None)
+    compat_request = None if auto_route else model
     with _client_cache_lock:
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]
