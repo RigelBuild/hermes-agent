@@ -3620,7 +3620,7 @@ def _prepare_same_provider_retry(
     retry_kwargs = _build_call_kwargs(
         effective_provider or resolved_provider, retry_model or final_model, messages,
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=effective_timeout,
-        extra_body=effective_extra_body, reasoning_config=reasoning_config,
+        extra_body=effective_extra_body, reasoning_config=_served_reasoning(retry_client, reasoning_config),
         base_url=retry_base or resolved_base_url, task=task,
     )
     # Preserve per-request attribution headers (a profile's ``request_headers``) across the rebuilt-client
@@ -3807,6 +3807,14 @@ def _tag_fallback_entry(client: Any, entry: dict[str, Any], source: str) -> None
         client._hermes_fallback_entry = (source, entry)
     except (AttributeError, TypeError):
         logger.debug("Auxiliary client %s cannot retain its fallback entry", type(client).__name__)
+
+
+def _carry_fallback_entry(source_client: Any, routed_client: Any) -> Any:
+    """Copy the served fallback entry onto an async rebuild, which is a new object; return ``routed_client``."""
+    carried = getattr(source_client, "_hermes_fallback_entry", None)
+    if routed_client is not None and routed_client is not source_client and isinstance(carried, tuple):
+        _tag_fallback_entry(routed_client, carried[1], carried[0])
+    return routed_client
 
 
 def _served_reasoning(client: Any, reasoning_config: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
@@ -4962,9 +4970,7 @@ def _resolve_auto_branch(req: _ResolveRequest) -> _ResolveResult:
     routed_client, routed_model = _route_client(req, client, route_model)
     if routed_client is not None:
         _tag_auto_gate(routed_client, _auto_route_gate(client))  # async rebuild is a new object
-        carried = getattr(client, "_hermes_fallback_entry", None)
-        if routed_client is not client and isinstance(carried, tuple):
-            _tag_fallback_entry(routed_client, carried[1], carried[0])
+        _carry_fallback_entry(client, routed_client)
     if routed_client is not None and effective_provider:
         try:
             routed_client._hermes_aux_effective_provider = effective_provider
@@ -7425,6 +7431,7 @@ def _resolve_call_client(
                 if async_mode:
                     client, final_model = _to_async_client(
                         fb_client, fb_model or "", is_vision=(task == "vision"))
+                    _carry_fallback_entry(fb_client, client)
                 resolved_provider = fb_label or resolved_provider
                 effective_provider = resolved_provider
             # Auto/custom with no credentials: walk the full auto chain (not just OpenRouter).
@@ -8424,7 +8431,8 @@ async def _async_call_llm_impl(
         fb_client, fb_model, fb_label = args
         # The converted client drops the sync client's route tags: classify on the sync client's backend.
         classify_as = _candidate_classification_provider(fb_client, fb_model, fb_label, task)
-        fb_client, _ = _to_async_client(fb_client, fb_model or "", is_vision=(task == "vision"))
+        async_client, _ = _to_async_client(fb_client, fb_model or "", is_vision=(task == "vision"))
+        fb_client = _carry_fallback_entry(fb_client, async_client)
         return await _call_fallback_candidate_async(fb_client, fb_model, fb_label, classify_as=classify_as, **kw)
     return await _drive_ladder_async(
         _start_recovery_ladder(failure, req, retry_kwargs, task=task, async_mode=True, route_info=route_info),

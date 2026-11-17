@@ -5,14 +5,16 @@ The main route asks for ``medium``. A configured entry that declares ``low`` mus
 the main value with the same wire shape as before. An explicit caller disable wins over the entry.
 """
 
+import asyncio
 import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
+from openai import AsyncOpenAI
 
 from agent import auxiliary_client as ac
 from agent import auxiliary_error_policy as aux_errors
-from agent.auxiliary_client import call_llm
+from agent.auxiliary_client import async_call_llm, call_llm
 
 MAIN_URL = "https://main-gateway.example.test/v1"
 FALLBACK_URL = "https://fallback-gateway.example.test/v1"
@@ -56,23 +58,36 @@ def _entry(provider: str, model: str, *, base_url: str = FALLBACK_URL, reasoning
 
 
 def _run(*, chain=(), main_chain=(), reasoning_config=MAIN_EFFORT, main_marked=True,
-         primary_error=None, auto_runtime=False) -> list:
-    """Run one auxiliary call. Return ``(base_url, wire kwargs)`` for each send, in order."""
+         primary_error=None, auto_runtime=False, async_mode=False) -> list:
+    """Run one auxiliary call. Return ``(base_url, wire kwargs)`` for each send, in order. ``async_mode`` drives
+    ``async_call_llm`` through the real ``_to_async_client`` with ``openai.AsyncOpenAI`` patched."""
     sent = []
+
+    def record(base_url, kwargs):
+        sent.append((base_url, kwargs))
+        if base_url == MAIN_URL and primary_error is not None:
+            raise primary_error
+        return _ok_response("OK")
 
     def construct(*, api_key, base_url, **_kwargs):
         client = MagicMock()
         client.api_key = api_key
         client.base_url = base_url
-
-        def create(**kwargs):
-            sent.append((base_url, kwargs))
-            if base_url == MAIN_URL and primary_error is not None:
-                raise primary_error
-            return _ok_response("OK")
-
-        client.chat.completions.create = MagicMock(side_effect=create)
+        client.HERMES_SKIP_ASYNC_WRAP = False  # a bare MagicMock would opt out of the async rebuild
+        client.chat.completions.create = MagicMock(side_effect=lambda **kw: record(base_url, kw))
         return client
+
+    class RecordingAsyncOpenAI(AsyncOpenAI):
+        """A real ``AsyncOpenAI`` (so wire ``isinstance`` checks hold) whose sends are recorded."""
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            url = str(kwargs["base_url"])
+
+            async def acreate(**kw):
+                return record(url, kw)
+
+            self.chat.completions.create = acreate
 
     if auto_runtime:
         runtime = {"provider": "auto", "model": "", "base_url": "", "api_key": ""}
@@ -91,13 +106,18 @@ def _run(*, chain=(), main_chain=(), reasoning_config=MAIN_EFFORT, main_marked=T
         patch("agent.auxiliary_client._transient_retry_count", return_value=0),
         patch("hermes_cli.config.load_config_readonly", return_value={}),
         patch("hermes_cli.fallback_config.get_fallback_chain", return_value=list(main_chain)),
+        patch("openai.AsyncOpenAI", RecordingAsyncOpenAI),
     ):
-        call_llm(
+        call_kwargs = dict(
             task="title_generation",
             messages=[{"role": "user", "content": "hi"}],
             main_runtime=runtime,
             reasoning_config=reasoning_config,
         )
+        if async_mode:
+            asyncio.run(async_call_llm(**call_kwargs))
+        else:
+            call_llm(**call_kwargs)
     return sent
 
 
@@ -181,3 +201,41 @@ def test_invalid_fallback_providers_level_warning_names_fallback_providers(monke
     assert sent[0][1]["reasoning_effort"] == "medium"
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert any("fallback_providers" in msg and "bogus" in msg for msg in warnings), warnings
+
+
+def test_async_recovery_ladder_fallback_sends_entry_level(monkeypatch):
+    """Async primary fails with a quota 429: the async rebuild of the fallback client keeps its entry, so ``low``."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    sent = _run(
+        chain=[_entry("custom", "claude-haiku-5-5", reasoning_effort="low")],
+        main_marked=False, primary_error=_quota_429(), async_mode=True,
+    )
+    assert [(url, kw["reasoning_effort"]) for url, kw in sent] == [(MAIN_URL, "medium"), (FALLBACK_URL, "low")]
+
+
+def test_entry_level_does_not_leak_into_a_later_primary_call(monkeypatch):
+    """A fallback-served call, then a healthy primary call in the same process: the second sends the main level."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    chain = [_entry("custom", "claude-haiku-5-5", reasoning_effort="low")]
+    first = _run(chain=chain)
+    assert [(url, kw["reasoning_effort"]) for url, kw in first] == [(FALLBACK_URL, "low")]
+    ac._reset_aux_unhealthy_cache()
+    second = _run(chain=chain, main_marked=False)
+    assert [(url, kw["reasoning_effort"]) for url, kw in second] == [(MAIN_URL, "medium")]
+
+
+def test_same_provider_retry_on_entry_client_keeps_entry_level():
+    """An auth-refresh retry rebuilds the request for an entry-tagged client: it keeps the entry's ``low``."""
+    retry_client = MagicMock()
+    retry_client.base_url = FALLBACK_URL
+    ac._tag_fallback_entry(retry_client, _entry("custom", "claude-haiku-5-5", reasoning_effort="low"), "fallback_chain")
+    with patch("agent.auxiliary_client._get_cached_client", return_value=(retry_client, "claude-haiku-5-5")):
+        client, kwargs = ac._prepare_same_provider_retry(
+            task="title_generation", resolved_provider="custom", resolved_model="claude-haiku-5-5",
+            resolved_base_url=FALLBACK_URL, resolved_api_key="sk-fallback", resolved_api_mode=None,
+            main_runtime=None, final_model="claude-haiku-5-5", messages=[{"role": "user", "content": "hi"}],
+            temperature=None, max_tokens=None, tools=None, effective_timeout=30.0, effective_extra_body={},
+            reasoning_config=MAIN_EFFORT, async_mode=False,
+        )
+    assert client is retry_client
+    assert kwargs["reasoning_effort"] == "low"
