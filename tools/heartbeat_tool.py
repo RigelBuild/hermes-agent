@@ -1,8 +1,9 @@
 """`heartbeat` agent tool: set, clear, status and list route heartbeats.
 
 A target is a routed session id, or ``discord:<channel_id>`` matched against the gateway routing index.
-A target with no routed session is refused, and so is a route with no native admission: the tool never
-creates a session. Every set and clear is logged.
+A target with no routed session is refused, and so is a route with no native admission or one owned by
+another profile: the tool never creates a session. Under multiplexing a call with no active profile scope
+owns no route. Every set and clear is logged.
 """
 
 import json
@@ -11,6 +12,7 @@ import sys
 from dataclasses import asdict
 from typing import Any, Callable, Optional
 
+from hermes_constants import get_hermes_home_override, hermes_home_key
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger("tools.heartbeat_tool")
@@ -56,6 +58,29 @@ def _distinct_dbs(dbs: list[Any]) -> list[Any]:
     return list(out.values())
 
 
+def _caller_owns(store) -> Callable[[Optional[str]], bool]:
+    """Whether *store*'s route belongs to the caller's active profile.
+
+    Without multiplexing there is one profile, so every route is the caller's. Under multiplexing a call
+    with no active profile scope owns nothing, and a named route is owned only by its own profile's home.
+    """
+    if not getattr(getattr(store, "config", None), "multiplex_profiles", False):
+        return lambda _key: True
+    active = get_hermes_home_override()
+    if active is None:
+        return lambda _key: False
+    caller = hermes_home_key(active)
+
+    def owns(route: Optional[str]) -> bool:
+        if store._named_profile_for_key(route) is None:
+            owner = getattr(store, "_routing_home", None)  # the launch profile's home
+        else:
+            owner = store._profile_home_for_key(route)
+        return owner is not None and hermes_home_key(owner) == caller
+
+    return owns
+
+
 def heartbeat_action(
     args: dict,
     *,
@@ -63,6 +88,7 @@ def heartbeat_action(
     routing_db: Any = None,
     routing_scope: Optional[str] = None,
     admission_check: Callable[[dict], bool],
+    caller_owns: Callable[[Optional[str]], bool],
 ) -> str:
     """Run one heartbeat action and return a JSON string.
 
@@ -70,6 +96,7 @@ def heartbeat_action(
     named-profile route is read and written in its own profile's store. *routing_db* and *routing_scope*
     locate the routed sessions. *admission_check* must return True only when the route has validated native
     admission.
+    *caller_owns* returns True only for a route the caller's active profile owns.
     """
     from hermes_cli.heartbeat import (
         HeartbeatManager, MIN_INTERVAL_SECONDS, list_heartbeats, load_route_heartbeat, parse_interval,
@@ -84,7 +111,8 @@ def heartbeat_action(
         found: dict[str, Any] = {}
         for store in stores:
             for key, state in list_heartbeats(store):
-                found.setdefault(key, state)
+                if caller_owns(key):
+                    found.setdefault(key, state)
         heartbeats = [{"route": key, **asdict(found[key])} for key in sorted(found)]
         return json.dumps({"success": True, "heartbeats": heartbeats})
 
@@ -95,6 +123,8 @@ def heartbeat_action(
     if entry is None:
         return tool_error(f"no routed session for {target}", success=False)
     route = entry["session_key"]
+    if not caller_owns(route):
+        return tool_error(f"no routed session for {target}", success=False)
     db = db_for_key(route)
     if db is None:
         return tool_error(f"no session store for {target}; retry", success=False)
@@ -187,6 +217,7 @@ def _handler(args, **kw):
         routing_db=store._routing_db,
         routing_scope=store._routing_scope(),
         admission_check=_native_admission(runner),
+        caller_owns=_caller_owns(store),
     )
 
 

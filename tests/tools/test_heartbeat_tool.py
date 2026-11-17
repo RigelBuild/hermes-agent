@@ -2,6 +2,7 @@
 
 import json
 import logging
+from contextlib import contextmanager
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,6 +13,7 @@ from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key
 from hermes_cli import goals
 from hermes_cli.heartbeat import list_heartbeats, load_route_heartbeat
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tools import heartbeat_tool
 
 CHANNEL = "111222333"
@@ -363,7 +365,24 @@ def _fitness_route(store):
     return key, source, profile_db
 
 
-def test_heartbeat_on_a_named_profile_route_lands_in_the_profile_store(multiplex_store, monkeypatch):
+@contextmanager
+def _active_home(home):
+    """Run the body with *home* as the active profile scope, as a profile turn binds it."""
+    token = set_hermes_home_override(str(home))
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.fixture
+def fitness_scope(multiplex_store):
+    _store, _root, profile = multiplex_store
+    with _active_home(profile):
+        yield profile
+
+
+def test_heartbeat_on_a_named_profile_route_lands_in_the_profile_store(multiplex_store, fitness_scope, monkeypatch):
     from types import SimpleNamespace
 
     from hermes_cli.heartbeat import HeartbeatManager
@@ -384,7 +403,7 @@ def test_heartbeat_on_a_named_profile_route_lands_in_the_profile_store(multiplex
     assert [item["route"] for item in listed["heartbeats"]] == [key]
 
 
-def test_admission_uses_the_routed_profile_authority(multiplex_store, monkeypatch):
+def test_admission_uses_the_routed_profile_authority(multiplex_store, fitness_scope, monkeypatch):
     from pathlib import Path
     from types import SimpleNamespace
 
@@ -416,3 +435,85 @@ def test_admission_uses_the_routed_profile_authority(multiplex_store, monkeypatc
     out = json.loads(mod._handler({"action": "set", "target": f"discord:{CHANNEL}", "interval": "10m", "prompt": "check fitness"}))
 
     assert out["success"] is True
+
+
+def test_cross_profile_set_is_refused_and_writes_nothing(multiplex_store, monkeypatch):
+    from tools import heartbeat_tool as mod
+
+    store, root, _profile = multiplex_store
+    key, _source, profile_db = _fitness_route(store)
+    monkeypatch.setattr(mod, "_gateway_runner", lambda: SimpleNamespace(session_store=store))
+    monkeypatch.setattr(mod, "_native_admission", lambda _runner: lambda _entry: True)
+
+    with _active_home(root):  # the launch profile's turn, not the route's
+        out = json.loads(mod._handler({"action": "set", "target": f"discord:{CHANNEL}", "interval": "10m", "prompt": "steal"}))
+
+    assert out["success"] is False
+    assert load_route_heartbeat(key, profile_db) is None
+    assert load_route_heartbeat(key, store._routing_db) is None
+
+
+def test_cross_profile_clear_is_refused_and_leaves_the_row(multiplex_store, fitness_scope, monkeypatch):
+    from tools import heartbeat_tool as mod
+
+    store, root, _profile = multiplex_store
+    key, _source, profile_db = _fitness_route(store)
+    monkeypatch.setattr(mod, "_gateway_runner", lambda: SimpleNamespace(session_store=store))
+    monkeypatch.setattr(mod, "_native_admission", lambda _runner: lambda _entry: True)
+    set_out = json.loads(mod._handler({"action": "set", "target": f"discord:{CHANNEL}", "interval": "10m", "prompt": "keep"}))
+    assert set_out["success"] is True
+
+    with _active_home(root):
+        out = json.loads(mod._handler({"action": "clear", "target": f"discord:{CHANNEL}"}))
+
+    assert out["success"] is False
+    assert load_route_heartbeat(key, profile_db).prompt == "keep"
+
+
+def test_cross_profile_status_is_refused(multiplex_store, fitness_scope, monkeypatch):
+    from tools import heartbeat_tool as mod
+
+    store, root, _profile = multiplex_store
+    _fitness_route(store)
+    monkeypatch.setattr(mod, "_gateway_runner", lambda: SimpleNamespace(session_store=store))
+    monkeypatch.setattr(mod, "_native_admission", lambda _runner: lambda _entry: True)
+    set_out = json.loads(mod._handler({"action": "set", "target": f"discord:{CHANNEL}", "interval": "10m", "prompt": "private"}))
+    assert set_out["success"] is True
+
+    with _active_home(root):
+        out = json.loads(mod._handler({"action": "status", "target": f"discord:{CHANNEL}"}))
+
+    assert out["success"] is False
+    assert "heartbeat" not in out
+
+
+def test_list_omits_another_profiles_routes(multiplex_store, fitness_scope, monkeypatch):
+    from tools import heartbeat_tool as mod
+
+    store, root, _profile = multiplex_store
+    _fitness_route(store)
+    monkeypatch.setattr(mod, "_gateway_runner", lambda: SimpleNamespace(session_store=store))
+    monkeypatch.setattr(mod, "_native_admission", lambda _runner: lambda _entry: True)
+    set_out = json.loads(mod._handler({"action": "set", "target": f"discord:{CHANNEL}", "interval": "10m", "prompt": "fitness"}))
+    assert set_out["success"] is True
+
+    with _active_home(root):
+        listed = json.loads(mod._handler({"action": "list"}))
+
+    assert listed == {"success": True, "heartbeats": []}
+
+
+def test_multiplexed_call_with_no_active_scope_fails_closed(multiplex_store, monkeypatch):
+    from tools import heartbeat_tool as mod
+
+    store, _root, _profile = multiplex_store
+    key, _source, profile_db = _fitness_route(store)
+    monkeypatch.setattr(mod, "_gateway_runner", lambda: SimpleNamespace(session_store=store))
+    monkeypatch.setattr(mod, "_native_admission", lambda _runner: lambda _entry: True)
+
+    set_out = json.loads(mod._handler({"action": "set", "target": f"discord:{CHANNEL}", "interval": "10m", "prompt": "x"}))
+    listed = json.loads(mod._handler({"action": "list"}))
+
+    assert set_out["success"] is False
+    assert load_route_heartbeat(key, profile_db) is None
+    assert listed == {"success": True, "heartbeats": []}
