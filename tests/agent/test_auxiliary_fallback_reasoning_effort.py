@@ -164,7 +164,7 @@ def test_async_explicit_provider_unavailable_sends_entry_level(monkeypatch):
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     sent = _run(chain=[_entry("custom", "claude-haiku-5-5", reasoning_effort="low")],
                 main_marked=False, task_provider="deepseek", async_mode=True)
-    # The deepseek label gives the nested ``extra_body.reasoning`` wire shape.
+    # The served label ``fallback_chain[0](custom)`` has no profile, so the generic nested shape is sent.
     assert [(url, kw["extra_body"]["reasoning"]["effort"]) for url, kw in sent] == [(FALLBACK_URL, "low")]
 
 
