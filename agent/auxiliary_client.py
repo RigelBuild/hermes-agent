@@ -3763,48 +3763,20 @@ def _auth_refresh_provider_for_route(
     return host_provider or normalized
 
 
-def _main_fallback_chain_entry(fb_label: str) -> Optional[dict[str, Any]]:
-    """Resolve the top-level ``fallback_providers`` entry a ``fallback_providers[<i>](<provider>)`` label
-    points at (main-agent chain order, via ``get_fallback_chain``), or None."""
-    m = re.match(r"fallback_providers\[(\d+)\]", fb_label or "")
-    if not m:
-        return None
-    try:
-        from hermes_cli.config import load_config_readonly
-        from hermes_cli.fallback_config import get_fallback_chain
-        chain = get_fallback_chain(load_config_readonly())
-        entry = chain[int(m.group(1))]
-    except Exception:
-        return None
-    return entry if isinstance(entry, dict) else None
-
-
 def _fallback_chain_entry(task: Optional[str], fb_label: str) -> Optional[dict[str, Any]]:
-    """Resolve the configured entry a fallback label points at: ``auxiliary.<task>.fallback_chain[<i>]``
-    for a ``fallback_chain[<i>](<provider>)`` label, or the top-level ``fallback_providers[<i>]`` entry for
-    a ``fallback_providers[<i>](<provider>)`` label. None when the label is not a configured candidate or
-    the index no longer resolves."""
+    """Resolve the ``fallback_chain`` entry a ``fallback_chain[<i>](<provider>)`` label points at,
+    or None when the label is not a configured-chain candidate or the index no longer resolves."""
     if not task or not fb_label:
         return None
     m = re.match(r"fallback_chain\[(\d+)\]", fb_label)
     if not m:
-        return _main_fallback_chain_entry(fb_label)
+        return None
     try:
         chain = _get_auxiliary_task_config(task).get("fallback_chain")
         entry = chain[int(m.group(1))] if isinstance(chain, list) else None
     except Exception:
         return None
     return entry if isinstance(entry, dict) else None
-
-
-def _served_fallback_entry(task: Optional[str], route_label: Optional[str]) -> Optional[dict[str, Any]]:
-    """The configured fallback entry that serves a call, read from its route label, or None when the route
-    is not a configured fallback (a primary or discovery route)."""
-    if not re.match(r"fallback_(?:chain|providers)\[\d+\]", route_label or ""):
-        return None
-    return _fallback_chain_entry(task, route_label)
-
-
 
 
 def _coerce_positive_timeout(raw: Any) -> Optional[float]:
@@ -3823,24 +3795,40 @@ def _fallback_entry_timeout(task: Optional[str], fb_label: str) -> Optional[floa
     over), the fallback aborted on the same clock even when independently healthy — a 163k-token compression
     that needs ~90s on the fallback died at the primary's 30s deadline every turn (#62452).
     """
-    entry = _fallback_chain_entry(task, fb_label) if re.match(r"fallback_chain\[", fb_label or "") else None
+    entry = _fallback_chain_entry(task, fb_label)
     return _coerce_positive_timeout(entry.get("timeout") if entry else None)
 
 
-def _fallback_entry_reasoning(entry: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
-    """Per-entry ``reasoning_effort`` as a reasoning config, or None (keep the main request's reasoning).
-    An entry declares the level its own route should think at; a fallback serving the call must not
-    inherit the main route's level (RIG-10585). Parsed like the task-level field, so an invalid
-    level is ignored rather than sent to the wire."""
+def _tag_fallback_entry(client: Any, entry: dict[str, Any], source: str) -> None:
+    """Record on a fallback client the configured entry that serves it and the list it came from
+    (``fallback_chain`` or ``fallback_providers``). The provider name stays untouched: every reader keys
+    on it, so the entry travels on its own attribute (RIG-10585)."""
+    try:
+        client._hermes_fallback_entry = (source, entry)
+    except (AttributeError, TypeError):
+        logger.debug("Auxiliary client %s cannot retain its fallback entry", type(client).__name__)
+
+
+def _served_reasoning(client: Any, reasoning_config: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Reasoning for a request ``client`` serves. A served fallback entry's own ``reasoning_effort``
+    replaces the caller's level (RIG-10585). The caller's reasoning stays when the client is no configured
+    fallback, when the entry has no valid level, or when the caller turned reasoning off: an explicit
+    disable wins over the entry. An invalid level is ignored, with a warning naming its list."""
+    carried = getattr(client, "_hermes_fallback_entry", None)
+    if not isinstance(carried, tuple) or len(carried) != 2:
+        return reasoning_config
+    source, entry = carried
     if not isinstance(entry, dict) or "reasoning_effort" not in entry:
-        return None
+        return reasoning_config
+    if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
+        return reasoning_config
     from hermes_constants import parse_reasoning_effort
     parsed = parse_reasoning_effort(entry.get("reasoning_effort"))
     if parsed is None:
-        logger.warning("auxiliary fallback_chain entry %r has an invalid reasoning_effort %r — ignoring",
-                       entry.get("provider"), entry.get("reasoning_effort"))
+        logger.warning("auxiliary %s entry %r has an invalid reasoning_effort %r — ignoring",
+                       source, entry.get("provider"), entry.get("reasoning_effort"))
+        return reasoning_config
     return parsed
-
 
 
 def _fallback_provider_from_label(label: str) -> str:
@@ -3922,9 +3910,6 @@ def _fallback_request_kwargs(
 ) -> dict[str, Any]:
     """Build request kwargs for one fallback destination (cache-section replan + fast-lane cap)."""
     fallback_max_tokens, fallback_extra_body = max_tokens, effective_extra_body
-    # A configured entry's own ``reasoning_effort`` replaces the main reasoning for the call it serves
-    # (RIG-10585); an entry without the field keeps the main value.
-    fallback_reasoning = _fallback_entry_reasoning(fallback_entry) or reasoning_config
     if apply_fast_lane:
         fallback_max_tokens, fallback_extra_body = _compression_fast_lane_controls(
             task, actual_provider=destination.provider, actual_model=destination.model,
@@ -3936,7 +3921,7 @@ def _fallback_request_kwargs(
     fb_kwargs = _build_call_kwargs(
         destination.provider, destination.model, fallback_messages,
         temperature=temperature, max_tokens=fallback_max_tokens, tools=fallback_tools, timeout=effective_timeout,
-        extra_body=fallback_extra_body, reasoning_config=fallback_reasoning, base_url=destination.base_url, task=task)
+        extra_body=fallback_extra_body, reasoning_config=reasoning_config, base_url=destination.base_url, task=task)
     return fb_kwargs
 
 
@@ -3960,6 +3945,9 @@ def _plan_fallback_candidate(
         effective_timeout = fb_timeout
     destination = _fallback_destination(task, fb_client, fb_model, fb_label)
     task_config = _get_auxiliary_task_config(task) if task == "compression" else {}
+    # The candidate's served entry sets its own reasoning level (RIG-10585); the credential-refreshed
+    # retry serves the same entry, so it keeps that level.
+    request["reasoning_config"] = _served_reasoning(fb_client, request.get("reasoning_config"))
     fallback_entry = _fallback_chain_entry(task, fb_label) or {}
     common = dict(
         task=task, effective_timeout=effective_timeout, fallback_entry=fallback_entry,
@@ -4329,6 +4317,7 @@ def _try_configured_fallback_chain(
                 continue
             logger.info("Auxiliary %s: %s on %s — configured fallback to %s (%s)",
                         task, reason, failed_provider, label, resolved_model or fb_model or "default")
+            _tag_fallback_entry(fb_client, entry, "fallback_chain")
             return fb_client, resolved_model or fb_model, label
         tried.append(label)
     if tried:
@@ -4421,6 +4410,7 @@ def _try_main_fallback_chain(
                 continue
             logger.info("Auxiliary %s: %s on %s — main fallback chain to %s (%s)",
                         task or "call", reason, failed_provider or "auto", label, resolved_model or fb_model)
+            _tag_fallback_entry(fb_client, entry, "fallback_providers")
             return fb_client, resolved_model or fb_model, fb_provider
         tried.append(label)
     if tried:
@@ -4598,7 +4588,8 @@ def _auto_route_gate(client: Any) -> bool:
 
 
 def _auto_route_tagged(client: Any) -> bool:
-    """True when the auto route recorded its gate tag on ``client``. The cache stores an auto-routed client only when it is tagged; a non-auto client is cached without the tag."""
+    """True when the auto route recorded its gate tag on ``client``. The cache stores an auto-routed client only
+    when it is tagged; a non-auto client is cached without the tag."""
     return isinstance(getattr(client, "_hermes_aux_gate", None), bool)
 
 
@@ -4629,7 +4620,7 @@ def _resolve_auto_route_gate(
         fb_client, fb_model, fb_label = _try_configured_fallback_chain(
             task, main_provider or "auto", reason="main provider unavailable", **scope)
         if fb_client is not None:
-            return fb_client, fb_model, fb_label, gate
+            return fb_client, fb_model, _fallback_provider_from_label(fb_label), gate
     fb_client, fb_model, fb_label = _try_main_fallback_chain(
         task, main_provider or "auto", reason="main provider unavailable")
     if fb_client is not None:
@@ -4971,6 +4962,9 @@ def _resolve_auto_branch(req: _ResolveRequest) -> _ResolveResult:
     routed_client, routed_model = _route_client(req, client, route_model)
     if routed_client is not None:
         _tag_auto_gate(routed_client, _auto_route_gate(client))  # async rebuild is a new object
+        carried = getattr(client, "_hermes_fallback_entry", None)
+        if routed_client is not client and isinstance(carried, tuple):
+            _tag_fallback_entry(routed_client, carried[1], carried[0])
     if routed_client is not None and effective_provider:
         try:
             routed_client._hermes_aux_effective_provider = effective_provider
@@ -7514,9 +7508,8 @@ def _prepare_aux_request(
     # Client's actual base_url so endpoint-specific temperature overrides work on
     # auto-detected routes (api.moonshot.ai vs api.kimi.com/coding).
     # A served configured fallback entry's own ``reasoning_effort`` replaces the caller's reasoning for
-    # this request (RIG-10585). The route label names the entry that serves the call; main reasoning stays
-    # for every other route, and for an entry without the field.
-    served_reasoning = _fallback_entry_reasoning(_served_fallback_entry(task, request_provider)) or reasoning_config
+    # this request (RIG-10585); the entry travels on the client, never in the provider name.
+    served_reasoning = _served_reasoning(client, reasoning_config)
     kwargs = _build_call_kwargs(
         request_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,

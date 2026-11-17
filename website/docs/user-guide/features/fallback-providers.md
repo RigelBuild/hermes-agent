@@ -371,7 +371,9 @@ auxiliary:
 
 You do **not** need to configure `fallback_chain` to get fallback — the main-agent safety net runs regardless. Use it only when you specifically want a different order than the default.
 
-Each `fallback_chain` entry may also declare its own `reasoning_effort` (for example `low`). When that entry serves a call, its level replaces the main route's level for that call. An entry without the field keeps the main level, as before. Use it to step a fallback down one thinking level, such as a cheaper model that should not think as hard as the primary.
+Each `fallback_chain` entry may also declare its own `timeout` (seconds). Without it, a fallback candidate inherits the task-level timeout — which may be tuned for the primary provider. Declaring a per-entry `timeout` lets a slower-but-reliable fallback (e.g. a large-context summarizer) get the budget it actually needs instead of dying on the primary's clock.
+
+Each `fallback_chain` entry, and each top-level `fallback_providers` entry, may also declare its own `reasoning_effort` (for example `low`). When that entry serves an auxiliary call, its level replaces the main route's level for that call. An entry without the field keeps the main level, as before. A caller that turns reasoning off keeps it off. Use it to step a fallback down one thinking level, such as a cheaper model that should not think as hard as the primary.
 
 ```yaml
 auxiliary:
