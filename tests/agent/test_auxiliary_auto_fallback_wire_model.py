@@ -161,8 +161,12 @@ def test_main_marked_request_x_async_sends_fallback_model(monkeypatch):
     assert sent == [(FALLBACK_URL, "claude-haiku-5-5")]
 
 
-def test_discovery_route_request_x_sends_discovered_model(monkeypatch):
-    """No main provider: discovery picks a backend; X is not sent to it, the backend's own model is."""
+def test_discovery_route_request_x_is_sent(monkeypatch):
+    """No main provider: discovery picks OpenRouter; the requested model is sent, as before RIG-10494.
+
+    A configured model (``model.provider: auto`` with ``auxiliary.<task>.model``) must not be replaced by
+    OpenRouter's default. Only a fallback entry's model replaces X.
+    """
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     sent = []
 
@@ -180,14 +184,47 @@ def test_discovery_route_request_x_sends_discovered_model(monkeypatch):
 
     with patch("agent.auxiliary_client._create_openai_client", side_effect=construct), \
          patch("agent.auxiliary_client._resolve_task_provider_model",
-               return_value=("auto", "cheap-model-x", None, None, None)), \
+               return_value=("auto", "google/gemini-3-flash-preview", None, None, None)), \
          patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}), \
          patch("agent.auxiliary_client._transient_retry_count", return_value=0), \
          patch("agent.auxiliary_client._try_main_fallback_chain", return_value=(None, None, "")), \
          patch("agent.auxiliary_client._discovery_chain_allowed", return_value=True), \
-         patch("agent.auxiliary_client._try_discovery_chain",
-               return_value=(construct(api_key="sk-disc", base_url="https://disc.example.test/v1"),
-                             "backend-default-model", "openrouter")):
+         patch("agent.auxiliary_client._get_provider_chain",
+               return_value=[("openrouter", lambda model=None: (construct(api_key="sk-or", base_url="https://openrouter.ai/api/v1"),
+                                                                 model or "nvidia/nemotron-3-ultra-550b-a55b:free"))]):
         call_llm(task="title_generation", messages=[{"role": "user", "content": "hi"}],
                  main_runtime={"provider": "auto", "model": "", "base_url": "", "api_key": ""})
-    assert sent == [("https://disc.example.test/v1", "backend-default-model")]
+    assert sent == [("https://openrouter.ai/api/v1", "google/gemini-3-flash-preview")]
+
+
+def test_main_marked_request_x_sends_x_again_after_limit_clears(monkeypatch):
+    """X is usage-limited and the route falls back to the main model. The limit then clears: the next
+    call on the same cached route must send X, not the substitute M built while X was limited."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    sent = []
+
+    def construct(*, api_key, base_url, **_kwargs):
+        client = MagicMock()
+        client.api_key = api_key
+        client.base_url = base_url
+
+        def create(*, model, **_kwargs):
+            sent.append((base_url, model))
+            return _ok_response("OK")
+
+        client.chat.completions.create = MagicMock(side_effect=create)
+        return client
+
+    runtime = {"provider": "custom", "model": "gpt-6-luna", "base_url": MAIN_URL, "api_key": "sk-main"}
+    with patch("agent.auxiliary_client._create_openai_client", side_effect=construct), \
+         patch("agent.auxiliary_client._resolve_task_provider_model",
+               return_value=("auto", "cheap-model-x", None, None, None)), \
+         patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}), \
+         patch("agent.auxiliary_client._transient_retry_count", return_value=0):
+        ac._mark_provider_unhealthy("custom", base_url=MAIN_URL, model="cheap-model-x",
+                                    reason=aux_errors.USAGE_LIMIT_REASON)
+        call_llm(task="title_generation", messages=[{"role": "user", "content": "one"}], main_runtime=runtime)
+        ac._reset_aux_unhealthy_cache()
+        call_llm(task="title_generation", messages=[{"role": "user", "content": "two"}], main_runtime=runtime)
+
+    assert sent == [(MAIN_URL, "gpt-6-luna"), (MAIN_URL, "cheap-model-x")]
