@@ -261,3 +261,58 @@ async def test_receipt_resolves_by_input_id(tmp_path):
 
         with pytest.raises(RuntimeStoreError, match="not_found"):
             await authority.receipt(actor, ref, None, input_id="no-such-input")
+
+
+# B1. Boot recovery attaches a recorded turn that settled while the job was orphaned: the attempt
+# leaves the checkpoint, no unknown notice is queued, and the outcome is read from the turn, not resubmitted.
+def test_boot_attaches_settled_turn_without_unknown_notice(monkeypatch, checkpoint, tmp_path):
+    from hermes_state import SessionDB
+    from hermes_state_runtime import (admit_session_input, begin_runtime_epoch, claim_session_input,
+                                      settle_session_input)
+    from hermes_state_local import POLICY_PREFIX
+    from hermes_state_keys import local_identity
+
+    sid = local_identity("profile", "principal", REQUEST_ID)
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        db.create_session(sid, source="cli")
+        epoch = begin_runtime_epoch(db, instance_id="current")
+        row = admit_session_input(db, epoch=epoch, principal_id="principal", session_id=sid,
+                                  request_id=INPUT_ID, payload={"text": "question"})
+        claimed = claim_session_input(db, epoch=epoch, session_id=sid)
+        settle_session_input(db, epoch=epoch, admission_id=claimed["admission_id"],
+                             generation=claimed["generation"], outcome="completed",
+                             result={"final_response": "the answer", "completed": True})
+        db.set_meta(POLICY_PREFIX + sid, json.dumps({
+            "profile_id": "profile", "principal_id": "principal", "request_id": REQUEST_ID,
+            "session_id": sid, "route": "route"}))
+
+    checkpoint.write_text(json.dumps([_pending_checkpoint_entry() | {"attempt_status": "running"}]))
+    registry = ProcessRegistry()
+    registry._recover_interrupted_attempts(checkpoint_path=checkpoint)
+
+    assert not any(w.get("recovery_notice") for w in registry.pending_watchers), (
+        "B1: a turn that settled must not queue the unknown notice")
+    assert json.loads(checkpoint.read_text()) == [], "B1: the settled attempt must leave the checkpoint"
+
+
+# B2. Boot recovery with no settled turn for the recorded input id keeps the unknown notice and never submits.
+def test_boot_keeps_unknown_notice_when_turn_is_missing(monkeypatch, checkpoint, tmp_path):
+    from hermes_state import SessionDB
+    from hermes_state_local import POLICY_PREFIX
+    from hermes_state_keys import local_identity
+
+    sid = local_identity("profile", "principal", REQUEST_ID)
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        db.create_session(sid, source="cli")
+        db.set_meta(POLICY_PREFIX + sid, json.dumps({
+            "profile_id": "profile", "principal_id": "principal", "request_id": REQUEST_ID,
+            "session_id": sid, "route": "route"}))
+
+    checkpoint.write_text(json.dumps([_pending_checkpoint_entry() | {"attempt_status": "running"}]))
+    registry = ProcessRegistry()
+    registry._recover_interrupted_attempts(checkpoint_path=checkpoint)
+
+    notices = [w for w in registry.pending_watchers if w.get("recovery_notice")]
+    assert len(notices) == 1 and "UNKNOWN" in notices[0]["recovery_notice"], (
+        "B2: a missing turn keeps the unknown notice")
+    assert json.loads(checkpoint.read_text())[0]["attempt_status"] == "unknown"

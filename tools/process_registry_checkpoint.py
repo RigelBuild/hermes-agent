@@ -202,6 +202,40 @@ class ProcessCheckpointMixin:
                     entry['attempt_status'] = 'running'
             atomic_json_write(path, entries)
 
+    @staticmethod
+    def _attach_recorded_turn(db_path, entry) -> Optional[dict[str, Any]]:
+        """The recorded turn's settled outcome, read from this profile's state.db, or None (RIG-10342).
+
+        Read-only: it never submits, resolves, or writes. The local creation receipt for the recorded
+        request id names the turn's principal and session; the admission is then found at its exact
+        (principal, session, input id) identity, and only a settled one yields a result. None when there
+        is no receipt, no admission, or the turn has not settled, so the caller keeps the unknown notice."""
+        from pathlib import Path
+        from hermes_state import SessionDB
+        from hermes_state_local import POLICY_PREFIX
+        from hermes_state_runtime import find_session_admission
+        from gateway.session_results import admission_result
+        input_id, request_id = entry.get("input_id"), entry.get("request_id")
+        if not input_id or not request_id or not Path(db_path).is_file():
+            return None
+        db = SessionDB(db_path=Path(db_path), read_only=True)
+        try:
+            rows = db._read_all(
+                "SELECT value FROM state_meta WHERE key GLOB ? AND json_valid(value) "
+                "AND json_extract(value, '$.request_id') = ? LIMIT 1", (POLICY_PREFIX + "*", request_id))
+            if not rows:
+                return None
+            policy = json.loads(rows[0][0])
+            admission = find_session_admission(db, principal_id=policy["principal_id"],
+                                               session_id=policy["session_id"], request_id=input_id)
+            if admission is None or admission["status"] != "terminal":
+                return None
+            saved = admission_result(db, admission["admission_id"])
+            return {"admission_id": admission["admission_id"], "outcome": admission.get("outcome"),
+                    "result": saved or {}}
+        finally:
+            db.close()
+
     def _recover_interrupted_attempts(self, only_session_id=None, checkpoint_path=None):
         """Mark interrupted attempts unknown and replay notices at least once on each boot."""
         from pathlib import Path
@@ -211,7 +245,7 @@ class ProcessCheckpointMixin:
         from utils import atomic_json_write
 
         path = Path(checkpoint_path) if checkpoint_path else _checkpoint_path()
-        notices = []
+        notices, settled = [], set()
         with _FileLock(path.with_name(path.name + '.lock')):
             try:
                 entries = json.loads(path.read_text(encoding='utf-8-sig'))
@@ -238,6 +272,15 @@ class ProcessCheckpointMixin:
                     if self._pending_attempt_owner_is_live(
                             owner_pid, entry.get('attempt_owner_started_at')):
                         continue
+                attached = self._attach_recorded_turn(path.parent / 'state.db', entry)
+                if attached is not None:
+                    # The turn settled while the job was orphaned. This loop already holds the checkpoint
+                    # lock and matched this entry by session id and attempt token above, so the outcome
+                    # is written here and the settled entry is dropped on rewrite (RIG-10342).
+                    settled.add((entry['session_id'], entry['attempt_token']))
+                    entry.update(attach_outcome=attached['outcome'], attach_admission_id=attached['admission_id'])
+                    changed = True
+                    continue
                 if status != 'unknown':
                     entry['attempt_status'] = 'unknown'
                     changed = True
@@ -253,6 +296,10 @@ class ProcessCheckpointMixin:
                     'input_id': entry.get('input_id', ''),
                     **{key: entry.get('watcher_' + key, '') for key in _WATCHER_ROUTE_KEYS},
                 })
+            if settled:
+                entries = [item for item in entries if not (isinstance(item, dict)
+                                                            and (item.get('session_id'), item.get('attempt_token')) in settled)]
+                changed = True
             if changed:
                 atomic_json_write(path, entries)
         if only_session_id is None:
@@ -334,14 +381,15 @@ class ProcessCheckpointMixin:
             return True
         self._update_attempt(checkpoint_path, claimed, give_back)
 
-    def record_attach_outcome(self, entry, outcome) -> Optional[dict[str, Any]]:
+    def record_attach_outcome(self, entry, outcome, checkpoint_path=None) -> Optional[dict[str, Any]]:
         """Record how an attached turn ended, fenced by this attempt's session id and attempt token the
-        way ``_update_attempt`` is (RIG-10342). A stale or foreign token refuses and leaves the file as it was."""
+        way ``_update_attempt`` is (RIG-10342). A stale or foreign token refuses and leaves the file as it was.
+        ``checkpoint_path`` is the file the caller read the entry from; None means the active profile's."""
         from tools.process_registry import _checkpoint_path
         def record(item):
             item.update(outcome)
             return True
-        return self._update_attempt(_checkpoint_path(), entry, record)
+        return self._update_attempt(checkpoint_path or _checkpoint_path(), entry, record)
 
     def _relaunch_shutdown_killed(self, entry: dict[str, Any], checkpoint_path, lookup) -> bool:
         """Claim a dead attempt the gateway killed at shutdown, up to the cap, and queue its relaunch
