@@ -321,3 +321,10 @@ def test_minimax_label_request_relay_route_names_bare_provider(request_provider)
     """A fallback-labelled minimax request records the bare provider on the relay route, not the label."""
     _req, relay = _minimax_label_request(request_provider)
     assert relay["provider"] == "minimax"
+
+
+@pytest.mark.parametrize("request_provider", ["minimax", "fallback_chain[0](minimax)"])
+def test_minimax_label_request_attempt_provider_is_bare_name(request_provider):
+    """The attempt-level provider handed to the relay (``req.request_provider``) is the bare name, never the label."""
+    req, _relay = _minimax_label_request(request_provider)
+    assert req.request_provider == "minimax"
