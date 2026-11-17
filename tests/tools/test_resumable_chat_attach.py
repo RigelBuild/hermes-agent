@@ -263,9 +263,8 @@ async def test_receipt_resolves_by_input_id(tmp_path):
             await authority.receipt(actor, ref, None, input_id="no-such-input")
 
 
-# B1. Boot recovery attaches a recorded turn that settled while the job was orphaned: the attempt
-# leaves the checkpoint, no unknown notice is queued, and the outcome is read from the turn, not resubmitted.
-def test_boot_attaches_settled_turn_without_unknown_notice(monkeypatch, checkpoint, tmp_path):
+def _recorded_turn(tmp_path, *, settle=None, claim=True):
+    """A state.db holding the recorded turn: queued, started (``claim``), or settled with ``settle``."""
     from hermes_state import SessionDB
     from hermes_state_runtime import (admit_session_input, begin_runtime_epoch, claim_session_input,
                                       settle_session_input)
@@ -276,23 +275,111 @@ def test_boot_attaches_settled_turn_without_unknown_notice(monkeypatch, checkpoi
     with SessionDB(db_path=tmp_path / "state.db") as db:
         db.create_session(sid, source="cli")
         epoch = begin_runtime_epoch(db, instance_id="current")
-        row = admit_session_input(db, epoch=epoch, principal_id="principal", session_id=sid,
-                                  request_id=INPUT_ID, payload={"text": "question"})
-        claimed = claim_session_input(db, epoch=epoch, session_id=sid)
-        settle_session_input(db, epoch=epoch, admission_id=claimed["admission_id"],
-                             generation=claimed["generation"], outcome="completed",
-                             result={"final_response": "the answer", "completed": True})
+        admit_session_input(db, epoch=epoch, principal_id="principal", session_id=sid,
+                            request_id=INPUT_ID, payload={"text": "question"})
+        if claim or settle:
+            claimed = claim_session_input(db, epoch=epoch, session_id=sid)
+        if settle:
+            outcome, result = settle
+            settle_session_input(db, epoch=epoch, admission_id=claimed["admission_id"],
+                                 generation=claimed["generation"], outcome=outcome, result=result)
         db.set_meta(POLICY_PREFIX + sid, json.dumps({
             "profile_id": "profile", "principal_id": "principal", "request_id": REQUEST_ID,
             "session_id": sid, "route": "route"}))
+    return sid
 
+
+# B1 (F3). Boot recovery finds a recorded turn that settled while the job was orphaned: the user is
+# told its outcome and reply, not "UNKNOWN", and the entry stays until that notice is delivered.
+def test_boot_reports_settled_turn_result(monkeypatch, checkpoint, tmp_path):
+    _recorded_turn(tmp_path, settle=("completed", {"final_response": "the answer", "completed": True}))
     checkpoint.write_text(json.dumps([_pending_checkpoint_entry() | {"attempt_status": "running"}]))
     registry = ProcessRegistry()
     registry._recover_interrupted_attempts(checkpoint_path=checkpoint)
 
-    assert not any(w.get("recovery_notice") for w in registry.pending_watchers), (
-        "B1: a turn that settled must not queue the unknown notice")
-    assert json.loads(checkpoint.read_text()) == [], "B1: the settled attempt must leave the checkpoint"
+    notices = [w["recovery_notice"] for w in registry.pending_watchers if w.get("recovery_notice")]
+    assert len(notices) == 1, notices
+    assert "UNKNOWN" not in notices[0] and "completed" in notices[0] and "the answer" in notices[0], notices
+    assert [e["session_id"] for e in json.loads(checkpoint.read_text())] == ["proc_att"], (
+        "B1: the entry leaves the checkpoint only when the result notice is delivered")
+
+
+# F1. A job the gateway's own shutdown stopped settles its turn 'interrupted'. Boot must leave it to
+# the shutdown relaunch path (RIG-10528 open), never attach to or report the stopped turn.
+def test_shutdown_killed_entry_with_interrupted_turn_keeps_relaunch(checkpoint, tmp_path):
+    from tools.process_registry_checkpoint import SHUTDOWN_RESUME_REASON
+    _recorded_turn(tmp_path, settle=("interrupted", {"interrupted": True,
+                                                     "interrupt_message": "Gateway shutting down"}))
+    entry = _pending_checkpoint_entry() | {"attempt_status": "unknown", "resume_reason": SHUTDOWN_RESUME_REASON}
+    checkpoint.write_text(json.dumps([entry]))
+    registry = ProcessRegistry()
+    registry._recover_interrupted_attempts(checkpoint_path=checkpoint, attach=True)
+
+    entries = json.loads(checkpoint.read_text())
+    assert entries and entries[0].get("resume_reason") == SHUTDOWN_RESUME_REASON, (
+        "shutdown-killed entry was dropped before _relaunch_shutdown_killed could claim it")
+    assert registry.pending_relaunches == []
+    assert [w["recovery_notice"] for w in registry.pending_watchers] == ["outcome UNKNOWN, verify before retrying"]
+
+
+# F2. A shutdown relaunch submits a fresh continuation turn, so its claim clears the recorded input id:
+# a later orphaned boot must not attach to the original turn.
+def test_shutdown_relaunch_claim_clears_recorded_input_id(checkpoint, tmp_path):
+    from tools.process_registry_checkpoint import SHUTDOWN_RESUME_REASON
+    entry = _pending_checkpoint_entry() | {"attempt_status": "unknown", "resume_reason": SHUTDOWN_RESUME_REASON}
+    checkpoint.write_text(json.dumps([entry]))
+    registry = ProcessRegistry()
+    claimed = registry._claim_shutdown_resume(checkpoint, entry, SESSION_ID)
+
+    assert claimed is not None and claimed["input_id"] == ""
+    assert json.loads(checkpoint.read_text())[0]["input_id"] == ""
+    # The relaunched attempt, orphaned, finds no recorded turn: the unknown notice, never the old turn.
+    _recorded_turn(tmp_path, settle=("completed", {"final_response": "old answer", "completed": True}))
+    registry._update_attempt(checkpoint, claimed, lambda item: item.update(attempt_status="running") or True)
+    registry._recover_interrupted_attempts(checkpoint_path=checkpoint, attach=True)
+    assert [w["recovery_notice"] for w in registry.pending_watchers] == ["outcome UNKNOWN, verify before retrying"]
+
+
+# F4. Boot recovery attaches to a recorded turn still queued or running: after READY it spawns the
+# attach-only chat (never a query, never a resolve), and no unknown notice is sent.
+@pytest.mark.parametrize("claim", [False, True], ids=["queued", "started"])
+def test_boot_attaches_to_a_live_recorded_turn(monkeypatch, checkpoint, tmp_path, claim):
+    sid = _recorded_turn(tmp_path, claim=claim)
+    checkpoint.write_text(json.dumps([_pending_checkpoint_entry() | {"attempt_status": "running"}]))
+    registry = ProcessRegistry()
+    spawned = []
+    monkeypatch.setattr(registry, "_spawn_job",
+                        lambda session, argv, *a, **kw: spawned.append(argv) or SimpleNamespace(pid=5150))
+    monkeypatch.setattr(registry, "_safe_host_start_time", lambda _pid: None)
+    monkeypatch.setattr(registry, "_reader_loop", lambda session: None)
+
+    registry.recover_from_checkpoint(resume_shutdown_killed=True)
+    assert spawned == [] and len(registry.pending_relaunches) == 1, "attach spawns only after READY"
+    assert not any(w.get("recovery_notice") for w in registry.pending_watchers)
+    count, notices = registry.spawn_queued_relaunches()
+
+    assert count == 1
+    argv = _launched(spawned[0])
+    assert argv[argv.index("--attach-input") + 1] == INPUT_ID
+    assert argv[argv.index("--resume") + 1] == sid
+    assert "--query" not in argv and "--discard-unknown" not in argv and "--input-id" not in argv, argv
+    assert not any(n.get("recovery_notice") for n in notices)
+    entry = json.loads(checkpoint.read_text())[0]
+    # The spawned attempt keeps the recorded input id, so a later orphaned boot attaches to the same turn.
+    assert entry["input_id"] == INPUT_ID and entry["resume_count"] == 0
+
+
+# F4. An attach claim whose spawn never happens (startup failed before READY) is given back as unknown.
+def test_unspawned_attach_claim_is_given_back(monkeypatch, checkpoint, tmp_path):
+    _recorded_turn(tmp_path)
+    checkpoint.write_text(json.dumps([_pending_checkpoint_entry() | {"attempt_status": "running"}]))
+    registry = ProcessRegistry()
+    monkeypatch.setattr(registry, "_safe_host_start_time", lambda _pid: None)
+    registry.recover_from_checkpoint(resume_shutdown_killed=True)
+
+    assert registry.give_back_pending_relaunches() == 1
+    entry = json.loads(checkpoint.read_text())[0]
+    assert entry["attempt_status"] == "unknown" and "attach_input" not in entry
 
 
 # B2. Boot recovery with no settled turn for the recorded input id keeps the unknown notice and never submits.
