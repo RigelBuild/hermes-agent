@@ -215,7 +215,6 @@ def test_reviewer_deny_reaches_human_and_final_choice_controls_result(
         assert "**Reviewer:** flagged as dangerous: Pipes the key to a remote host." in result["message"]
 
 
-
 def test_reviewer_deny_with_auto_approve_callback_is_blocked(monkeypatch):
     from tools.delegate_tool import _subagent_auto_approve
 
@@ -285,7 +284,7 @@ def test_reviewer_deny_broad_gateway_reply_is_once_and_not_saved(monkeypatch):
         assert data["smart_denied"] is True
         assert data["allow_session"] is False
         assert data["allow_permanent"] is False
-        assert approval.resolve_gateway_approval("review-session", "session") == 1
+        assert approval.resolve_gateway_approval("review-session", "session", request_id=data["request_id"]) == 1
 
     approval.register_gateway_notify("review-session", reply)
     try:

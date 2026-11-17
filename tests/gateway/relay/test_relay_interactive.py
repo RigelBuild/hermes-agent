@@ -111,10 +111,28 @@ async def test_exec_approval_renders_full_option_set():
 async def test_exec_approval_does_not_send_internal_request_id_in_metadata():
     adapter, stub = _adapter()
     await adapter.send_exec_approval(
-        "c1", "rm -rf /tmp/x", "sess:1", metadata={"_approval_request_id": "internal"},
+        "c1", "rm -rf /tmp/x", "sess:1", metadata={"_approval_request_id": "internal"}, request_id="internal",
     )
 
     assert "_approval_request_id" not in stub.sent[-1].get("metadata", {})
+    state = adapter._pending_prompts[stub.sent[-1]["prompt_id"]]
+    assert state["request_id"] == "internal"
+
+
+@pytest.mark.asyncio
+async def test_relay_card_targets_ordinary_request_ahead_of_denial(monkeypatch):
+    from tools import approval
+    from tools.approval_gateway_wait import _ApprovalEntry
+
+    adapter, stub = _adapter()
+    denied = _ApprovalEntry({"request_id": "deny", "smart_denied": True})
+    ordinary = _ApprovalEntry({"request_id": "ordinary"})
+    monkeypatch.setitem(approval._gateway_queues, "s", [denied, ordinary])
+    await adapter.send_exec_approval("c1", "cmd", "s", request_id="ordinary")
+    state = adapter._pending_prompts[stub.sent[-1]["prompt_id"]]
+    await adapter._resolve_exec_approval(state, "once", "c1", {})
+    assert ordinary.result == "once"
+    assert denied.result is None
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,7 @@ import pytest
 
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize("case", [
-    "review-approve", "review-escalate", "review-deny", "human-deny", "timeout", "stale-always",
+    "review-approve", "review-escalate", "review-deny", "review-mixed-queue", "human-deny", "timeout", "stale-always",
     "terminal", "execute-code", "yolo", "session-yolo", "mode-off", "grants", "allowlist",
     "smart-approve", "smart-deny", "cotal-hook-deny", "cotal-command-deny", "cotal-code-deny",
     "operator-bypasses",

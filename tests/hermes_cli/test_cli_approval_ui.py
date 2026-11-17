@@ -176,10 +176,6 @@ class TestCliApprovalUi:
         assert cli._approval_state["response_queue"].empty()
 
 
-
-
-
-
     def test_approval_display_truncates_giant_command_in_view_mode(self):
         """If the user hits /view on a massive command, choices still render.
 
@@ -235,6 +231,11 @@ class TestCliApprovalUi:
 
         rendered = "".join(text for _style, text in fragments)
         assert "flagged as dangerous" in rendered
+        assert "guarded action" in rendered
+        assert rendered.index("flagged as dangerous") < rendered.index("guarded action")
+        assert "…" in rendered
+        from hermes_cli.cli_tui_mixin import _PANEL_RESERVED_BELOW
+        assert rendered.count("\n") <= 12 - _PANEL_RESERVED_BELOW
 
     def test_background_task_registers_thread_local_approval_callbacks(self):
         """Background /btw tasks must use the prompt_toolkit approval UI.

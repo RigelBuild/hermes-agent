@@ -162,6 +162,22 @@ class TestApproveCommand:
     def setup_method(self):
         _clear_approval_state()
 
+    @pytest.mark.asyncio
+    async def test_approve_skips_denial_and_reports_card_when_only_denial_remains(self):
+        from tools.approval import _gateway_queues
+        from tools.approval_gateway_wait import _ApprovalEntry
+
+        runner = _make_runner()
+        session_key = runner._session_key_for_source(_make_source())
+        denied = _ApprovalEntry({"request_id": "denied", "smart_denied": True})
+        ordinary = _ApprovalEntry({"request_id": "ordinary"})
+        _gateway_queues[session_key] = [denied, ordinary]
+        await runner._handle_approve_command(_make_event("/approve"))
+        assert ordinary.result == "once" and denied.result is None
+        response = await runner._handle_approve_command(_make_event("/approve"))
+        assert "own card" in response
+        assert denied.result is None
+
 
     @pytest.mark.asyncio
     async def test_approve_all_resolves_multiple(self):

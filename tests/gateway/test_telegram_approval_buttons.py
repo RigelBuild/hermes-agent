@@ -202,6 +202,26 @@ class TestTelegramExecApproval:
 class TestTelegramApprovalCallback:
     """Test the approval callback handling in _handle_callback_query."""
 
+    @pytest.mark.asyncio
+    async def test_tap_targets_card_and_stale_tap_cannot_release_denial(self, monkeypatch):
+        from tools import approval
+        from tools.approval_gateway_wait import _ApprovalEntry
+
+        adapter = _make_adapter()
+        denied = _ApprovalEntry({"request_id": "a", "smart_denied": True})
+        ordinary = _ApprovalEntry({"request_id": "b"})
+        monkeypatch.setitem(approval._gateway_queues, "session", [denied, ordinary])
+        adapter._approval_state[5] = ("session", "b")
+        adapter._approval_state[6] = ("session", "old")
+        query = AsyncMock()
+        query.from_user.first_name = "owner"
+        adapter._claim_callback_state = AsyncMock(side_effect=[("session", "b"), ("session", "old")])
+        adapter._edit_md_quiet = AsyncMock()
+        await adapter._handle_exec_approval_callback(query, "ea:once:5", {"chat_id": "1"})
+        await adapter._handle_exec_approval_callback(query, "ea:once:6", {"chat_id": "1"})
+        assert ordinary.result == "once"
+        assert denied.result is None
+
 
     @pytest.mark.asyncio
     async def test_resume_typing_after_inline_approval(self):
@@ -212,7 +232,7 @@ class TestTelegramApprovalCallback:
         rest of a long-running turn after a button click.
         """
         adapter = _make_adapter()
-        adapter._approval_state[5] = "agent:main:telegram:group:12345:99"
+        adapter._approval_state[5] = ("agent:main:telegram:group:12345:99", "request-5")
         adapter.pause_typing_for_chat("12345")
         assert "12345" in adapter._typing_paused
 
@@ -240,7 +260,7 @@ class TestTelegramApprovalCallback:
     @pytest.mark.asyncio
     async def test_approval_callback_escapes_dynamic_user_name(self):
         adapter = _make_adapter()
-        adapter._approval_state[3] = "agent:main:telegram:group:12345:99"
+        adapter._approval_state[3] = ("agent:main:telegram:group:12345:99", "request-3")
 
         query = AsyncMock()
         query.data = "ea:once:3"
