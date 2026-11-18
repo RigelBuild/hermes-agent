@@ -862,7 +862,8 @@ class TestSessionStartLike:
         london = ZoneInfo("Europe/London")
         original_tz = os.environ.get("TZ")
         try:
-            os.environ["TZ"] = "Europe/London"
+            # POSIX rule: zone names need /usr/share/zoneinfo, which this host lacks (TZ silently became UTC).
+            os.environ["TZ"] = "GMT0BST,M3.5.0/1,M10.5.0"
             time.tzset()
             for sid, now, expected in (
                 ("20260115_003000_jan", datetime(2026, 7, 16, 9, 0, tzinfo=london), "2026-01-15T00:30:00+00:00"),

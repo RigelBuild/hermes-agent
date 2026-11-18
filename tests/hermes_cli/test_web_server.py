@@ -3037,8 +3037,8 @@ class TestNewEndpoints:
         assert top_skill["total_count"] == 1
         assert top_skill["last_used_at"] is not None
 
-    def _daily_for_local_starts(self, tz_name, local_starts):
-        """Seed one session per naive local start in ``tz_name``; return the daily buckets."""
+    def _daily_for_local_starts(self, tz_name, posix_tz, local_starts):
+        """Seed one session per naive local start in ``tz_name``; ``posix_tz`` is the same zone for the process."""
         from datetime import datetime
         from zoneinfo import ZoneInfo
 
@@ -3055,7 +3055,8 @@ class TestNewEndpoints:
             db.close()
         original_tz = os.environ.get("TZ")
         try:
-            os.environ["TZ"] = tz_name
+            # POSIX rule: zone names need /usr/share/zoneinfo, which this host lacks (TZ silently became UTC).
+            os.environ["TZ"] = posix_tz
             time.tzset()
             resp = self.client.get("/api/analytics/usage?days=365")
         finally:
@@ -3073,7 +3074,7 @@ class TestNewEndpoints:
         from datetime import datetime, timedelta
 
         yesterday = (datetime.now() - timedelta(days=1)).replace(hour=2, minute=0, second=0, microsecond=0)
-        daily = self._daily_for_local_starts("Asia/Kolkata", [yesterday])
+        daily = self._daily_for_local_starts("Asia/Kolkata", "IST-5:30", [yesterday])
         assert daily == {yesterday.strftime("%Y-%m-%d"): 1}
 
     @pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs a POSIX process timezone switch")
@@ -3084,7 +3085,7 @@ class TestNewEndpoints:
         # The latest past day in January (EST) and in July (EDT), both inside the 365-day window.
         recent = [(datetime.now() - timedelta(days=n)).replace(hour=23, minute=30, second=0, microsecond=0) for n in range(2, 360)]
         starts = [next(d for d in recent if d.month == m) for m in (1, 7)]
-        daily = self._daily_for_local_starts("America/New_York", starts)
+        daily = self._daily_for_local_starts("America/New_York", "EST5EDT,M3.2.0,M11.1.0", starts)
         assert daily == {s.strftime("%Y-%m-%d"): 1 for s in starts}
 
 
