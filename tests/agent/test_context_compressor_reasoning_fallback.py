@@ -142,3 +142,35 @@ def test_micro_think_prefix_or_unclosed_tail_is_never_stored(content):
     assert out is not None
     assert "PRIVATE_THINK" not in out
     assert "REAL_SUMMARY" in out
+
+
+# A summary that names a think tag in prose or code must survive whole (N1). Only the bare-tag
+# cuts are at risk; the reasoning blocks are closed pairs and stay stripped.
+TAG_MENTION_SUMMARIES = [
+    "## Goal\nFix the `<think>` leak in the stream filter.\n## Progress\nPatched scrubber.\n## Next Steps\nShip PR #103.",
+    "## Goal\nStrip the `</think>` closer before storing.\n## Next Steps\nShip PR #103.",
+    "## Goal\nFix the leak.\n```\n<think>\n```\n## Next Steps\nShip PR #103.",
+]
+
+
+@pytest.mark.parametrize("summary", TAG_MENTION_SUMMARIES)
+def test_tag_mention_in_summary_survives_on_compressor_path(summary):
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=summary))])
+    with patch("agent.context_compressor.call_llm", return_value=response):
+        out = _compressor()._generate_summary(_turns())
+    assert out is not None
+    assert out.endswith(summary)
+
+
+@pytest.mark.parametrize("summary", TAG_MENTION_SUMMARIES)
+def test_tag_mention_in_summary_survives_on_micro_path(summary):
+    with patch("agent.auxiliary_client.call_llm", return_value=_micro_response(summary)):
+        out = _compressor()._micro_summarize_one("user: hi\nassistant: hello")
+    assert out == summary
+
+
+def test_micro_bare_string_message_is_still_stored():
+    response = SimpleNamespace(choices=[SimpleNamespace(message="bare micro summary")])
+    with patch("agent.auxiliary_client.call_llm", return_value=response):
+        out = _compressor()._micro_summarize_one("user: hi\nassistant: hello")
+    assert out == "bare micro summary"

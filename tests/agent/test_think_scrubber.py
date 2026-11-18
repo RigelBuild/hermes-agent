@@ -248,3 +248,26 @@ class TestSummaryVisibleText:
         from agent.think_scrubber import summary_visible_text
 
         assert summary_visible_text(None) == ""
+
+    def test_backticked_tag_mention_survives(self) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        text = "## Goal\nFix the `<think>` leak.\n## Next\nShip."
+        assert summary_visible_text(text) == text
+
+    def test_backticked_closer_mention_survives(self) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        text = "## Goal\nStrip the `</think>` closer.\n## Next\nShip."
+        assert summary_visible_text(text) == text
+
+    def test_fenced_tag_mention_survives(self) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        text = "## Goal\n```\n<think>\n```\n## Next\nShip."
+        assert summary_visible_text(text) == text
+
+    def test_reasoning_before_a_real_closer_is_still_cut_around_code(self) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        assert summary_visible_text("PRIVATE `x`</think>\n## Goal") == "## Goal"
