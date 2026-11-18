@@ -645,7 +645,7 @@ async def test_failed_card_send_is_not_registered(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ui_timeout_then_reconnect_press_ends_wait_as_cancelled(monkeypatch):
-    # Live sequence (RIG-10927): the card's UI timeout finishes the view; a reconnect swaps the client; an
+    # Live sequence: the card's UI timeout finishes the view; a reconnect swaps the client; an
     # Approve then arrives. The timeout withdraws the request at once, so the wait ends cancelled and the
     # press gets "no longer pending" instead of hanging the agent turn until /stop.
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
@@ -749,7 +749,7 @@ async def test_unauthorized_lost_view_press_leaves_the_request_pending(monkeypat
 
 @pytest.mark.asyncio
 async def test_unauthorized_unmatched_press_on_pending_card_resolves_nothing(monkeypatch):
-    # RIG-10927 authority: a press that reaches the unmatched fallback must not settle a pending request for a user
+    # Authority: a press that reaches the unmatched fallback must not settle a pending request for a user
     # the card's own gates refuse. Only the one-click requester (or an admin) may answer it.
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
     created: list[_FakeBot] = []
@@ -844,7 +844,7 @@ async def test_authorized_unmatched_press_on_pending_card_resolves_request(monke
 
 @pytest.mark.asyncio
 async def test_press_after_runner_rebuilds_discord_adapter_resolves_with_pressed_choice(monkeypatch):
-    # RIG-10927 H2: the incident path. Adapter A sends the card, then fails with the stale-websocket fatal
+    # The incident path: adapter A sends the card, then fails with the stale-websocket fatal
     # (retryable). The runner's _reconnect_failed_platform builds a NEW adapter B. A press on B must end the
     # pending wait with the pressed choice, not hang until /stop.
     from gateway.config import Platform
@@ -887,7 +887,7 @@ async def test_press_after_runner_rebuilds_discord_adapter_resolves_with_pressed
 
 @pytest.mark.asyncio
 async def test_rebuild_withdraws_pending_request_whose_card_view_is_finished(monkeypatch):
-    # RIG-10927 H1: the replacement cannot answer a card whose view already finished. The request must settle at
+    # The replacement cannot answer a card whose view already finished. The request must settle at
     # once as withdrawn (not a user deny), so the agent turn does not wait for /stop.
     created: list[_FakeBot] = []
     session = "agent:other:discord:555"
@@ -915,7 +915,7 @@ async def test_rebuild_withdraws_pending_request_whose_card_view_is_finished(mon
 
 @pytest.mark.asyncio
 async def test_authorized_unmatched_press_is_acknowledged_not_left_as_interaction_failed(monkeypatch):
-    # RIG-10927 M1: when the fallback resolves, the clicker's interaction must be answered. Discord shows
+    # When the fallback resolves, the clicker's interaction must be answered. Discord shows
     # "This interaction failed" for an unanswered press, and a second press would then read "no longer pending".
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
     created: list[_FakeBot] = []
@@ -945,7 +945,7 @@ async def test_authorized_unmatched_press_is_acknowledged_not_left_as_interactio
 
 @pytest.mark.asyncio
 async def test_unlisted_unmatched_press_is_refused_even_by_the_requester(monkeypatch):
-    # RIG-10927 M2: base admission. The requester passes the queue's authority check, so only the card's own
+    # Base admission: the requester passes the queue's authority check, so only the card's own
     # _check_auth can refuse a clicker who is not on the platform allowlist. Removing that gate must fail this test.
     for name in ("DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
         monkeypatch.delenv(name, raising=False)
@@ -980,7 +980,7 @@ async def test_unlisted_unmatched_press_is_refused_even_by_the_requester(monkeyp
 
 @pytest.mark.asyncio
 async def test_non_admin_unmatched_press_is_refused_when_require_admin_is_on(monkeypatch):
-    # RIG-10927 M2: require_admin. The clicker passes base admission and the queue's authority (requester), but is not
+    # require_admin: the clicker passes base admission and the queue's authority (requester), but is not
     # one of the allow_admin_from ids. Removing the view's require_admin gate must fail this test.
     for name in ("DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
         monkeypatch.delenv(name, raising=False)
@@ -1014,7 +1014,7 @@ async def test_non_admin_unmatched_press_is_refused_when_require_admin_is_on(mon
 
 @pytest.mark.asyncio
 async def test_approve_on_deny_only_request_resolves_nothing_but_deny_does(monkeypatch):
-    # RIG-10927 M2: a Deny-only request (its card could not show the whole command) must refuse an approve press
+    # A Deny-only request (its card could not show the whole command) must refuse an approve press
     # from the fallback. The Deny press still resolves it. Removing the Deny-only check must fail the first assert.
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
     created: list[_FakeBot] = []
@@ -1046,7 +1046,7 @@ async def test_approve_on_deny_only_request_resolves_nothing_but_deny_does(monke
 
 @pytest.mark.asyncio
 async def test_unmatched_press_for_a_choice_the_card_lacks_resolves_nothing(monkeypatch):
-    # RIG-10927 L1: the fallback must check the choice is one of the card's own enabled buttons, as press() does. This
+    # The fallback must check the choice is one of the card's own enabled buttons, as press() does. This
     # card has no "always" button (allow_permanent=False), so an always press is forged and must resolve nothing.
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
     created: list[_FakeBot] = []

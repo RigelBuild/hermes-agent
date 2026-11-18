@@ -103,7 +103,7 @@ async def test_ui_timeout_ends_wait_as_cancelled_and_later_answer_resolves_nothi
     _adapter, view, entry, message = await _pending_card(monkeypatch)
     if ui_timeout_first:
         await view.on_timeout()
-        # The card can no longer be answered, so the wait ends at once as withdrawn, not as a user deny (RIG-10927).
+        # The card can no longer be answered, so the wait ends at once as withdrawn, not as a user deny.
         assert entry.event.is_set()
         assert entry.result is None
         assert entry.cancelled

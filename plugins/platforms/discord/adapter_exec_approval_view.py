@@ -79,7 +79,7 @@ def build_exec_approval_view(discord, base, *, unauthorized):
 
         async def on_timeout(self):
             # The card can no longer be answered, so settle the request now as withdrawn: the agent fails
-            # closed at once instead of waiting for /stop (RIG-10927). A withdrawal, not a user deny.
+            # closed at once instead of waiting for /stop. A withdrawal, not a user deny.
             await self.retire("timeout", backend_settled=False)
             if self.request_id and self.session_key:
                 from tools.approval import withdraw_gateway_approval
@@ -196,7 +196,7 @@ def build_exec_approval_view(discord, base, *, unauthorized):
             await self._resolve(interaction, "always", discord.Color.purple(), "platform.discord.approval.resolved_always")
 
         async def resolve_unmatched_press(self, interaction: discord.Interaction, choice: str) -> bool:
-            """Resolve this card's still-pending request for a press no live view routes (RIG-10927). Runs the
+            """Resolve this card's still-pending request for a press no live view routes. Runs the
             live view's own gates: base admission, ``require_admin``, the approval's authority, then the Deny-only
             check inside ``resolve_gateway_approval_card``. True when the press was answered or settled the request."""
             from tools.approval import resolve_gateway_approval_card

@@ -5788,7 +5788,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             self._exec_approval_views.pop(next(iter(self._exec_approval_views)))
 
     def adopt_exec_approval_views(self, predecessor) -> None:
-        """Carry a replaced adapter's live card views so presses on the rebuilt client still find them (RIG-10927).
+        """Carry a replaced adapter's live card views so presses on the rebuilt client still find them.
         A card whose view is already finished cannot be answered: withdraw its request with a cause."""
         from tools.approval import withdraw_gateway_approval
         for request_id, view in list(getattr(predecessor, "_exec_approval_views", {}).items()):
@@ -5797,7 +5797,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 withdraw_gateway_approval(session_key or "", request_id,
                                           "the approval card was lost in a platform reconnect")
                 continue
-            # Take the rebuilt adapter's allowlist, not the snapshot the old client held (RIG-10927).
+            # Take the rebuilt adapter's allowlist, not the snapshot the old client held.
             view.live_auth = self._component_live_auth
             view.allowed_user_ids = self._allowed_user_ids
             self._exec_approval_views[request_id] = view
@@ -5846,12 +5846,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             interaction, custom_id, t("platform.discord.approval.no_longer_pending"))
 
     async def _resolve_pending_card_press(self, interaction, custom_id: str, request_id: str) -> bool:
-        """Settle a still-pending card request for a press no live view routes (RIG-10927). The card's own view
+        """Settle a still-pending card request for a press no live view routes. The card's own view
         runs the authority gates; this only checks the press came from that card's message."""
         view = self._exec_approval_views.get(request_id)
         if view is None:
             # No card to answer through, so a press can only withdraw the request. Withdraw it only for a clicker the
-            # adapter admits and the request's authority allows, as a live card would require (RIG-10927).
+            # adapter admits and the request's authority allows, as a live card would require.
             from plugins.platforms.discord.adapter_component_auth import _component_check_auth
             from tools.approval import gateway_approval_session, withdraw_gateway_approval
             session_key = gateway_approval_session(request_id)
