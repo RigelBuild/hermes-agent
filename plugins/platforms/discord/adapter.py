@@ -5797,6 +5797,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 withdraw_gateway_approval(session_key or "", request_id,
                                           "the approval card was lost in a platform reconnect")
                 continue
+            # Take the rebuilt adapter's allowlist, not the snapshot the old client held (RIG-10927).
+            view.live_auth = self._component_live_auth
+            view.allowed_user_ids = self._allowed_user_ids
             self._exec_approval_views[request_id] = view
 
     async def _on_platform_interaction(self, interaction) -> None:
