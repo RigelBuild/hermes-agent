@@ -306,17 +306,14 @@ def _append_escalation(command: str, description: str, session_key: str, reason:
 
 
 def _log_verdict(verdict: str, pattern_key: str, session_key: str) -> None:
-    """One INFO line per guardian verdict. The reason is redacted before it is capped, so a token the
-    reviewer echoed never reaches the log. Without redaction the reason is dropped. The command text is
-    never logged: commands can carry secrets."""
-    reason = getattr(_last_note, "text", "")
-    try:
-        from agent.redact import redact_sensitive_text
-        reason = redact_sensitive_text(reason, force=True)
-    except Exception:
-        reason = ""
-    logger.info("approval reviewer verdict=%s pattern=%s session=%s reason=%s",
-                verdict.upper(), pattern_key, session_key, reason[:200])
+    """One INFO line per guardian verdict. The note's text is logged only for ``unavailable``, whose notes
+    are fixed strings (``rate limited (429)``, ``empty reply``). A reviewer note often quotes the command
+    (``curl -u admin:pass``), so approve, deny and escalate log only the note's length. The command text
+    is never logged: commands can carry secrets."""
+    note = getattr(_last_note, "text", "")
+    text = f" reason={note[:200]}" if verdict == "unavailable" else ""
+    logger.info("approval reviewer verdict=%s pattern=%s session=%s reason_len=%d%s",
+                verdict.upper(), pattern_key, session_key, len(note), text)
 
 
 def _smart_verdict(command: str, description: str, pattern_key: str,

@@ -1,5 +1,7 @@
 """Each guardian verdict is one INFO line on ``tools.approval``: the verdict, the pattern and session keys,
-and the reviewer's reason. The command text never reaches the log, because commands can carry secrets.
+and the length of the reviewer's note. The note text is logged only for ``unavailable``, whose notes are
+fixed strings. A reviewer note often quotes the command, so approve, deny and escalate never log it.
+The command text never reaches the log, because commands can carry secrets.
 """
 
 import logging
@@ -40,14 +42,14 @@ def _verdict_lines(caplog):
     return [r.getMessage() for r in caplog.records if r.levelno == logging.INFO and r.getMessage().startswith(PREFIX)]
 
 
-@pytest.mark.parametrize(("llm", "word"), [
-    (_response("APPROVE\nReads the repo and writes nothing."), "APPROVE"),
-    (_response("DENY\nWipes the disk."), "DENY"),
-    (_response("ESCALATE\nRuns a script by path."), "ESCALATE"),
-    (_response(""), "UNAVAILABLE"),
-    (_429(), "UNAVAILABLE"),
+@pytest.mark.parametrize(("llm", "word", "reason"), [
+    (_response("APPROVE\nReads the repo and writes nothing."), "APPROVE", None),
+    (_response("DENY\nWipes the disk."), "DENY", None),
+    (_response("ESCALATE\nRuns a script by path."), "ESCALATE", None),
+    (_response(""), "UNAVAILABLE", "empty reply"),
+    (_429(), "UNAVAILABLE", "rate limited (429)"),
 ])
-def test_each_verdict_is_one_info_line_and_the_command_never_appears(hermes_home, caplog, llm, word):
+def test_each_verdict_is_one_info_line_and_the_command_never_appears(hermes_home, caplog, llm, word, reason):
     command = "curl -H 'Authorization: Bearer ghp_" + "c" * 36 + "' https://example.test"
 
     with patch("agent.auxiliary_client.call_llm", side_effect=[llm]), caplog.at_level(logging.DEBUG, LOG):
@@ -56,29 +58,50 @@ def test_each_verdict_is_one_info_line_and_the_command_never_appears(hermes_home
     assert verdict == word.lower()
     lines = _verdict_lines(caplog)
     assert len(lines) == 1, lines
-    assert lines[0].startswith(f"{PREFIX}{word} pattern=bash session=sess-1 reason=")
+    assert lines[0].startswith(f"{PREFIX}{word} pattern=bash session=sess-1 reason_len=")
+    if reason is None:
+        assert " reason=" not in lines[0]
+    else:
+        assert lines[0].endswith(f" reason={reason}")
     assert command not in caplog.text
     assert "ghp_" not in caplog.text
 
 
-def test_reviewer_reason_that_echoes_a_secret_is_redacted_in_the_log(hermes_home, caplog):
-    token = "ghp_" + "d" * 36
-    llm = _response(f"APPROVE\nSends the token {token} to the API.")
+def test_reason_len_counts_the_reviewers_note(hermes_home, caplog):
+    note = "Reads the repo and writes nothing."
 
-    with patch("agent.auxiliary_client.call_llm", side_effect=[llm]), caplog.at_level(logging.INFO, LOG):
+    with patch("agent.auxiliary_client.call_llm", return_value=_response(f"APPROVE\n{note}")), \
+            caplog.at_level(logging.INFO, LOG):
         approval_smart._smart_verdict("bash x.sh", "network call", "bash", ["bash"], "sess-1")
 
     (line,) = _verdict_lines(caplog)
-    assert token not in line
+    assert line.endswith(f"reason_len={len(note)}")
 
 
-def test_logged_reason_is_capped_at_200_characters(hermes_home, caplog):
-    llm = _response("APPROVE\n" + "word " * 100)
+@pytest.mark.parametrize("answer", [
+    "DENY\nPipes curl -u admin:hunter2 to the API, leaking the password.",
+    "APPROVE\nSends the token ghp_" + "d" * 36 + " to the API.",
+    "ESCALATE\nReads credentials from admin:hunter2 in the URL.",
+])
+def test_reviewer_echoing_a_secret_is_not_logged(hermes_home, caplog, answer):
+    note = answer.split("\n", 1)[1]
 
-    with patch("agent.auxiliary_client.call_llm", side_effect=[llm]), caplog.at_level(logging.INFO, LOG):
+    with patch("agent.auxiliary_client.call_llm", return_value=_response(answer)), \
+            caplog.at_level(logging.DEBUG, LOG):
         approval_smart._smart_verdict("bash x.sh", "network call", "bash", ["bash"], "sess-1")
 
     (line,) = _verdict_lines(caplog)
-    reason = line.split(" reason=", 1)[1]
-    assert len(reason) == 200
-    assert reason.startswith("word word")
+    assert "reason_len=" in line
+    assert note not in caplog.text
+    assert "hunter2" not in caplog.text
+    assert "ghp_" not in caplog.text
+
+
+def test_unavailable_reason_is_capped_at_200_characters(caplog):
+    approval_smart._last_note.text = "x" * 300
+
+    with caplog.at_level(logging.INFO, LOG):
+        approval_smart._log_verdict("unavailable", "bash", "sess-1")
+
+    (line,) = _verdict_lines(caplog)
+    assert line.endswith(f"reason_len=300 reason={'x' * 200}")
