@@ -189,33 +189,40 @@ class StreamingThinkScrubber:
 
 
 _TAG_ALT = "|".join(re.escape(name) for name in THINK_TAG_NAMES)
-# Summary-only cuts for ``summary_visible_text``. Closed pairs go first, so a remaining closer is bare:
-# text before the last one is reasoning from a prefilled ``<think>``. An unclosed opener runs to the end.
-_BARE_CLOSE_TAIL_RE = re.compile(rf"^.*</(?:{_TAG_ALT})>\s*", re.DOTALL | re.IGNORECASE)
-_UNCLOSED_OPEN_TAIL_RE = re.compile(rf"<(?:{_TAG_ALT})>.*\Z", re.DOTALL | re.IGNORECASE)
-# Markdown code (fenced blocks, then inline spans) is masked before the cuts, so a tag named in code
-# cannot start or end a cut. Masked spans are restored unchanged.
-_CODE_SPAN_RE = re.compile(r"(```.*?```|(`+)[^`\n]+?\2)", re.DOTALL)
+_CLOSER_RE = re.compile(rf"</(?:{_TAG_ALT})>", re.IGNORECASE)
+_OPENER_RE = re.compile(rf"<(?:{_TAG_ALT})>", re.IGNORECASE)
+# Code where a bare tag is a mention: a span wrapping one tag, or a fence with no bare closer inside.
+_CODE_RE = re.compile(
+    rf"(`+)(?:<(?:{_TAG_ALT})>|</(?:{_TAG_ALT})>)\1(?!`)"
+    r"|^(?P<fence>`{3,}|~{3,})[^\n]*\n.*?^(?P=fence)[`~]*[ \t]*$",
+    re.IGNORECASE | re.DOTALL | re.MULTILINE,
+)
+
+
+def _mention_spans(text: str) -> list[tuple[int, int]]:
+    """Code spans where a bare tag is a mention: a span wrapping one tag, or a fence with no bare closer."""
+    return [m.span() for m in _CODE_RE.finditer(text)
+            if m.group("fence") is None or not _CLOSER_RE.search(text, *m.span())]
 
 
 def summary_visible_text(content: Any) -> str:
     """Visible text of a summarizer reply, for the stored summary only.
 
-    Runs the shared ``strip_think_blocks`` rules, then two cuts it does not make: text before a bare
-    closing tag, and an unclosed opening tag through the end of the text, even mid-line. Tags inside
-    Markdown code are never cut. The shared helper's display behaviour is unchanged.
+    Runs the shared ``strip_think_blocks`` rules, then cuts text before a bare closing tag and an
+    unclosed opening tag through the end, even mid-line. A bare tag in an inline span or a fence with
+    no bare closer does not start a cut.
     """
-    from agent.agent_runtime_helpers import _REASONING_BLOCK_PATTERNS, _flatten_content_text, strip_think_blocks
+    from agent.agent_runtime_helpers import _REASONING_BLOCK_PATTERNS, _flatten_content_text
 
     text = _flatten_content_text(content) if content else ""
     for pattern in _REASONING_BLOCK_PATTERNS:
         text = pattern.sub("", text)
-    code: list[str] = []
-
-    def _mask(match: re.Match[str]) -> str:
-        code.append(match.group(0))
-        return f"\0{len(code) - 1}\0"
-
-    masked = _CODE_SPAN_RE.sub(_mask, text)
-    masked = strip_think_blocks(None, _UNCLOSED_OPEN_TAIL_RE.sub("", _BARE_CLOSE_TAIL_RE.sub("", masked))).strip()
-    return re.sub(r"\0(\d+)\0", lambda m: code[int(m.group(1))], masked).strip()
+    spans = _mention_spans(text)
+    closers = [m for m in _CLOSER_RE.finditer(text) if not any(a <= m.start() < b for a, b in spans)]
+    if closers:
+        text = text[closers[-1].end():]
+    spans = _mention_spans(text)
+    openers = [m for m in _OPENER_RE.finditer(text) if not any(a <= m.start() < b for a, b in spans)]
+    if openers:
+        text = text[:openers[0].start()]
+    return text.strip()

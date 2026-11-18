@@ -302,3 +302,11 @@ class TestSummaryVisibleText:
 
         text = "## Goal\n~~~\n<think>\n~~~\n## Next\nShip."
         assert summary_visible_text(text) == text
+
+    def test_fenced_closer_mention_is_cut_known_limit(self) -> None:
+        """Known limit (RIG-10913): a fence that contains a bare closer protects nothing, so a closer
+        quoted inside a summary's code block still cuts. Storing reasoning is the worse failure."""
+        from agent.think_scrubber import summary_visible_text
+
+        text = "## Goal\n```\n</think>\n```\n## Next\nShip."
+        assert summary_visible_text(text) == "```\n## Next\nShip."
