@@ -197,6 +197,7 @@ _FLAGS = re.IGNORECASE | re.DOTALL | re.MULTILINE
 _CODE_RE = re.compile(rf"(?<!`)(`+)(?:<(?:{_TAG_ALT})\b[^>]*>|</(?:{_TAG_ALT})>)\1(?!`)" + _FENCE, _FLAGS)
 # Where any tag is a mention for the shared patterns: a whole one-line inline span, or such a fence.
 _SPAN_RE = re.compile(r"(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)" + _FENCE, _FLAGS)
+_MASK_RE = re.compile(r"[^<\n]")
 
 
 def _mention_spans(text: str, code_re: re.Pattern = _CODE_RE) -> list[tuple[int, int]]:
@@ -211,16 +212,20 @@ def _drop(text: str, cuts: list[tuple[int, int]]) -> str:
 
 
 def _strip_shared(text: str) -> str:
-    """``strip_think_blocks`` minus its orphan-tag pattern, never matching inside a mention span."""
-    from agent.agent_runtime_helpers import _ORPHAN_REASONING_TAG_PATTERN, _THINK_STRIP_PATTERNS
+    """``strip_think_blocks`` minus its orphan-tag pattern; only closed reasoning pairs match inside code."""
+    from agent.agent_runtime_helpers import (
+        _ORPHAN_REASONING_TAG_PATTERN, _REASONING_BLOCK_PATTERNS, _THINK_STRIP_PATTERNS)
 
+    # Closed pairs go unmasked first: a pair inside a span would otherwise leave a bare closer to cut at.
+    for pattern in _REASONING_BLOCK_PATTERNS:
+        text = pattern.sub("", text)
     masked, pos = [], 0
     for a, b in _mention_spans(text, _SPAN_RE):
-        masked += [text[pos:a], "\x01" * (b - a)]
+        masked += [text[pos:a], _MASK_RE.sub("\x01", text[a:b])]  # keep `<` and `\n` for line patterns
         pos = b
     masked = "".join(masked) + text[pos:]  # same length as text, so match offsets apply to both
     for pattern in _THINK_STRIP_PATTERNS:
-        if pattern is _ORPHAN_REASONING_TAG_PATTERN:
+        if pattern is _ORPHAN_REASONING_TAG_PATTERN or pattern in _REASONING_BLOCK_PATTERNS:
             continue
         cuts = [m.span() for m in pattern.finditer(masked)]
         if cuts:
@@ -231,11 +236,12 @@ def _strip_shared(text: str) -> str:
 def summary_visible_text(content: Any) -> str:
     """Visible text of a summarizer reply, for the stored summary only.
 
-    Runs the shared ``strip_think_blocks`` patterns (closed reasoning pairs, tool-call blocks, named
-    ``<function>`` blocks, stray tool-call closers, unclosed tool calls and arg fragments) outside
-    inline code spans and fences, then cuts text before a bare closing tag and from an unclosed
-    opening tag through the end, even mid-line. A bare tag does not start a cut when it is inside an
-    inline span that wraps exactly that one tag, or a fence with no bare closer.
+    Removes closed reasoning pairs everywhere, then runs the other shared ``strip_think_blocks``
+    patterns (tool-call blocks, named ``<function>`` blocks, an unclosed line-start reasoning opener,
+    stray tool-call closers, unclosed tool calls and arg fragments) outside inline code spans and
+    fences. Then it cuts text before a bare closing tag and from an unclosed opening tag through the
+    end, even mid-line. A bare tag does not start a cut when it is inside an inline span that wraps
+    exactly that one tag, or a fence with no bare closer.
     """
     from agent.agent_runtime_helpers import _flatten_content_text
 
