@@ -217,7 +217,7 @@ def _verify_launchd_argv(argv: list[str], home: Path, *, home_manager: bool = Fa
     if home_manager:
         # Home Manager runs the store launcher that moduleCommon's gatewayArgv names. Any other program is not ours.
         from hermes_cli.gateway import _GATEWAY_SUBCOMMANDS
-        if not (command[0].startswith("/nix/store/") and command[0].endswith("/bin/hermes")):
+        if not (os.path.normpath(command[0]).startswith("/nix/store/") and command[0].endswith("/bin/hermes")):
             raise ForeignRoot("foreign_root")
         if command[1:2] == ["gateway"] and (len(command) == 2 or command[2] not in _GATEWAY_SUBCOMMANDS):
             # Its extraArgs follow a bare `gateway`, which the CLI runs as `gateway run` (gateway.py
