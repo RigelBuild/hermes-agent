@@ -27,7 +27,6 @@ from agent.auxiliary_client import (
     _message_field,
     aux_interrupt_protection,
     call_llm,
-    extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
@@ -3829,8 +3828,13 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         if self._compression_cancelled():
             raise AuxiliaryExplicitCancellation()
         self._note_aux_route_fallback(_aux_route)
-        # Reasoning-field fallback (DeepSeek/Qwen/Kimi put the summary in reasoning_content); capped.
-        content = extract_content_or_reasoning(response, max_reasoning_chars=8000)
+        # Summary text is the message ``content`` only. Reasoning fields are model thinking: they must never be
+        # stored as the summary or replayed as text later (RIG-10290 §3.1). A reasoning-only reply has empty
+        # content, so it takes the empty-content failure path below.
+        from agent.agent_runtime_helpers import strip_think_blocks
+        msg = _coerce_llm_message(response)
+        raw = msg if isinstance(msg, str) else _message_field(msg, "content")
+        content = strip_think_blocks(None, raw).strip() if isinstance(raw, str) else ""
         where = f"(provider={self.provider or 'auto'} model={self.summary_model or self.model})"
         # Some OpenAI-compatible proxies (e.g. cmkey.cn, one-api channels) return a well-formed HTTP 200
         # with an empty or whitespace-only ``content`` instead of an error or empty ``choices``. That

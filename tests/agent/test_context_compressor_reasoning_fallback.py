@@ -1,10 +1,8 @@
-"""Reasoning-model summaries must not trip the empty-content failure path.
+"""Summary text is message content only; reasoning is never stored as the summary.
 
-Local / thinking backends (DeepSeek, Qwen, Kimi) often return content=""
-with the usable text in reasoning / reasoning_content. _generate_summary
-should accept that via extract_content_or_reasoning, bound the fallback
-so a CoT dump cannot grow the transcript, and still fail closed when
-both fields are empty (#11978).
+Model thinking (``reasoning`` / ``reasoning_content`` / ``reasoning_details``) must never become the
+stored compaction summary, because every later request would replay it as plain text (RIG-10290 §3.1).
+A reply whose visible ``content`` is empty or think-only takes the existing empty-content failure path.
 """
 
 from types import SimpleNamespace
@@ -27,38 +25,23 @@ def _turns():
     ]
 
 
-def test_empty_content_uses_reasoning_content():
+def test_content_summary_is_stored_and_reasoning_is_ignored():
     response = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(
-            content="",
-            reasoning_content="kept reasoning summary",
+            content="visible summary body",
+            reasoning_content="PRIVATE_THINKING_STEP",
         ))]
     )
     with patch("agent.context_compressor.call_llm", return_value=response):
         out = _compressor()._generate_summary(_turns())
     assert out is not None
-    assert "kept reasoning summary" in out
     assert out.startswith(SUMMARY_PREFIX)
+    assert "visible summary body" in out
+    assert "PRIVATE_THINKING_STEP" not in out
 
 
-def test_whitespace_content_falls_back_for_dict_and_object():
-    class _Msg:
-        content = " "
-        reasoning_content = "object reasoning"
-
-    for message, needle in (
-        ({"content": " ", "reasoning_content": "dict reasoning"}, "dict reasoning"),
-        (_Msg(), "object reasoning"),
-    ):
-        response = {"choices": [{"message": message}]}
-        with patch("agent.context_compressor.call_llm", return_value=response):
-            out = _compressor()._generate_summary(_turns())
-        assert out is not None
-        assert needle in out
-
-
-def test_oversized_reasoning_fallback_is_truncated():
-    reasoning = "t" * 20_000
+def test_reasoning_only_reply_is_never_stored_as_summary():
+    reasoning = "PRIVATE_THINKING_STEP " * 40
     response = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(
             content="",
@@ -67,9 +50,34 @@ def test_oversized_reasoning_fallback_is_truncated():
     )
     with patch("agent.context_compressor.call_llm", return_value=response):
         out = _compressor()._generate_summary(_turns())
-    assert out is not None
-    assert reasoning not in out
-    assert len(out) < 15_000
+    assert out is None
+
+
+def test_whitespace_content_with_reasoning_is_not_stored_for_dict_and_object():
+    class _Msg:
+        content = " "
+        reasoning_content = "PRIVATE_OBJECT_REASONING"
+
+    for message in (
+        {"content": " ", "reasoning_content": "PRIVATE_DICT_REASONING"},
+        _Msg(),
+    ):
+        response = {"choices": [{"message": message}]}
+        with patch("agent.context_compressor.call_llm", return_value=response):
+            out = _compressor()._generate_summary(_turns())
+        assert out is None
+
+
+def test_think_only_content_is_treated_as_empty():
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(
+            content="<think>PRIVATE_INLINE_THINKING</think>",
+            reasoning_content=None,
+        ))]
+    )
+    with patch("agent.context_compressor.call_llm", return_value=response):
+        out = _compressor()._generate_summary(_turns())
+    assert out is None
 
 
 def test_empty_content_without_reasoning_still_fails():
