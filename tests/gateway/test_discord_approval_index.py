@@ -604,8 +604,9 @@ async def test_button_approval_edits_its_index_line(tmp_path):
     view._check_auth = lambda _interaction: True
     interaction = SimpleNamespace(
         user=SimpleNamespace(id=1, display_name="alice"),
-        response=SimpleNamespace(edit_message=AsyncMock(), send_message=AsyncMock()),
-        message=SimpleNamespace(embeds=[SimpleNamespace(set_footer=Mock(), color=None)]),
+        response=SimpleNamespace(edit_message=AsyncMock(), send_message=AsyncMock(), defer=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+        message=SimpleNamespace(embeds=[SimpleNamespace(set_footer=Mock(), color=None)], edit=AsyncMock()),
     )
 
     await view._resolve(interaction, "once", discord_adapter.discord.Color.green(), "platform.discord.approval.resolved_once")

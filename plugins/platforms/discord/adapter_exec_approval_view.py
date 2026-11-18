@@ -131,6 +131,13 @@ def build_exec_approval_view(discord, base, *, unauthorized):
             if requester := approval_refusal(self.session_key, getattr(interaction.user, "id", ""),
                                              extra=extra, request_id=self.request_id):
                 return await interaction.response.send_message(refusal_text(requester), ephemeral=True)
+            # Acknowledge before the resolve: it can outrun Discord's ~3s window, and an unacknowledged press then
+            # fails with 10062. A failed ack is logged and the resolve still runs, as it did before.
+            try:
+                await interaction.response.defer()
+            except Exception:
+                logger.warning("[Discord] could not acknowledge approval press: request_id=%s",
+                               self.request_id, exc_info=True)
             label = t(label_key)
             self.resolved = True
             self._backend_settled = True
@@ -152,7 +159,7 @@ def build_exec_approval_view(discord, base, *, unauthorized):
                 # (with no request id) the view timeout does the final edit.
                 self.resolved = False
                 self._backend_settled = False
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     t("platform.discord.approval.click_failed"), ephemeral=True)
                 return
             if not count:
@@ -160,22 +167,31 @@ def build_exec_approval_view(discord, base, *, unauthorized):
                 if self.request_id:
                     # The request already settled through another path, whose observer owns this
                     # card; editing it here too could land last and hide the real outcome.
-                    await interaction.response.send_message(
+                    await interaction.followup.send(
                         t("platform.discord.approval.no_longer_pending"), ephemeral=True)
                     return
                 color = discord.Color.dark_grey()
                 label = t("platform.discord.approval.expired")
+            footer = t("platform.discord.approval.by_user", label=label, user=interaction.user.display_name) if count else label
+            embed = self._first_embed(interaction.message)
+            if embed:
+                embed.color = color
+                embed.set_footer(text=footer)
+            self._disable_all()
             try:
-                await self._finalize_embed(
-                    interaction, color,
-                    t("platform.discord.approval.by_user", label=label, user=interaction.user.display_name) if count else label)
+                # The press was acknowledged by defer(), so the card is edited through its message.
+                await interaction.message.edit(embed=embed, view=self)
             except Exception:
+                # The answer is recorded: keep it, warn, and retire the card through its message.
+                logger.warning("[Discord] approval card edit failed after the answer was recorded: request_id=%s",
+                               self.request_id, exc_info=True)
                 if count:
-                    # The answer is recorded but this click's edit failed, and the observer skips cards
-                    # whose click owns the edit: stamp the card through its message instead.
                     self._backend_settled = False
                     await self.retire("resolved")
-                raise
+                    await interaction.followup.send(t("platform.discord.approval.already_resolved"), ephemeral=True)
+            finally:
+                # Answered: release the view, or its timeout later stamps "expired" over the answer.
+                self.stop()
 
         async def press(self, interaction: discord.Interaction, custom_id: str) -> bool:
             """Run the button whose ``custom_id`` is ``custom_id``. A press that reached a dead client's view

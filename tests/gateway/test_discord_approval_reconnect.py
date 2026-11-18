@@ -125,7 +125,8 @@ def _queue_entry(monkeypatch, session, request_id):
 
 
 def _press(custom_id, *, message=None, user_id="11111"):
-    """A component press. ``is_done()`` turns True once the interaction is answered, as discord.py does."""
+    """A component press. ``is_done()`` turns True once the interaction is answered (a first response or a
+    ``defer()``), as discord.py does. ``message.edit`` is the post-defer card edit; ``followup.send`` the reply."""
     answered = {"done": False}
 
     def _mark_answered(*_args, **_kwargs):
@@ -134,11 +135,14 @@ def _press(custom_id, *, message=None, user_id="11111"):
     response = SimpleNamespace(
         send_message=AsyncMock(side_effect=_mark_answered),
         edit_message=AsyncMock(side_effect=_mark_answered),
+        defer=AsyncMock(side_effect=_mark_answered),
         is_done=lambda: answered["done"])
+    followup = SimpleNamespace(send=AsyncMock())
     interaction = SimpleNamespace(
         data={"custom_id": custom_id},
         user=SimpleNamespace(id=user_id, display_name="alice"),
         response=response,
+        followup=followup,
         message=message,
         channel_id=555,
         guild=None,
@@ -176,7 +180,9 @@ async def test_pending_approval_press_after_reconnect_resolves_request(monkeypat
 
     assert entry.result == "once"
     assert entry.event.is_set()
-    response.edit_message.assert_awaited_once()
+    response.defer.assert_awaited_once()
+    card["message"].edit.assert_awaited_once()
+    response.edit_message.assert_not_awaited()
     await adapter.disconnect()
 
 
@@ -205,7 +211,9 @@ async def test_approve_on_live_client_after_resolve_logs_no_unmatched_warning(mo
     await card["view"].press(interaction, custom_id)
     assert entry.result == "once"
     assert card["view"].is_finished()
-    response.edit_message.assert_awaited_once()
+    response.defer.assert_awaited_once()
+    card["message"].edit.assert_awaited_once()
+    response.edit_message.assert_not_awaited()
     caplog.clear()
 
     # discord.py hands the same answered interaction to the live client's on_interaction.
@@ -213,7 +221,8 @@ async def test_approve_on_live_client_after_resolve_logs_no_unmatched_warning(mo
     await on_interaction(interaction)
 
     response.send_message.assert_not_awaited()
-    assert response.edit_message.await_count == 1
+    response.defer.assert_awaited_once()
+    assert card["message"].edit.await_count == 1
     assert not any(r.levelno == logging.WARNING for r in caplog.records)
     assert any(r.levelno == logging.INFO and "approval press already answered" in r.getMessage()
                and f"custom_id={custom_id}" in r.getMessage() for r in caplog.records)
@@ -462,15 +471,18 @@ async def test_orphan_press_whose_edit_fails_after_recording_answer_gets_already
     custom_id = f"hermes:exec:{request_id}:once"
     on_interaction = created[1]._events["on_interaction"]
     interaction, response = _press(custom_id, message=card["message"])
-    response.edit_message = AsyncMock(side_effect=RuntimeError("edit failed after answer"))
+    # The post-defer card edit fails after the answer is recorded; retire() then stamps the card through its message.
+    card["message"].edit = AsyncMock(side_effect=[RuntimeError("edit failed after answer"), None])
     await on_interaction(interaction)
 
     assert entry.result == "once"
-    response.edit_message.assert_awaited_once()
-    card["message"].edit.assert_awaited()  # retire() stamped the card through its message
-    response.send_message.assert_awaited_once()
-    assert response.send_message.await_args.args[0] == t("platform.discord.approval.already_resolved")
-    assert response.send_message.await_args.kwargs.get("ephemeral") is True
+    response.defer.assert_awaited_once()
+    assert card["message"].edit.await_count == 2
+    assert card["message"].edit.await_args.kwargs["view"] is None
+    interaction.followup.send.assert_awaited_once()
+    assert interaction.followup.send.await_args.args[0] == t("platform.discord.approval.already_resolved")
+    assert interaction.followup.send.await_args.kwargs.get("ephemeral") is True
+    response.send_message.assert_not_awaited()
     await adapter.disconnect()
 
 
@@ -508,7 +520,8 @@ async def test_card_sent_across_reconnect_is_resolved_by_the_new_client(monkeypa
 
     assert entry.result == "once"
     assert entry.event.is_set()
-    response.edit_message.assert_awaited_once()
+    response.defer.assert_awaited_once()
+    card["message"].edit.assert_awaited_once()
     await adapter.disconnect()
 
 

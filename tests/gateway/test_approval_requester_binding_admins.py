@@ -42,7 +42,8 @@ async def test_discord_admin_answers_with_require_admin_off(clicker, allowed, mo
     interaction = SimpleNamespace(
         user=SimpleNamespace(id=int(clicker), display_name="Bob", roles=[]),
         response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock(), defer=AsyncMock()),
-        message=SimpleNamespace(embeds=[]), channel_id=555)
+        followup=SimpleNamespace(send=AsyncMock()),
+        message=SimpleNamespace(embeds=[], edit=AsyncMock()), channel_id=555)
 
     await view._resolve(interaction, "once", None, "platform.discord.approval.resolved_once")
 

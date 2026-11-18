@@ -140,7 +140,8 @@ async def test_discord_buttons_use_the_approvals_own_admin_scope(chat_type, clic
     interaction = SimpleNamespace(
         user=SimpleNamespace(id=int(clicker), display_name="X", roles=[]),
         response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock(), defer=AsyncMock()),
-        message=SimpleNamespace(embeds=[]), channel_id=555)
+        followup=SimpleNamespace(send=AsyncMock()),
+        message=SimpleNamespace(embeds=[], edit=AsyncMock()), channel_id=555)
 
     await view._resolve(interaction, "once", None, "platform.discord.approval.resolved_once")
 
