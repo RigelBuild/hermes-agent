@@ -406,7 +406,7 @@ The quoted content is your primary anchor — insert/summarize/explain requests 
 Do not guess document content you haven't read.
 Reply in the same language as the user's comment unless they request otherwise.
 Use plain text only. Do not use Markdown, headings, bullet lists, tables, or code blocks.
-Do not show your reasoning process. Do not start with "I will", "Let me", or "I'll first".
+Start directly with the answer. Do not start with "I will", "Let me", or "I'll first".
 Output only the final user-facing reply.
 If no reply is needed, output exactly NO_REPLY.
 """.strip()

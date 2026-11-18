@@ -1182,7 +1182,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             "no_agent": {
                 "type": "boolean",
                 "default": False,
-                "description": "True = no LLM: the scheduler runs `script` (required) on schedule and delivers its stdout verbatim; empty stdout sends nothing (watchdog pattern). Use for script-only pings with fixed output; keep False for anything needing reasoning."
+                "description": "True = no LLM: the scheduler runs `script` (required) on schedule and delivers its stdout verbatim; empty stdout sends nothing (watchdog pattern). Use for script-only pings with fixed output; keep False for anything that needs the model."
             },
             "context_from": {
                 "type": "array",

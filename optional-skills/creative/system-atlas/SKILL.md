@@ -22,7 +22,7 @@ An atlas is one data file (`data.mjs`) that renders two views: an **interactive 
 
 ## When to Use
 
-Use whenever someone wants to discuss, design, review, or explain an architecture visually — "make an atlas", "map the system", "make the architecture explorable", "visualize the codebase/agent/pipeline so we can talk about it", "a diagram I can click around", "walk me through how it fits together" — or when an architecture discussion is producing a pile of open questions that need tracking across feedback rounds. Also use it to update an existing atlas after decisions change. Best when the system is new enough that vocabulary, decisions, and questions are still moving and there will be more than one feedback round.
+Use whenever someone wants to discuss, design, review, or explain an architecture visually — "make an atlas", "map the system", "make the architecture explorable", "visualize the codebase/agent/pipeline so we can talk about it", "a diagram I can click around", "take me through how it fits together" — or when an architecture discussion is producing a pile of open questions that need tracking across feedback rounds. Also use it to update an existing atlas after decisions change. Best when the system is new enough that vocabulary, decisions, and questions are still moving and there will be more than one feedback round.
 
 ## Prerequisites
 
