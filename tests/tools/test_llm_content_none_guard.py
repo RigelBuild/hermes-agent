@@ -73,6 +73,25 @@ class TestExtractContent:
         )
         assert extract_content(response) == "plain summary text"
 
+    def test_list_content_drops_thinking_parts(self):
+        response = _make_response([
+            {"type": "thinking", "thinking": "internal chain of thought"},
+            {"type": "text", "text": "visible answer"},
+        ])
+        assert extract_content(response) == "visible answer"
+
+    def test_list_content_with_only_thinking_returns_empty(self):
+        response = _make_response([{"type": "thinking", "thinking": "internal chain of thought"}])
+        assert extract_content(response) == ""
+
+    def test_unterminated_think_block_returns_empty(self):
+        response = _make_response("<think>unterminated cot answer")
+        assert extract_content(response) == ""
+
+    def test_orphan_think_tag_is_stripped(self):
+        response = _make_response("</think>The answer is 42.")
+        assert extract_content(response) == "The answer is 42."
+
 
 # ── has_reasoning() ────────────────────────────────────────────────────────
 
@@ -87,3 +106,10 @@ class TestHasReasoning:
 
     def test_blank_reasoning_is_not_reasoning(self):
         assert has_reasoning(_make_response(None, reasoning="   ")) is False
+
+    def test_reasoning_details_list_detected(self):
+        details = [{"type": "reasoning.text", "text": "thinking"}]
+        assert has_reasoning(_make_response(None, reasoning_details=details)) is True
+
+    def test_empty_reasoning_details_is_not_reasoning(self):
+        assert has_reasoning(_make_response(None, reasoning_details=[])) is False

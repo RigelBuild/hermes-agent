@@ -676,3 +676,4 @@ async def test_summary_reasoning_only_reply_is_not_the_summary(tmp_path, monkeyp
         resolved_meeting=TeamsMeetingRef(meeting_id="m-1", metadata={"subject": "Weekly Sync"}),
         transcript_text="Decision: ship the release.", artifacts=[])
     assert "leaked reasoning" not in (payload.summary or "")
+    assert "Decision: ship the release." in payload.key_decisions
