@@ -214,3 +214,39 @@ def test_tilde_fenced_tag_mention_survives_on_micro_path():
     with patch("agent.auxiliary_client.call_llm", return_value=_micro_response(summary)):
         out = _compressor()._micro_summarize_one("user: hi\nassistant: hello")
     assert out == summary
+
+
+# F2: tool-call XML and an attribute-carrying reasoning opener must never be stored.
+# Each entry is (reply, PRIVATE text that must not be stored, visible text that must be stored).
+TOOL_XML_SHAPES = [
+    ("## Goal\nREAL_SUMMARY\n<tool_call>{\"name\": \"terminal\", \"arguments\": {\"cmd\": \"PRIVATE_CALL\"}}"
+     "</tool_call>\n## Next\nShip.", "PRIVATE_CALL", "## Next\nShip."),
+    ("## Goal\nREAL_SUMMARY\n<tool_result>PRIVATE_OUTPUT</tool_result>\nShip.", "PRIVATE_OUTPUT", "Ship."),
+    ("## Goal\nREAL_SUMMARY\n<think type=\"x\">PRIVATE_THINK", "PRIVATE_THINK", "REAL_SUMMARY"),
+]
+
+
+@pytest.mark.parametrize("reply,private,visible", TOOL_XML_SHAPES)
+def test_tool_xml_and_attribute_opener_are_not_stored_on_compressor_path(reply, private, visible):
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=reply))])
+    with patch("agent.context_compressor.call_llm", return_value=response):
+        out = _compressor()._generate_summary(_turns())
+    assert out is not None
+    assert private not in out and "<tool_" not in out and "<think" not in out
+    assert visible in out
+
+
+@pytest.mark.parametrize("reply,private,visible", TOOL_XML_SHAPES)
+def test_tool_xml_and_attribute_opener_are_not_stored_on_micro_path(reply, private, visible):
+    with patch("agent.auxiliary_client.call_llm", return_value=_micro_response(reply)):
+        out = _compressor()._micro_summarize_one("user: hi\nassistant: hello")
+    assert out is not None
+    assert private not in out and "<tool_" not in out and "<think" not in out
+    assert visible in out
+
+
+def test_inline_tool_call_mention_survives_on_micro_path():
+    summary = "## Goal\nFix `<tool_call>x</tool_call>` parse.\n## Next\nShip PR #103."
+    with patch("agent.auxiliary_client.call_llm", return_value=_micro_response(summary)):
+        out = _compressor()._micro_summarize_one("user: hi\nassistant: hello")
+    assert out == summary

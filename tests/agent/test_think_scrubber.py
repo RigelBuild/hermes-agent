@@ -310,3 +310,42 @@ class TestSummaryVisibleText:
 
         text = "## Goal\n```\n</think>\n```\n## Next\nShip."
         assert summary_visible_text(text) == "```\n## Next\nShip."
+
+    @pytest.mark.parametrize("text,private,visible", [
+        ("## Goal\nREAL\n<tool_call>{\"name\": \"terminal\", \"arguments\": {\"cmd\": \"rm -rf\"}}</tool_call>\n"
+         "## Next\nShip.", "rm -rf", "## Goal\nREAL\n\n## Next\nShip."),
+        ("## Goal\nREAL\n<tool_result>PRIVATE_OUTPUT</tool_result>\nShip.", "PRIVATE_OUTPUT", "## Goal\nREAL\n\nShip."),
+        ("## Goal\nREAL\n<function_calls><invoke name=\"x\"></invoke></function_calls>\nShip.", "invoke",
+         "## Goal\nREAL\n\nShip."),
+        ("## Goal\nREAL.\n<function name=\"terminal\">{\"cmd\":\"ls\"}</function>\nShip.", "terminal",
+         "## Goal\nREAL.\n\nShip."),
+        ("## Goal\nREAL\n<tool_call>{\"name\": \"terminal\", \"arguments\": {", "tool_call", "## Goal\nREAL"),
+        ("## Goal\nREAL</tool_call>\nShip.", "tool_call", "## Goal\nREALShip."),
+        ("## Goal\nREAL\nterminal<arg_key>cmd</arg_key>\n<arg_value>ls</arg_value>\nShip.", "arg_",
+         "## Goal\nREAL\nShip."),
+        ("## Goal\nREAL\n<think type=\"x\">PRIVATE_THINK", "PRIVATE_THINK", "## Goal\nREAL"),
+    ])
+    def test_tool_call_xml_and_attribute_opener_are_cut(self, text: str, private: str, visible: str) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        out = summary_visible_text(text)
+        assert private not in out
+        assert out == visible
+
+    @pytest.mark.parametrize("text", [
+        "## Goal\nFix `<tool_call>x</tool_call>` parse.",
+        "## Goal\nDrop the stray `</tool_call>` closer.\n## Next\nShip.",
+        "## Goal\nFix the `<think type=\"x\">` opener.\n## Next\nShip.",
+    ])
+    def test_inline_tool_or_attribute_tag_mention_survives(self, text: str) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        assert summary_visible_text(text) == text
+
+    def test_long_backtick_run_is_linear(self) -> None:
+        import time
+        from agent.think_scrubber import summary_visible_text
+
+        start = time.perf_counter()
+        summary_visible_text("`" * 40000)
+        assert time.perf_counter() - start < 0.5
