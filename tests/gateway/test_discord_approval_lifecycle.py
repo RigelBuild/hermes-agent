@@ -99,14 +99,17 @@ async def test_observer_that_fires_before_a_failed_click_edit_still_sees_the_car
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ui_timeout_first", [True, False])
-async def test_ui_timeout_does_not_end_wait_or_overwrite_later_answer(monkeypatch, ui_timeout_first):
+async def test_ui_timeout_ends_wait_as_cancelled_and_later_answer_resolves_nothing(monkeypatch, ui_timeout_first):
     _adapter, view, entry, message = await _pending_card(monkeypatch)
     if ui_timeout_first:
         await view.on_timeout()
-        assert not entry.event.is_set()
+        # The card can no longer be answered, so the wait ends at once as withdrawn, not as a user deny (RIG-10927).
+        assert entry.event.is_set()
         assert entry.result is None
-        assert approval._gateway_queues[view.session_key] == [entry]
-    assert approval.resolve_gateway_approval(view.session_key, "once", request_id=view.request_id) == 1
+        assert entry.cancelled
+        assert view.session_key not in approval._gateway_queues or entry not in approval._gateway_queues[view.session_key]
+    assert approval.resolve_gateway_approval(view.session_key, "once", request_id=view.request_id) == (
+        0 if ui_timeout_first else 1)
     await view.retire("resolved")
     if not ui_timeout_first:
         await view.on_timeout()

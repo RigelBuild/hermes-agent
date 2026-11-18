@@ -5824,9 +5824,20 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             # Answered already (a live Approve, or discord.py's own callback): nothing left to say.
             logger.info("[Discord] approval press already answered: custom_id=%s", custom_id)
             return
+        if request_id and await self._resolve_pending_card_press(interaction, custom_id, request_id):
+            return
         logger.warning("[Discord] component press matched no pending approval: custom_id=%s", custom_id)
         await self._reply_unanswered_approval_press(
             interaction, custom_id, t("platform.discord.approval.no_longer_pending"))
+
+    async def _resolve_pending_card_press(self, interaction, custom_id: str, request_id: str) -> bool:
+        """Settle a still-pending card request for a press no live view routes (RIG-10927). The card's own view
+        runs the authority gates; this only checks the press came from that card's message."""
+        view = self._exec_approval_views.get(request_id)
+        press_message_id = getattr(getattr(interaction, "message", None), "id", None)
+        if view is None or press_message_id is None or press_message_id != getattr(view._message, "id", None):
+            return False
+        return await view.resolve_unmatched_press(interaction, custom_id.rpartition(":")[2])
 
     async def _reply_unanswered_approval_press(self, interaction, custom_id: str, text: str) -> None:
         """Send ``text`` ephemerally unless the interaction was already answered. Never raises."""

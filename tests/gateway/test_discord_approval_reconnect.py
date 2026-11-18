@@ -260,8 +260,8 @@ async def test_live_finished_view_unanswered_press_gets_no_longer_pending(monkey
         chat_id="555", command="rm x", session_key=session, request_id=request_id)
     assert result.success is True
 
-    # The card went stale (finished) on the live client, and nobody answered it.
-    await card["view"].retire("resolved")
+    # The card timed out on the live client. The timeout withdraws the request, so no pending entry is left.
+    await card["view"].on_timeout()
     assert card["view"].is_finished()
     caplog.clear()
 
@@ -276,7 +276,7 @@ async def test_live_finished_view_unanswered_press_gets_no_longer_pending(monkey
     assert any(r.levelno == logging.WARNING and f"custom_id={custom_id}" in r.getMessage()
                for r in caplog.records)
     assert entry.result is None
-    assert not entry.event.is_set()
+    assert entry.cancelled
     await adapter.disconnect()
 
 
@@ -637,14 +637,14 @@ async def test_failed_card_send_is_not_registered(monkeypatch):
     await adapter.disconnect()
 
 @pytest.mark.asyncio
-async def test_ui_timeout_then_reconnect_press_still_resolves_pending_request(monkeypatch, caplog):
-    # Live sequence (RIG-10927): the card's UI timeout finishes the view while the backend request is still
-    # pending; a reconnect then swaps the client; the next Approve must still resolve the request.
+async def test_ui_timeout_then_reconnect_press_ends_wait_as_cancelled(monkeypatch):
+    # Live sequence (RIG-10927): the card's UI timeout finishes the view; a reconnect swaps the client; an
+    # Approve then arrives. The timeout withdraws the request at once, so the wait ends cancelled and the
+    # press gets "no longer pending" instead of hanging the agent turn until /stop.
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
     created: list[_FakeBot] = []
     await _connect(adapter, monkeypatch, created)
     adapter._allowed_user_ids = {"11111"}
-    caplog.set_level(logging.INFO)
 
     session = "agent:other:discord:555"
     request_id = uuid.uuid4().hex
@@ -657,18 +657,107 @@ async def test_ui_timeout_then_reconnect_press_still_resolves_pending_request(mo
 
     await card["view"].on_timeout()
     assert card["view"].is_finished()
-    assert not entry.event.is_set()
+    assert entry.event.is_set()
+    assert entry.cancelled
+    assert entry.result is None
 
     await _connect(adapter, monkeypatch, created)
     adapter._allowed_user_ids = {"11111"}
-    caplog.clear()
 
     custom_id = f"hermes:exec:{request_id}:once"
     on_interaction = created[1]._events["on_interaction"]
     interaction, response = _press(custom_id, message=card["message"])
     await on_interaction(interaction)
 
+    assert entry.result is None
+    response.send_message.assert_awaited_once()
+    assert response.send_message.await_args.args[0] == t("platform.discord.approval.no_longer_pending")
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_lost_view_press_settles_pending_request_as_cancelled(monkeypatch):
+    # A pending request whose card view is gone (lost from the registry) must not hang the agent turn: the
+    # adapter cannot answer it, so the wait ends at once as withdrawn, never as a user deny.
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    created: list[_FakeBot] = []
+    await _connect(adapter, monkeypatch, created)
+    adapter._allowed_user_ids = {"11111"}
+
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+
+    card = _capture_card(created[0])
+    result = await adapter.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)
+    assert result.success is True
+
+    adapter._exec_approval_views.pop(request_id)
+    await card["view"].on_timeout()
+    assert entry.event.is_set()
+    assert entry.cancelled
+    assert entry.result is None
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_unmatched_press_on_pending_card_resolves_nothing(monkeypatch):
+    # RIG-10927 authority: a press that reaches the unmatched fallback must not settle a pending request for a user
+    # the card's own gates refuse. Only the one-click requester (or an admin) may answer it.
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    created: list[_FakeBot] = []
+    await _connect(adapter, monkeypatch, created)
+    adapter._allowed_user_ids = {"11111", "99999"}
+
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+
+    card = _capture_card(created[0])
+    assert (await adapter.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
+    # Finished by a settle that left the request pending: the press is unmatched, so the fallback runs.
+    await card["view"].retire("resolved")
+    entry.result = None
+    approval._gateway_queues[session] = [entry]
+
+    custom_id = f"hermes:exec:{request_id}:once"
+    on_interaction = created[0]._events["on_interaction"]
+    interaction, response = _press(custom_id, message=card["message"], user_id="99999")
+    await on_interaction(interaction)
+
+    assert entry.result is None
+    assert not entry.event.is_set()
+    response.send_message.assert_awaited_once()
+    assert response.send_message.await_args.kwargs.get("ephemeral") is True
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_authorized_unmatched_press_on_pending_card_resolves_request(monkeypatch):
+    # The positive control for the refusal above: the same path resolves when the clicker is the requester.
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    created: list[_FakeBot] = []
+    await _connect(adapter, monkeypatch, created)
+    adapter._allowed_user_ids = {"11111"}
+
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+
+    card = _capture_card(created[0])
+    assert (await adapter.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
+    await card["view"].retire("resolved")
+    entry.result = None
+    approval._gateway_queues[session] = [entry]
+
+    custom_id = f"hermes:exec:{request_id}:once"
+    on_interaction = created[0]._events["on_interaction"]
+    interaction, _response = _press(custom_id, message=card["message"], user_id="11111")
+    await on_interaction(interaction)
+
     assert entry.result == "once"
     assert entry.event.is_set()
-    assert not any("component press matched no pending approval" in r.getMessage() for r in caplog.records)
     await adapter.disconnect()
