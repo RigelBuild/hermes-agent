@@ -100,7 +100,7 @@ class TestVideoAnalyzeTool:
         mock_response.choices[0].message.content = "A short video showing a demo."
 
         with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response):
-            with patch("tools.vision_tools.extract_content_or_reasoning", return_value="A short video showing a demo."):
+            with patch("tools.vision_tools.extract_content", return_value="A short video showing a demo."):
                 result = self._run(video_analyze_tool(str(video), "What is this?"))
 
         data = json.loads(result)
@@ -156,7 +156,7 @@ class TestVideoAnalyzeTool:
             return mock_response
 
         with patch("tools.vision_tools.async_call_llm", side_effect=capture_llm):
-            with patch("tools.vision_tools.extract_content_or_reasoning", return_value="OK"):
+            with patch("tools.vision_tools.extract_content", return_value="OK"):
                 self._run(video_analyze_tool(str(video), "Describe this"))
 
         messages = captured_kwargs["messages"]
@@ -211,7 +211,7 @@ class TestVideoAnalyzeTool:
 
         with (
             patch("tools.vision_tools.async_call_llm", side_effect=capture_llm),
-            patch("tools.vision_tools.extract_content_or_reasoning", return_value="sandbox video"),
+            patch("tools.vision_tools.extract_content", return_value="sandbox video"),
         ):
             result = self._run(
                 video_analyze_tool(str(host_video), "Describe this", task_id="task-123")

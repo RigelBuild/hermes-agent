@@ -13,6 +13,7 @@ import pytest
 
 from tools.vision_tools import (
     _validate_image_url_async,
+    _call_vision_llm,
     _handle_vision_analyze,
     _determine_mime_type,
     _image_to_base64_data_url,
@@ -1111,3 +1112,40 @@ class TestVisionCpuBurstCap:
             f"analyses were serialized to the cap (peak={calls_peak}); only the "
             "encode burst should be bounded, not the whole call"
         )
+
+
+# -- Reasoning-only replies (RIG-10913) -------------------------------------------------------
+
+
+def _reply(content, reasoning=None):
+    response = MagicMock()
+    response.choices = [MagicMock()]
+    response.choices[0].message.content = content
+    response.choices[0].message.reasoning = reasoning
+    response.choices[0].message.reasoning_content = None
+    response.choices[0].message.reasoning_details = None
+    return response
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_reply_is_retried_not_returned_as_analysis():
+    with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock,
+               return_value=_reply("A clean description")) as llm:
+        analysis = await _call_vision_llm(
+            {"messages": []}, "Vision LLM returned empty content, retrying once",
+            _reply(None, reasoning="private chain of thought"))
+    assert analysis == "A clean description"
+    llm.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_reply_logs_reasoning_only(caplog):
+    with (
+        caplog.at_level(logging.WARNING, logger="tools.vision_tools"),
+        patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=_reply("ok")),
+    ):
+        await _call_vision_llm(
+            {"messages": []}, "Vision LLM returned empty content, retrying once",
+            _reply(None, reasoning="private chain of thought"))
+    assert "reasoning-only reply" in caplog.text
+    assert "returned empty content" not in caplog.text

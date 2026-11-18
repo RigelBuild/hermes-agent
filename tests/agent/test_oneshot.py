@@ -56,6 +56,12 @@ class TestRunOneshot:
         ):
             assert run_oneshot(instructions="x", user_input="y") == "fix: bug"
 
+    def test_reasoning_only_reply_is_not_returned(self):
+        resp = self._mock_response(None)
+        resp.choices[0].message.reasoning = "private chain of thought"
+        with patch("agent.oneshot.call_llm", return_value=resp):
+            assert run_oneshot(instructions="x", user_input="y") == ""
+
 class TestHelpers:
 
     def test_truncate_over_limit_marks_truncation(self):
