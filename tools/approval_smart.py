@@ -305,6 +305,17 @@ def _append_escalation(command: str, description: str, session_key: str, reason:
         logger.warning("Smart approvals: could not record escalation (%s: %s)", type(exc).__name__, exc)
 
 
+def _log_verdict(verdict: str, pattern_key: str, session_key: str) -> None:
+    """One INFO line per guardian verdict. The note's text is logged only for ``unavailable``, whose notes
+    are fixed strings (``rate limited (429)``, ``empty reply``). A reviewer note often quotes the command
+    (``curl -u admin:pass``), so approve, deny and escalate log only the note's length. The command text
+    is never logged: commands can carry secrets."""
+    note = getattr(_last_note, "text", "")
+    text = f" reason={note[:200]}" if verdict == "unavailable" else ""
+    logger.info("approval reviewer verdict=%s pattern=%s session=%s reason_len=%d%s",
+                verdict.upper(), pattern_key, session_key, len(note), text)
+
+
 def _smart_verdict(command: str, description: str, pattern_key: str,
                    pattern_keys: list[str], session_key: str) -> str:
     """Run the guardian LLM with observer hooks; 'approve' | 'deny' | 'escalate' | 'unavailable'.
@@ -324,6 +335,7 @@ def _smart_verdict(command: str, description: str, pattern_key: str,
     else:
         _ctx._fire_approval_hook("pre_approval_request", **payload)
     verdict = _smart_approve(command, description)
+    _log_verdict(verdict, pattern_key, session_key)
     if payload is not None and verdict in {"approve", "deny"}:
         _ctx._fire_approval_hook("post_approval_response", **payload, choice=f"smart_{verdict}", decided_by="aux_llm")
     if verdict == "escalate":
