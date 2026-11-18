@@ -193,19 +193,29 @@ _TAG_ALT = "|".join(re.escape(name) for name in THINK_TAG_NAMES)
 # text before the last one is reasoning from a prefilled ``<think>``. An unclosed opener runs to the end.
 _BARE_CLOSE_TAIL_RE = re.compile(rf"^.*</(?:{_TAG_ALT})>\s*", re.DOTALL | re.IGNORECASE)
 _UNCLOSED_OPEN_TAIL_RE = re.compile(rf"<(?:{_TAG_ALT})>.*\Z", re.DOTALL | re.IGNORECASE)
+# Markdown code (fenced blocks, then inline spans) is masked before the cuts, so a tag named in code
+# cannot start or end a cut. Masked spans are restored unchanged.
+_CODE_SPAN_RE = re.compile(r"(```.*?```|(`+)[^`\n]+?\2)", re.DOTALL)
 
 
 def summary_visible_text(content: Any) -> str:
     """Visible text of a summarizer reply, for the stored summary only.
 
     Runs the shared ``strip_think_blocks`` rules, then two cuts it does not make: text before a bare
-    closing tag, and an unclosed opening tag through the end of the text, even mid-line. A summary
-    that quotes a bare opening tag is cut there. The shared helper's display behaviour is unchanged.
+    closing tag, and an unclosed opening tag through the end of the text, even mid-line. Tags inside
+    Markdown code are never cut. The shared helper's display behaviour is unchanged.
     """
     from agent.agent_runtime_helpers import _REASONING_BLOCK_PATTERNS, _flatten_content_text, strip_think_blocks
 
     text = _flatten_content_text(content) if content else ""
     for pattern in _REASONING_BLOCK_PATTERNS:
         text = pattern.sub("", text)
-    text = _UNCLOSED_OPEN_TAIL_RE.sub("", _BARE_CLOSE_TAIL_RE.sub("", text))
-    return strip_think_blocks(None, text).strip()
+    code: list[str] = []
+
+    def _mask(match: re.Match[str]) -> str:
+        code.append(match.group(0))
+        return f"\0{len(code) - 1}\0"
+
+    masked = _CODE_SPAN_RE.sub(_mask, text)
+    masked = strip_think_blocks(None, _UNCLOSED_OPEN_TAIL_RE.sub("", _BARE_CLOSE_TAIL_RE.sub("", masked))).strip()
+    return re.sub(r"\0(\d+)\0", lambda m: code[int(m.group(1))], masked).strip()

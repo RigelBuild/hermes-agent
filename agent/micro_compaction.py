@@ -149,7 +149,7 @@ class MicroCompactionMixin:
             return None
 
         message = response.choices[0].message
-        content = summary_visible_text(message.get("content") if isinstance(message, dict) else getattr(message, "content", None))
+        content = summary_visible_text(message.get("content") if isinstance(message, dict) else getattr(message, "content", message))
         if not content:
             logger.info("micro-summarization returned empty content")
             return None
