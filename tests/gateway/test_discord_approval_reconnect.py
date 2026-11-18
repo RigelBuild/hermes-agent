@@ -1334,3 +1334,81 @@ async def test_adopted_card_follows_the_rebuilt_role_policy(monkeypatch):
     assert entry.event.is_set()
     await old.disconnect()
     await new.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_adopted_card_follows_the_rebuilt_admin_gate(monkeypatch):
+    # The rebuild turns require_admin_for_exec_approval on, with 44444 the only admin. The adopted card reads that gate at
+    # press time: an admitted approver who is not an admin is refused and the request stays pending; the admin resolves it.
+    for name in ("DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
+                 "DISCORD_ALLOWED_USERS", "DISCORD_ALLOWED_ROLES"):
+        monkeypatch.delenv(name, raising=False)
+    created: list[_FakeBot] = []
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+    entry.authority = {"requester_id": "11111", "approvers": ["11111", "33333"]}
+
+    old = DiscordAdapter(PlatformConfig(enabled=True, token="test-token",
+                                        extra={"allow_from": ["11111", "33333", "44444"]}))
+    await _connect(old, monkeypatch, created)
+    card = _capture_card(created[0])
+    assert (await old.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
+
+    new = DiscordAdapter(PlatformConfig(enabled=True, token="test-token", extra={
+        "allow_from": ["11111", "33333", "44444"],
+        "require_admin_for_exec_approval": True, "allow_admin_from": ["44444"]}))
+    new.adopt_exec_approval_views(old)  # the carry runs before connect(), as in the runner
+    await _connect(new, monkeypatch, created)
+    assert new._allowed_user_ids == {"11111", "33333", "44444"}
+
+    custom_id = f"hermes:exec:{request_id}:once"
+    refused, refused_response = _press(custom_id, message=card["message"], user_id="33333")
+    await created[-1]._events["on_interaction"](refused)
+    assert entry.result is None
+    assert not entry.event.is_set()
+    assert request_id in [e.data.get("request_id") for e in approval._gateway_queues.get(session, [])]
+    refused_response.send_message.assert_awaited_once()
+    assert refused_response.send_message.await_args.args[0] == discord_platform._unauthorized()
+
+    admitted, _admitted_response = _press(custom_id, message=card["message"], user_id="44444")
+    await created[-1]._events["on_interaction"](admitted)
+    assert entry.result == "once"
+    assert entry.event.is_set()
+    await old.disconnect()
+    await new.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_adopted_card_takes_the_rebuilt_admin_list_for_a_non_requester(monkeypatch):
+    # The rebuild adds 44444 to allow_admin_from with the admin gate off. The adopted card answers through the rebuilt
+    # platform extra, so 44444 may answer although they are neither the requester nor an approver. The predecessor's
+    # extra listed no admin, so the press would be refused if the view kept its own extra.
+    for name in ("DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
+                 "DISCORD_ALLOWED_USERS", "DISCORD_ALLOWED_ROLES"):
+        monkeypatch.delenv(name, raising=False)
+    created: list[_FakeBot] = []
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+    entry.authority = {"requester_id": "11111", "approvers": ["11111"]}
+
+    old = DiscordAdapter(PlatformConfig(enabled=True, token="test-token", extra={"allow_from": ["11111", "44444"]}))
+    await _connect(old, monkeypatch, created)
+    card = _capture_card(created[0])
+    assert (await old.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
+
+    new = DiscordAdapter(PlatformConfig(enabled=True, token="test-token",
+                                        extra={"allow_from": ["11111", "44444"], "allow_admin_from": ["44444"]}))
+    new.adopt_exec_approval_views(old)  # the carry runs before connect(), as in the runner
+    await _connect(new, monkeypatch, created)
+
+    custom_id = f"hermes:exec:{request_id}:once"
+    interaction, _response = _press(custom_id, message=card["message"], user_id="44444")
+    await created[-1]._events["on_interaction"](interaction)
+    assert entry.result == "once"
+    assert entry.event.is_set()
+    await old.disconnect()
+    await new.disconnect()
