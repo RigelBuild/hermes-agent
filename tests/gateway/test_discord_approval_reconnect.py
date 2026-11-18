@@ -1148,6 +1148,44 @@ async def test_rebuilt_adapter_allowlist_reaches_adopted_card(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_adopted_card_follows_the_rebuilt_allowlist(monkeypatch):
+    # connect() derives the rebuilt adapter's allowlist from its config, after the carry has run. The adopted card
+    # reads that list at press time: 33333 is added by the rebuild and admitted, 11111 is removed and refused.
+    for name in ("DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS", "DISCORD_ALLOWED_USERS"):
+        monkeypatch.delenv(name, raising=False)
+    created: list[_FakeBot] = []
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+    entry.authority = {"requester_id": "11111", "approvers": ["11111", "33333"]}
+
+    old = DiscordAdapter(PlatformConfig(enabled=True, token="test-token", extra={"allow_from": ["11111"]}))
+    await _connect(old, monkeypatch, created)
+    card = _capture_card(created[0])
+    assert (await old.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
+
+    new = DiscordAdapter(PlatformConfig(enabled=True, token="test-token", extra={"allow_from": ["33333"]}))
+    new.adopt_exec_approval_views(old)  # the carry runs before connect(), as in the runner
+    await _connect(new, monkeypatch, created)
+    assert new._allowed_user_ids == {"33333"}
+
+    custom_id = f"hermes:exec:{request_id}:once"
+    removed, removed_response = _press(custom_id, message=card["message"], user_id="11111")
+    await created[-1]._events["on_interaction"](removed)
+    assert entry.result is None
+    removed_response.send_message.assert_awaited_once()
+    assert removed_response.send_message.await_args.args[0] == discord_platform._unauthorized()
+
+    added, _added_response = _press(custom_id, message=card["message"], user_id="33333")
+    await created[-1]._events["on_interaction"](added)
+    assert entry.result == "once"
+    assert entry.event.is_set()
+    await old.disconnect()
+    await new.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_unmatched_press_resolves_nothing_when_request_moved_to_another_session(monkeypatch):
     # The card's request now sits in a different session's queue. A press on the card must not settle it through
     # the card's own session, and must answer nothing.
