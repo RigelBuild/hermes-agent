@@ -894,7 +894,7 @@ async def test_startup_auto_resume_freshness_survives_spring_forward(monkeypatch
     monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "3600")
     original_tz = os.environ.get("TZ")
     try:
-        os.environ["TZ"] = "America/New_York"
+        os.environ["TZ"] = "EST5EDT,M3.2.0,M11.1.0"  # POSIX rule: zone names need tzdata
         time.tzset()
         # 2026-03-08: clocks jump 02:00 -> 03:00, so 01:50 -> 03:10 is 20 real minutes.
         marked = datetime(2026, 3, 8, 1, 50)
