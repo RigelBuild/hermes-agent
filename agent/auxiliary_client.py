@@ -8320,25 +8320,33 @@ def extract_content(response) -> str:
     if isinstance(msg, str):
         return msg.strip()
     raw = _message_field(msg, "content")
-    if not isinstance(raw, str):
-        raw = str(raw) if raw else ""
-    content = raw.strip()
+    if not raw:
+        return ""
+    # Imported lazily to avoid an import cycle.
+    from agent.agent_runtime_helpers import (
+        _flatten_content_text, _ORPHAN_REASONING_TAG_PATTERN, _REASONING_BLOCK_PATTERNS,
+        _UNTERMINATED_REASONING_BLOCK_PATTERN,
+    )
+    content = _flatten_content_text(raw).strip()
     if not content:
         return ""
-    # Same precompiled closed-pair patterns as strip_think_blocks.
-    from agent.agent_runtime_helpers import _REASONING_BLOCK_PATTERNS
-    for pattern in _REASONING_BLOCK_PATTERNS:
+    # Same order as strip_think_blocks: closed pairs, then unclosed and orphan tags.
+    for pattern in (*_REASONING_BLOCK_PATTERNS, _UNTERMINATED_REASONING_BLOCK_PATTERN,
+                    _ORPHAN_REASONING_TAG_PATTERN):
         content = pattern.sub("", content)
     return content.strip()
 
 
 def has_reasoning(response) -> bool:
-    """True when the reply carries a non-empty ``reasoning``/``reasoning_content`` field."""
+    """True when the reply carries a non-empty reasoning string or a non-empty reasoning_details list."""
     msg = _coerce_llm_message(response)
     if msg is None or isinstance(msg, str):
         return False
-    return any(isinstance(val := _message_field(msg, field), str) and val.strip()
-               for field in ("reasoning", "reasoning_content"))
+    if any(isinstance(val := _message_field(msg, field), str) and val.strip()
+           for field in ("reasoning", "reasoning_content")):
+        return True
+    details = _message_field(msg, "reasoning_details")
+    return isinstance(details, list) and bool(details)
 
 
 @_relay_auxiliary_call_async

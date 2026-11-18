@@ -351,7 +351,7 @@ class TeamsMeetingPipeline:
             response = await async_call_llm(
                 task="call", temperature=0.2, max_tokens=900,
                 messages=[{"role": "system", "content": _SUMMARY_SYSTEM_PROMPT}, {"role": "user", "content": prompt}])
-            parsed = _parse_summary_json(extract_content(response))
+            parsed = _parse_summary_json(extract_content(response), transcript_text)
         except Exception as exc:
             logger.info("Teams pipeline LLM summary unavailable, using heuristic summary: %s", exc)
             parsed = _heuristic_summary(transcript_text)
@@ -462,10 +462,10 @@ def _clean_items(values: Any) -> list[str]:
     return [str(item).strip() for item in values if str(item).strip()]
 
 
-def _parse_summary_json(content: str) -> dict[str, Any]:
+def _parse_summary_json(content: str, transcript_text: str) -> dict[str, Any]:
     text = (content or "").strip()
     if not text:
-        return _heuristic_summary("")
+        return _heuristic_summary(transcript_text)
     # Tolerate prose or code fences around the JSON object.
     start, end = text.find("{"), text.rfind("}")
     if start >= 0 and end > start:
