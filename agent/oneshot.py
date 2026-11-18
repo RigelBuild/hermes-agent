@@ -12,7 +12,7 @@ resolves a cheap backend.
 import logging
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from agent.auxiliary_client import call_llm, extract_content_or_reasoning
+from agent.auxiliary_client import call_llm, extract_content
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ def run_oneshot(
         timeout=timeout,
         main_runtime=main_runtime,
     )
-    return _strip_code_fence((extract_content_or_reasoning(response) or "").strip())
+    return _strip_code_fence((extract_content(response) or "").strip())
 
 
 def _strip_code_fence(text: str) -> str:

@@ -8310,12 +8310,10 @@ def _message_field(msg, name):
     return msg.get(name) if isinstance(msg, dict) else getattr(msg, name, None)
 
 
-def extract_content_or_reasoning(response, *, max_reasoning_chars: int | None = None) -> str:
-    """Extract content from an LLM response, falling back to reasoning fields.
-    Order: ``content`` (inline think blocks stripped) → ``reasoning``/``reasoning_content`` →
-    ``reasoning_details`` (OpenRouter array). Accepts a response or bare message;
-    ``max_reasoning_chars`` bounds a reasoning fallback so unbounded chain-of-thought can't
-    become the compaction summary. Returns ``""`` if nothing found."""
+def extract_content(response) -> str:
+    """Visible text of an LLM response: ``content`` with inline think blocks stripped.
+    Reasoning fields are never returned, so a reasoning-only reply yields ``""``. Accepts a
+    response or bare message; returns ``""`` if nothing found."""
     msg = _coerce_llm_message(response)
     if msg is None:
         return ""
@@ -8325,36 +8323,22 @@ def extract_content_or_reasoning(response, *, max_reasoning_chars: int | None = 
     if not isinstance(raw, str):
         raw = str(raw) if raw else ""
     content = raw.strip()
-    if content:
-        # Same precompiled closed-pair patterns as strip_think_blocks.
-        from agent.agent_runtime_helpers import _REASONING_BLOCK_PATTERNS
-        cleaned = content
-        for pattern in _REASONING_BLOCK_PATTERNS:
-            cleaned = pattern.sub("", cleaned)
-        cleaned = cleaned.strip()
-        if cleaned:
-            return cleaned
-    # Content is empty or reasoning-only — try structured reasoning fields
-    reasoning_parts: list[str] = []
-    for field in ("reasoning", "reasoning_content"):
-        val = _message_field(msg, field)
-        if val and isinstance(val, str) and val.strip() and val not in reasoning_parts:
-            reasoning_parts.append(val.strip())
-    details = _message_field(msg, "reasoning_details")
-    if details and isinstance(details, list):
-        for detail in details:
-            if isinstance(detail, dict):
-                summary = detail.get("summary") or detail.get("content") or detail.get("text")
-                if summary and summary not in reasoning_parts:
-                    reasoning_parts.append(summary.strip() if isinstance(summary, str) else str(summary))
-    if not reasoning_parts:
+    if not content:
         return ""
-    text = "\n\n".join(reasoning_parts)
-    if max_reasoning_chars is not None and len(text) > max_reasoning_chars:
-        logger.warning("fell back to reasoning fields (%d chars); truncating to %d",
-                       len(text), max_reasoning_chars)
-        return text[:max_reasoning_chars]
-    return text
+    # Same precompiled closed-pair patterns as strip_think_blocks.
+    from agent.agent_runtime_helpers import _REASONING_BLOCK_PATTERNS
+    for pattern in _REASONING_BLOCK_PATTERNS:
+        content = pattern.sub("", content)
+    return content.strip()
+
+
+def has_reasoning(response) -> bool:
+    """True when the reply carries a non-empty ``reasoning``/``reasoning_content`` field."""
+    msg = _coerce_llm_message(response)
+    if msg is None or isinstance(msg, str):
+        return False
+    return any(isinstance(val := _message_field(msg, field), str) and val.strip()
+               for field in ("reasoning", "reasoning_content"))
 
 
 @_relay_auxiliary_call_async

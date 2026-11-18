@@ -54,7 +54,7 @@ def ask_router(*, root: Path, db_path: Path, room: Mapping[str, Any], discussion
                context: Mapping[str, str], homes: Mapping[str, Path]) -> tuple[str, ...] | None:
     """Member ids the router picked (``()`` = everyone), or None when the call failed or answered invalidly.
     Runs under the room owner's profile scope: its ``auxiliary.group_router`` config and credentials."""
-    from agent.auxiliary_client import call_llm, extract_content_or_reasoning
+    from agent.auxiliary_client import call_llm, extract_content
     from gateway.run import _profile_runtime_scope
 
     payload = discussion.get("payload") or {}
@@ -70,7 +70,7 @@ def ask_router(*, root: Path, db_path: Path, room: Mapping[str, Any], discussion
                 task=_ROUTER_TASK, temperature=0, max_tokens=_ROUTER_MAX_TOKENS,
                 messages=[{"role": "system", "content": router.ROUTER_SYSTEM_PROMPT},
                           {"role": "user", "content": prompt}])
-        text = extract_content_or_reasoning(response)
+        text = extract_content(response)
     except Exception as exc:  # health: allow BLE001 -- any router failure falls back to everyone
         logger.warning("hosted room %s: router call failed, everyone answers: %s", room["room_id"], exc)
         return None

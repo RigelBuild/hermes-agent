@@ -23,15 +23,17 @@ from hermes_dir_acl import make_user_dir
 # ``agent.auxiliary_client`` costs ~50 ms cold; only the handlers need it. Both names stay
 # module attributes so tests can patch ``tools.vision_tools.async_call_llm`` (truthy-skip: mocks win).
 async_call_llm: Any = None
-extract_content_or_reasoning: Any = None
+extract_content: Any = None
+has_reasoning: Any = None
 
 
 def _load_auxiliary_client() -> None:
-    global async_call_llm, extract_content_or_reasoning
-    if async_call_llm is None or extract_content_or_reasoning is None:
+    global async_call_llm, extract_content, has_reasoning
+    if async_call_llm is None or extract_content is None or has_reasoning is None:
         from agent import auxiliary_client as _aux
         async_call_llm = async_call_llm or _aux.async_call_llm
-        extract_content_or_reasoning = extract_content_or_reasoning or _aux.extract_content_or_reasoning
+        extract_content = extract_content or _aux.extract_content
+        has_reasoning = has_reasoning or _aux.has_reasoning
 
 
 from hermes_constants import get_hermes_dir
@@ -823,10 +825,10 @@ async def _call_vision_llm(call_kwargs: dict, empty_log: str, response=None):
     _load_auxiliary_client()
     if response is None:
         response = await async_call_llm(**call_kwargs)
-    analysis = extract_content_or_reasoning(response)
+    analysis = extract_content(response)
     if not analysis:
-        logger.warning(empty_log)
-        analysis = extract_content_or_reasoning(await async_call_llm(**call_kwargs))
+        logger.warning("reasoning-only reply" if has_reasoning(response) else empty_log)
+        analysis = extract_content(await async_call_llm(**call_kwargs))
     return analysis
 
 

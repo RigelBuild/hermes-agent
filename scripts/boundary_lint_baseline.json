@@ -636,7 +636,7 @@
     "plugins/teams_pipeline/meetings.py tools.microsoft_graph_client.MicrosoftGraphAPIError": 1,
     "plugins/teams_pipeline/meetings.py tools.microsoft_graph_client.MicrosoftGraphClient": 1,
     "plugins/teams_pipeline/pipeline.py agent.auxiliary_client.async_call_llm": 1,
-    "plugins/teams_pipeline/pipeline.py agent.auxiliary_client.extract_content_or_reasoning": 1,
+    "plugins/teams_pipeline/pipeline.py agent.auxiliary_client.extract_content": 1,
     "plugins/teams_pipeline/pipeline.py tools.transcription_tools.transcribe_audio": 1,
     "plugins/teams_pipeline/subscriptions.py tools.microsoft_graph_auth.MicrosoftGraphTokenProvider": 1,
     "plugins/teams_pipeline/subscriptions.py tools.microsoft_graph_client.MicrosoftGraphClient": 1,

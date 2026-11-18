@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 import httpx
 
-from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
+from agent.auxiliary_client import async_call_llm, extract_content
 from agent.secret_scope import get_secret
 from hermes_constants import get_hermes_home
 from plugins.teams_pipeline.meetings import (
@@ -351,7 +351,7 @@ class TeamsMeetingPipeline:
             response = await async_call_llm(
                 task="call", temperature=0.2, max_tokens=900,
                 messages=[{"role": "system", "content": _SUMMARY_SYSTEM_PROMPT}, {"role": "user", "content": prompt}])
-            parsed = _parse_summary_json(extract_content_or_reasoning(response))
+            parsed = _parse_summary_json(extract_content(response))
         except Exception as exc:
             logger.info("Teams pipeline LLM summary unavailable, using heuristic summary: %s", exc)
             parsed = _heuristic_summary(transcript_text)
