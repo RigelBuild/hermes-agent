@@ -301,7 +301,7 @@ except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
 
 from gateway.config import Platform, PlatformConfig, discord_channel_id_from_link
-from gateway.approval_actor import clarify_refusal, refusal_text, slash_confirm_refusal
+from gateway.approval_actor import approval_refusal, clarify_refusal, refusal_text, slash_confirm_refusal
 
 from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
@@ -5850,10 +5850,23 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         runs the authority gates; this only checks the press came from that card's message."""
         view = self._exec_approval_views.get(request_id)
         if view is None:
-            # No card to answer through: the request can never be answered, so settle it now as withdrawn (RIG-10927).
+            # No card to answer through, so a press can only withdraw the request. Withdraw it only for a clicker the
+            # adapter admits and the request's authority allows, as a live card would require (RIG-10927).
+            from plugins.platforms.discord.adapter_component_auth import _component_check_auth
             from tools.approval import gateway_approval_session, withdraw_gateway_approval
             session_key = gateway_approval_session(request_id)
-            if session_key and withdraw_gateway_approval(session_key, request_id, "the approval card was lost before it was answered"):
+            if not session_key:
+                return False
+            if not _component_check_auth(interaction, self._allowed_user_ids, self._allowed_role_ids,
+                                         live_auth=self._component_live_auth):
+                await interaction.response.send_message(_unauthorized(), ephemeral=True)
+                return True
+            user_id = getattr(interaction.user, "id", "")
+            if requester := approval_refusal(session_key, user_id, extra=getattr(self.config, "extra", None) or {},
+                                             request_id=request_id):
+                await interaction.response.send_message(refusal_text(requester), ephemeral=True)
+                return True
+            if withdraw_gateway_approval(session_key, request_id, "the approval card was lost before it was answered"):
                 logger.info("[Discord] lost-view press withdrew pending approval: request_id=%s", request_id)
             return False
         press_message_id = getattr(getattr(interaction, "message", None), "id", None)
