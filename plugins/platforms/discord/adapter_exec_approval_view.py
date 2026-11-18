@@ -8,7 +8,9 @@ import logging
 from typing import Optional
 
 from agent.i18n import t
-from plugins.platforms.discord.adapter_config_readers import _read_discord_prompt_timeout
+from plugins.platforms.discord.adapter_config_readers import (
+    _read_discord_prompt_timeout, _resolve_exec_approval_admin_gate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,21 +55,31 @@ def build_exec_approval_view(discord, base, *, unauthorized):
                     if item is not None and hasattr(item, "custom_id"):
                         item.custom_id = f"hermes:exec:{request_id}:{choice}"
 
+        def _admin_gate(self) -> tuple[bool, set, Optional[dict]]:
+            """``(require_admin, admin_user_ids, platform extra)`` read at press time: from the adopting adapter for an
+            adopted card, else this view's own copy."""
+            source = self.policy_source
+            if source is None:
+                return self.require_admin, self.admin_user_ids, self.approval_extra
+            require_admin, admin_ids = _resolve_exec_approval_admin_gate(getattr(source.config, "extra", None))
+            return require_admin, admin_ids, getattr(source.config, "extra", None)
+
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Base admission always required; with ``require_admin`` the clicker must
             also be an admin. Fails closed (logged once) when no admins are configured."""
             if not super()._check_auth(interaction):
                 return False
-            if not self.require_admin:
+            require_admin, admin_user_ids, _extra = self._admin_gate()
+            if not require_admin:
                 return True
             user = getattr(interaction, "user", None)
             try:
                 uid = str(getattr(user, "id", "") or "")
             except Exception:
                 uid = ""
-            if uid and uid in self.admin_user_ids:
+            if uid and uid in admin_user_ids:
                 return True
-            if not self.admin_user_ids:
+            if not admin_user_ids:
                 logger.warning(
                     "[Discord] require_admin_for_exec_approval is enabled but "
                     "no admins are configured (allow_admin_from is empty) — "
@@ -115,8 +127,9 @@ def build_exec_approval_view(discord, base, *, unauthorized):
             from gateway.approval_actor import approval_refusal, refusal_text
             # Admins of the approval's own chat scope (``extra``), as ``/approve``: never the DM-only
             # ``admin_user_ids``, which stays this view's own require_admin click gate.
+            extra = self._admin_gate()[2] or {}
             if requester := approval_refusal(self.session_key, getattr(interaction.user, "id", ""),
-                                             extra=self.approval_extra or {}, request_id=self.request_id):
+                                             extra=extra, request_id=self.request_id):
                 return await interaction.response.send_message(refusal_text(requester), ephemeral=True)
             label = t(label_key)
             self.resolved = True
@@ -127,7 +140,7 @@ def build_exec_approval_view(discord, base, *, unauthorized):
                 from tools.approval import resolve_gateway_approval_card
                 count = resolve_gateway_approval_card(
                     self.session_key, choice, self.request_id, actor_id=getattr(interaction.user, "id", ""),
-                    extra=self.approval_extra or {})
+                    extra=extra)
                 logger.info(
                     "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                     count, self.session_key, choice, interaction.user.display_name,
@@ -206,8 +219,8 @@ def build_exec_approval_view(discord, base, *, unauthorized):
                 await interaction.response.send_message(unauthorized(), ephemeral=True)
                 return True
             user_id = getattr(interaction.user, "id", "")
-            if requester := approval_refusal(self.session_key, user_id, extra=self.approval_extra or {},
-                                             request_id=self.request_id):
+            extra = self._admin_gate()[2] or {}
+            if requester := approval_refusal(self.session_key, user_id, extra=extra, request_id=self.request_id):
                 await interaction.response.send_message(refusal_text(requester), ephemeral=True)
                 return True
             offered = {getattr(item, "custom_id", "").rpartition(":")[2] for item in self.children}
@@ -216,7 +229,7 @@ def build_exec_approval_view(discord, base, *, unauthorized):
                             self.request_id, choice)
                 return False
             count = resolve_gateway_approval_card(
-                self.session_key, choice, self.request_id, actor_id=user_id, extra=self.approval_extra or {})
+                self.session_key, choice, self.request_id, actor_id=user_id, extra=extra)
             if not count:
                 return False
             logger.info("[Discord] unmatched press resolved pending approval: request_id=%s choice=%s",

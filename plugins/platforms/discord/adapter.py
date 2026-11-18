@@ -5798,9 +5798,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                                           "the approval card was lost in a platform reconnect")
                 continue
             # The carry runs before connect(), so a copied allowlist would be the empty pre-connect set. Bind the view to
-            # this adapter instead, so each press reads the allowlist connect() sets.
-            view.live_auth = self._component_live_auth
-            view.allowed_user_ids = lambda: self._allowed_user_ids
+            # this adapter as its policy source, so each press reads the allowlist, roles and admin gate connect() sets.
+            view.policy_source = self
             self._exec_approval_views[request_id] = view
 
     async def _on_platform_interaction(self, interaction) -> None:
@@ -5863,8 +5862,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 await interaction.response.send_message(_unauthorized(), ephemeral=True)
                 return True
             user_id = getattr(interaction.user, "id", "")
-            if requester := approval_refusal(session_key, user_id, extra=getattr(self.config, "extra", None) or {},
-                                             request_id=request_id):
+            require_admin, admin_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
+            if require_admin and (not user_id or str(user_id) not in admin_ids):
+                await interaction.response.send_message(_unauthorized(), ephemeral=True)
+                return True
+            extra = getattr(self.config, "extra", None) or {}
+            if requester := approval_refusal(session_key, user_id, extra=extra, request_id=request_id):
                 await interaction.response.send_message(refusal_text(requester), ephemeral=True)
                 return True
             if withdraw_gateway_approval(session_key, request_id, "the approval card was lost before it was answered"):
@@ -6623,6 +6626,8 @@ def _define_discord_view_classes() -> None:
             self.allowed_role_ids = allowed_role_ids or set()
             # The adapter's live allowlist check and platform extra, bound in ``_send_prompt``.
             self.live_auth, self.answer_extra = None, {}
+            # The adapter whose policy an adopted view reads at press time; None for a view bound at send.
+            self.policy_source = None
             self.resolved = False
             self._message = None
             # The client whose view store holds this view's buttons (set when the view is sent).
@@ -6630,9 +6635,12 @@ def _define_discord_view_classes() -> None:
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             from plugins.platforms.discord.adapter_component_auth import _component_check_auth
-            # An adopted view holds a callable that reads its rebuilt adapter's allowlist at press time.
-            allowed = self.allowed_user_ids() if callable(self.allowed_user_ids) else self.allowed_user_ids
-            return _component_check_auth(interaction, allowed, self.allowed_role_ids, live_auth=self.live_auth)
+            # An adopted view reads its rebuilt adapter's allowlists and live check at press time.
+            source = self.policy_source
+            allowed = source._allowed_user_ids if source is not None else self.allowed_user_ids
+            roles = source._allowed_role_ids if source is not None else self.allowed_role_ids
+            live_auth = source._component_live_auth if source is not None else self.live_auth
+            return _component_check_auth(interaction, allowed, roles, live_auth=live_auth)
 
         async def _gate(self, interaction: discord.Interaction, *, resolved_msg: Optional[str], unauth_msg: str, refusal=None) -> bool:
             """Reject (ephemerally) an already-resolved or unauthorized click, or one ``refusal(user_id)``
