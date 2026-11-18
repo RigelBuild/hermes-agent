@@ -271,3 +271,34 @@ class TestSummaryVisibleText:
         from agent.think_scrubber import summary_visible_text
 
         assert summary_visible_text("PRIVATE `x`</think>\n## Goal") == "## Goal"
+
+    def test_odd_fence_in_reasoning_does_not_hide_real_closer(self) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        text = (
+            "Let me draft the fix:\n```python\ndef scrub(x):\n    PRIVATE_THINK\n</think>\n## Goal\nFix leak.\n"
+            "## Commands\n```bash\nmake test\n```\n"
+        )
+        assert summary_visible_text(text) == (
+            "## Goal\nFix leak.\n## Commands\n```bash\nmake test\n```"
+        )
+
+    def test_stray_backtick_in_reasoning_does_not_hide_real_closer(self) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        assert summary_visible_text("PRIVATE_THINK the ` key</think>REAL_SUMMARY uses `x`.") == (
+            "REAL_SUMMARY uses `x`."
+        )
+
+    def test_stray_fence_in_summary_does_not_hide_real_opener(self) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        assert summary_visible_text("## Goal\nREAL_SUMMARY ``` note\n<think>PRIVATE_THINK ```") == (
+            "## Goal\nREAL_SUMMARY ``` note"
+        )
+
+    def test_tilde_fenced_tag_mention_survives(self) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        text = "## Goal\n~~~\n<think>\n~~~\n## Next\nShip."
+        assert summary_visible_text(text) == text

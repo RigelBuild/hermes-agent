@@ -174,3 +174,43 @@ def test_micro_bare_string_message_is_still_stored():
     with patch("agent.auxiliary_client.call_llm", return_value=response):
         out = _compressor()._micro_summarize_one("user: hi\nassistant: hello")
     assert out == "bare micro summary"
+
+
+# F1: a stray backtick or fence in the reasoning must not hide the real bare tag that follows it.
+# Each entry is (reply, PRIVATE text that must not be stored, visible text that must be stored).
+STRAY_CODE_SHAPES = [
+    (
+        "Let me draft the fix:\n```python\ndef scrub(x):\n    PRIVATE_THINK\n</think>\n## Goal\nFix leak.\n"
+        "## Commands\n```bash\nmake test\n```\n",
+        "PRIVATE_THINK",
+        "## Goal\nFix leak.",
+    ),
+    ("PRIVATE_THINK the ` key</think>REAL_SUMMARY uses `x`.", "PRIVATE_THINK", "REAL_SUMMARY uses `x`."),
+    ("## Goal\nREAL_SUMMARY ``` note\n<think>PRIVATE_THINK ```", "PRIVATE_THINK", "REAL_SUMMARY"),
+]
+
+
+@pytest.mark.parametrize("reply,private,visible", STRAY_CODE_SHAPES)
+def test_stray_code_delimiter_in_reasoning_does_not_leak_on_compressor_path(reply, private, visible):
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=reply))])
+    with patch("agent.context_compressor.call_llm", return_value=response):
+        out = _compressor()._generate_summary(_turns())
+    assert out is not None
+    assert private not in out
+    assert visible in out
+
+
+@pytest.mark.parametrize("reply,private,visible", STRAY_CODE_SHAPES)
+def test_stray_code_delimiter_in_reasoning_does_not_leak_on_micro_path(reply, private, visible):
+    with patch("agent.auxiliary_client.call_llm", return_value=_micro_response(reply)):
+        out = _compressor()._micro_summarize_one("user: hi\nassistant: hello")
+    assert out is not None
+    assert private not in out
+    assert visible in out
+
+
+def test_tilde_fenced_tag_mention_survives_on_micro_path():
+    summary = "## Goal\n~~~\n<think>\n~~~\n## Next\nShip PR #103."
+    with patch("agent.auxiliary_client.call_llm", return_value=_micro_response(summary)):
+        out = _compressor()._micro_summarize_one("user: hi\nassistant: hello")
+    assert out == summary
