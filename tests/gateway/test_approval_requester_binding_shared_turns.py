@@ -136,7 +136,6 @@ async def test_discord_buttons_use_the_approvals_own_admin_scope(chat_type, clic
     await adapter.send_exec_approval(chat_id="555", command="rm -rf build", session_key="d",
                                      request_id=entry.data["request_id"])
     view = sent["view"]
-    view._finalize_embed = AsyncMock()
     interaction = SimpleNamespace(
         user=SimpleNamespace(id=int(clicker), display_name="X", roles=[]),
         response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock(), defer=AsyncMock()),

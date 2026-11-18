@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -128,7 +128,8 @@ async def test_unsettled_click_without_an_observer_marks_the_card_expired(monkey
     view = ExecApprovalView(session_key="agent:other:discord:555", allowed_user_ids=set())
     monkeypatch.setattr(view, "_gate", AsyncMock(return_value=True))
     monkeypatch.setattr(discord_adapter.discord, "Color", SimpleNamespace(dark_grey=lambda: 0))
-    message = SimpleNamespace(embeds=[SimpleNamespace(set_footer=lambda **_k: None, color=None)], edit=AsyncMock())
+    embed = SimpleNamespace(set_footer=Mock(), color=None)
+    message = SimpleNamespace(embeds=[embed], edit=AsyncMock())
     interaction = SimpleNamespace(
         user=SimpleNamespace(display_name="tester"),
         response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
@@ -140,6 +141,8 @@ async def test_unsettled_click_without_an_observer_marks_the_card_expired(monkey
     # No request id, so no observer: the no-op click itself stamps the card as expired through its message.
     message.edit.assert_awaited_once()
     assert message.edit.await_args.kwargs["view"] is view
+    embed.set_footer.assert_called_once_with(text=t("platform.discord.approval.expired"))
+    assert embed.color == 0
     interaction.followup.send.assert_not_awaited()
 
 

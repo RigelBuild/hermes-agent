@@ -38,7 +38,6 @@ async def test_discord_admin_answers_with_require_admin_off(clicker, allowed, mo
     await adapter.send_exec_approval(chat_id="555", command="rm -rf build", session_key="discord:555",
                                      request_id=entry.data["request_id"])
     view = sent["view"]
-    view._finalize_embed = AsyncMock()
     interaction = SimpleNamespace(
         user=SimpleNamespace(id=int(clicker), display_name="Bob", roles=[]),
         response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock(), defer=AsyncMock()),

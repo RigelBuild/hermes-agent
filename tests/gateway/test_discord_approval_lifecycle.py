@@ -355,6 +355,30 @@ async def test_press_is_acknowledged_before_a_slow_resolve_and_card_edited_after
     assert view.is_finished()
 
 
+
+@pytest.mark.asyncio
+async def test_failed_defer_still_resolves_the_approval_and_edits_the_card(monkeypatch):
+    # A press whose ack fails with 10062 must still resolve: the answer is recorded and the card is edited
+    # through its message, which needs no interaction token. The ack failure is logged, not raised.
+    adapter, view, entry, message = await _pending_card(monkeypatch)
+    monkeypatch.setattr(view, "_gate", AsyncMock(return_value=True))
+    interaction = SimpleNamespace(
+        message=message, user=SimpleNamespace(display_name="tester"),
+        response=SimpleNamespace(
+            defer=AsyncMock(side_effect=_UnknownInteraction("Unknown interaction")),
+            send_message=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+
+    await view._resolve(interaction, "once", 2, "platform.discord.approval.resolved_once")
+
+    interaction.response.defer.assert_awaited_once()
+    assert entry.result == "once"
+    message.edit.assert_awaited_once()
+    assert message.edit.await_args.kwargs["view"] is view
+    assert view.is_finished()
+
+
 _FENCED_TABLE = "cat <<'EOF'\n```\n| item | " + "description " * 10 + "|\n|---|---|\n" + "| a | b |\n" * 30 + "```\nEOF"
 
 

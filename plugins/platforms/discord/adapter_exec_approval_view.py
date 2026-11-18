@@ -133,13 +133,13 @@ def build_exec_approval_view(discord, base, *, unauthorized):
                 return await interaction.response.send_message(refusal_text(requester), ephemeral=True)
             # Acknowledge before the resolve: it can outrun Discord's ~3s window, and an unacknowledged press then
             # fails with 10062. A failed ack is logged and the resolve still runs, as it did before.
+            self.resolved = True
             try:
                 await interaction.response.defer()
             except Exception:
                 logger.warning("[Discord] could not acknowledge approval press: request_id=%s",
                                self.request_id, exc_info=True)
             label = t(label_key)
-            self.resolved = True
             self._backend_settled = True
             # Unblock the waiting agent thread FIRST. A click after the approval
             # wait timed out (count == 0) must not claim "Approved".
