@@ -214,10 +214,15 @@ def verify_systemd(props: dict[str, str], manager_env: str, home: Path, *, syste
 
 def _verify_launchd_argv(argv: list[str], home: Path, *, home_manager: bool = False) -> None:
     command, wrapped = _launchd_command(argv)
-    if home_manager and command[1:] == ["gateway"]:
-        # Home Manager's ProgramArguments are bare `hermes gateway`, which the CLI runs as `gateway run`
-        # (gateway.py `_GATEWAY_SUBCOMMANDS[None]`). Verify the spelled-out form.
-        command = [*command, "run"]
+    if home_manager:
+        # Home Manager runs the store launcher that moduleCommon's gatewayArgv names. Any other program is not ours.
+        from hermes_cli.gateway import _GATEWAY_SUBCOMMANDS
+        if not (command[0].startswith("/nix/store/") and command[0].endswith("/bin/hermes")):
+            raise ForeignRoot("foreign_root")
+        if command[1:2] == ["gateway"] and (len(command) == 2 or command[2] not in _GATEWAY_SUBCOMMANDS):
+            # Its extraArgs follow a bare `gateway`, which the CLI runs as `gateway run` (gateway.py
+            # `_GATEWAY_SUBCOMMANDS[None]`). Verify the spelled-out form.
+            command = [command[0], "gateway", "run", *command[2:]]
     verify_gateway_argv(command, home, wrapped=wrapped)
 
 
