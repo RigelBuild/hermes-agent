@@ -747,6 +747,80 @@ async def test_unauthorized_lost_view_press_leaves_the_request_pending(monkeypat
     assert response.send_message.await_args.args[0] == discord_platform._unauthorized()
     await adapter.disconnect()
 
+
+@pytest.mark.asyncio
+async def test_lost_view_press_by_non_requester_gets_the_refusal_and_stays_pending(monkeypatch):
+    # The view is truly lost (popped, not retired). An admitted clicker who did not start the turn gets the requester
+    # refusal, and the request stays pending: the lost-view branch applies the same authority rule as a live card.
+    from gateway.approval_actor import refusal_text
+    for name in ("DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
+        monkeypatch.delenv(name, raising=False)
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    created: list[_FakeBot] = []
+    await _connect(adapter, monkeypatch, created)
+    adapter._allowed_user_ids = {"11111", "33333"}
+
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+    entry.authority = {"requester_id": "11111", "requester_name": "alice"}
+
+    card = _capture_card(created[0])
+    assert (await adapter.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
+
+    adapter._exec_approval_views.pop(request_id)
+    custom_id = f"hermes:exec:{request_id}:once"
+    on_interaction = created[0]._events["on_interaction"]
+    interaction, response = _press(custom_id, message=card["message"], user_id="33333")
+    await on_interaction(interaction)
+
+    assert entry.result is None
+    assert not entry.event.is_set()
+    assert entry.cancelled is None
+    assert request_id in [e.data.get("request_id") for e in approval._gateway_queues.get(session, [])]
+    response.send_message.assert_awaited_once()
+    assert response.send_message.await_args.args[0] == refusal_text("alice")
+    assert response.send_message.await_args.kwargs.get("ephemeral") is True
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_lost_view_press_by_non_admin_is_refused_when_require_admin_is_on(monkeypatch):
+    # The lost-view branch must apply require_admin, as a live card does: an admitted clicker who is not an admin
+    # is refused and the request stays pending, even though the requester would otherwise be allowed.
+    for name in ("DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
+        monkeypatch.delenv(name, raising=False)
+    extra = {"require_admin_for_exec_approval": True, "allow_admin_from": ["44444"]}
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token", extra=extra))
+    created: list[_FakeBot] = []
+    await _connect(adapter, monkeypatch, created)
+    adapter._allowed_user_ids = {"11111", "33333"}
+
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+    entry.authority = {"requester_id": "11111", "requester_name": "alice"}
+
+    card = _capture_card(created[0])
+    assert (await adapter.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
+
+    adapter._exec_approval_views.pop(request_id)
+    custom_id = f"hermes:exec:{request_id}:once"
+    on_interaction = created[0]._events["on_interaction"]
+    interaction, response = _press(custom_id, message=card["message"], user_id="11111")
+    await on_interaction(interaction)
+
+    assert entry.result is None
+    assert not entry.event.is_set()
+    assert entry.cancelled is None
+    assert request_id in [e.data.get("request_id") for e in approval._gateway_queues.get(session, [])]
+    response.send_message.assert_awaited_once()
+    assert response.send_message.await_args.args[0] == discord_platform._unauthorized()
+    await adapter.disconnect()
+
+
 @pytest.mark.asyncio
 async def test_unauthorized_unmatched_press_on_pending_card_resolves_nothing(monkeypatch):
     # Authority: a press that reaches the unmatched fallback must not settle a pending request for a user
@@ -1217,3 +1291,46 @@ async def test_unmatched_press_resolves_nothing_when_request_moved_to_another_se
     assert entry.result is None
     assert not entry.event.is_set()
     await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_adopted_card_follows_the_rebuilt_role_policy(monkeypatch):
+    # The rebuild drops role 42 from the allowlist and adds role 77. The adopted card reads the rebuilt adapter's role
+    # policy at press time: a clicker holding only the removed role is refused, one holding the added role is admitted.
+    for name in ("DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
+                 "DISCORD_ALLOWED_USERS", "DISCORD_ALLOWED_ROLES"):
+        monkeypatch.delenv(name, raising=False)
+    created: list[_FakeBot] = []
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+    entry.authority = {"requester_id": "11111", "approvers": ["11111", "33333", "44444"]}
+
+    old = DiscordAdapter(PlatformConfig(enabled=True, token="test-token",
+                                        extra={"allow_from": ["11111"], "allowed_roles": ["42"]}))
+    await _connect(old, monkeypatch, created)
+    card = _capture_card(created[0])
+    assert (await old.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
+
+    new = DiscordAdapter(PlatformConfig(enabled=True, token="test-token",
+                                        extra={"allow_from": ["11111"], "allowed_roles": ["77"]}))
+    new.adopt_exec_approval_views(old)  # the carry runs before connect(), as in the runner
+    await _connect(new, monkeypatch, created)
+    assert new._allowed_role_ids == {77}
+
+    custom_id = f"hermes:exec:{request_id}:once"
+    removed, removed_response = _press(custom_id, message=card["message"], user_id="33333")
+    removed.user.roles = [SimpleNamespace(id=42)]
+    await created[-1]._events["on_interaction"](removed)
+    assert entry.result is None
+    removed_response.send_message.assert_awaited_once()
+    assert removed_response.send_message.await_args.args[0] == discord_platform._unauthorized()
+
+    added, _added_response = _press(custom_id, message=card["message"], user_id="44444")
+    added.user.roles = [SimpleNamespace(id=77)]
+    await created[-1]._events["on_interaction"](added)
+    assert entry.result == "once"
+    assert entry.event.is_set()
+    await old.disconnect()
+    await new.disconnect()
