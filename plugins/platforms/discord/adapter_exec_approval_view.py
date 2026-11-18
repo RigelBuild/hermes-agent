@@ -199,10 +199,9 @@ def build_exec_approval_view(discord, base, *, unauthorized):
             """Resolve this card's still-pending request for a press no live view routes (RIG-10927). Runs the
             live view's own gates: base admission, ``require_admin``, the approval's authority, then the Deny-only
             check inside ``resolve_gateway_approval_card``. True when the press was answered or settled the request."""
-            from tools.approval import gateway_approval_session, resolve_gateway_approval_card
+            from tools.approval import resolve_gateway_approval_card
             from gateway.approval_actor import approval_refusal, refusal_text
-            if gateway_approval_session(self.request_id) != self.session_key:
-                return False
+            # The card's own request is the only one resolved: resolve_gateway_approval_card finds nothing elsewhere.
             if not self._check_auth(interaction):
                 await interaction.response.send_message(unauthorized(), ephemeral=True)
                 return True
