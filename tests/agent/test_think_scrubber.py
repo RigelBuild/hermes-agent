@@ -362,12 +362,37 @@ class TestSummaryVisibleText:
 
         assert summary_visible_text(text) == visible
 
-    def test_reasoning_between_two_tag_spans_is_cut(self) -> None:
+    def test_reasoning_between_two_tag_spans_is_kept_known_limit(self) -> None:
+        """Known limit (L8): two single-tag spans are both mentions, so reasoning the model wraps in
+        backticked tags is kept. It has the same shape as a summary naming both tags (F4)."""
         from agent.think_scrubber import summary_visible_text
 
-        out = summary_visible_text("`<think>`PRIVATE_THINK\nmore PRIVATE_THINK\n`</think>`\n## Goal\nREAL")
+        text = "`<think>`PRIVATE_THINK\nmore PRIVATE_THINK\n`</think>`\n## Goal\nREAL"
+        assert summary_visible_text(text) == text
+
+    @pytest.mark.parametrize("text", [
+        "## Goal\nStrip `<think>` openers and `</think>` closers from summaries.\n## Next\nShip.",
+        "## Goal\nThe `<think>` opener and\nthe `</think>` closer are handled.\n## Next\nShip.",
+        "## Goal\nFix `<think>` handling.\n## Progress\n- Done A.\n## Decisions\n- Keep `</think>` closers.\n## Next\nShip.",
+    ])
+    def test_two_single_tag_spans_survive(self, text: str) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        assert summary_visible_text(text) == text
+
+    @pytest.mark.parametrize("text", [
+        "PRIVATE_THINK\n```\n<think>\n```\n</think>REAL",
+        "PRIVATE_THINK about the `<think>` tag.</think>\n## Goal\nREAL",
+        "PRIVATE_THINK: the parser drops `<think>` openers.\nMore PRIVATE_THINK.\n</think>\n## Goal\nREAL",
+        "PRIVATE_THINK: handle `<thinking>` too\n</thinking>\n## Goal\nREAL",
+        "PRIVATE_THINK\n```xml\n<think>\n```\nmore PRIVATE_THINK\n</think>\n## Goal\nREAL",
+    ])
+    def test_mention_in_reasoning_does_not_pair_with_real_closer(self, text: str) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        out = summary_visible_text(text)
         assert "PRIVATE_THINK" not in out
-        assert out.endswith("## Goal\nREAL")
+        assert out.endswith("REAL")
 
     def test_span_before_line_end_arg_closer_survives(self) -> None:
         from agent.think_scrubber import summary_visible_text
