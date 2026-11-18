@@ -26,7 +26,7 @@ from gateway.config import (
     platform_binds_port as _platform_binds_port,
 )
 from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.helpers import carry_inbound_dedup, hand_over_held_inbound
+from gateway.platforms.helpers import carry_exec_approval_views, carry_inbound_dedup, hand_over_held_inbound
 from gateway.run_adapters_recovery import (
     GatewaySecondaryReconnectMixin,
     _adapter_unavailable_message,
@@ -845,6 +845,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                 logger.info("Reconnect %s: no adapter yet, next retry in %ds", platform.value, backoff)
                 return
             carry_inbound_dedup(info.get("predecessor"), adapter)
+            carry_exec_approval_views(info.get("predecessor"), adapter)
             self._wire_adapter_handlers(adapter)
             # is_reconnect keeps the server-side update queue so offline-period messages are delivered.
             success = await self._connect_adapter_with_timeout(adapter, platform, is_reconnect=True)

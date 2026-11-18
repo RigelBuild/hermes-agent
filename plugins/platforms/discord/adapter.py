@@ -5787,6 +5787,18 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         while len(self._exec_approval_views) > self._EXEC_APPROVAL_VIEW_CAP:
             self._exec_approval_views.pop(next(iter(self._exec_approval_views)))
 
+    def adopt_exec_approval_views(self, predecessor) -> None:
+        """Carry a replaced adapter's live card views so presses on the rebuilt client still find them (RIG-10927).
+        A card whose view is already finished cannot be answered: withdraw its request with a cause."""
+        from tools.approval import withdraw_gateway_approval
+        for request_id, view in list(getattr(predecessor, "_exec_approval_views", {}).items()):
+            session_key = getattr(view, "session_key", None)
+            if view.is_finished() or not session_key:
+                withdraw_gateway_approval(session_key or "", request_id,
+                                          "the approval card was lost in a platform reconnect")
+                continue
+            self._exec_approval_views[request_id] = view
+
     async def _on_platform_interaction(self, interaction) -> None:
         """Answer component presses that the live view store cannot route (a view sent before a
         reconnect). Never raises: a failed reply is logged."""
@@ -5834,8 +5846,15 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         """Settle a still-pending card request for a press no live view routes (RIG-10927). The card's own view
         runs the authority gates; this only checks the press came from that card's message."""
         view = self._exec_approval_views.get(request_id)
+        if view is None:
+            # No card to answer through: the request can never be answered, so settle it now as withdrawn (RIG-10927).
+            from tools.approval import gateway_approval_session, withdraw_gateway_approval
+            session_key = gateway_approval_session(request_id)
+            if session_key and withdraw_gateway_approval(session_key, request_id, "the approval card was lost before it was answered"):
+                logger.info("[Discord] lost-view press withdrew pending approval: request_id=%s", request_id)
+            return False
         press_message_id = getattr(getattr(interaction, "message", None), "id", None)
-        if view is None or press_message_id is None or press_message_id != getattr(view._message, "id", None):
+        if press_message_id is None or press_message_id != getattr(view._message, "id", None):
             return False
         return await view.resolve_unmatched_press(interaction, custom_id.rpartition(":")[2])
 

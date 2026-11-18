@@ -700,11 +700,17 @@ async def test_lost_view_press_settles_pending_request_as_cancelled(monkeypatch)
         chat_id="555", command="rm x", session_key=session, request_id=request_id)
     assert result.success is True
 
+    # The view is lost from the registry while the request is still pending, then Approve arrives.
     adapter._exec_approval_views.pop(request_id)
-    await card["view"].on_timeout()
+    custom_id = f"hermes:exec:{request_id}:once"
+    on_interaction = created[0]._events["on_interaction"]
+    interaction, response = _press(custom_id, message=card["message"], user_id="11111")
+    await on_interaction(interaction)
+
     assert entry.event.is_set()
     assert entry.cancelled
     assert entry.result is None
+    response.send_message.assert_awaited_once()
     await adapter.disconnect()
 
 
@@ -727,7 +733,7 @@ async def test_unauthorized_unmatched_press_on_pending_card_resolves_nothing(mon
     # Finished by a settle that left the request pending: the press is unmatched, so the fallback runs.
     await card["view"].retire("resolved")
     entry.result = None
-    approval._gateway_queues[session] = [entry]
+    monkeypatch.setitem(approval._gateway_queues, session, [entry])
 
     custom_id = f"hermes:exec:{request_id}:once"
     on_interaction = created[0]._events["on_interaction"]
@@ -758,7 +764,7 @@ async def test_authorized_unmatched_press_on_pending_card_resolves_request(monke
         chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
     await card["view"].retire("resolved")
     entry.result = None
-    approval._gateway_queues[session] = [entry]
+    monkeypatch.setitem(approval._gateway_queues, session, [entry])
 
     custom_id = f"hermes:exec:{request_id}:once"
     on_interaction = created[0]._events["on_interaction"]
@@ -805,9 +811,197 @@ async def test_press_after_runner_rebuilds_discord_adapter_resolves_with_pressed
     assert runner.adapters[Platform.DISCORD] is new
 
     custom_id = f"hermes:exec:{request_id}:once"
-    interaction, response = _press(custom_id, message=card["message"])
+    interaction, _response = _press(custom_id, message=card["message"])
     await created[-1]._events["on_interaction"](interaction)
 
     assert entry.result == "once"
     assert entry.event.is_set()
     await new.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_rebuild_withdraws_pending_request_whose_card_view_is_finished(monkeypatch):
+    # RIG-10927 H1: the replacement cannot answer a card whose view already finished. The request must settle at
+    # once as withdrawn (not a user deny), so the agent turn does not wait for /stop.
+    created: list[_FakeBot] = []
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+
+    old = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    await _connect(old, monkeypatch, created)
+    old._allowed_user_ids = {"11111"}
+    card = _capture_card(created[0])
+    assert (await old.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
+    await card["view"].retire("resolved")
+    assert card["view"].is_finished()
+
+    new = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    new.adopt_exec_approval_views(old)
+
+    assert entry.event.is_set()
+    assert entry.cancelled == "the approval card was lost in a platform reconnect"
+    assert entry.result is None
+    assert request_id not in new._exec_approval_views
+    await old.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_authorized_unmatched_press_is_acknowledged_not_left_as_interaction_failed(monkeypatch):
+    # RIG-10927 M1: when the fallback resolves, the clicker's interaction must be answered. Discord shows
+    # "This interaction failed" for an unanswered press, and a second press would then read "no longer pending".
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    created: list[_FakeBot] = []
+    await _connect(adapter, monkeypatch, created)
+    adapter._allowed_user_ids = {"11111"}
+
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+    card = _capture_card(created[0])
+    assert (await adapter.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
+    await card["view"].retire("resolved")
+    entry.result = None
+    monkeypatch.setitem(approval._gateway_queues, session, [entry])
+
+    custom_id = f"hermes:exec:{request_id}:once"
+    on_interaction = created[0]._events["on_interaction"]
+    interaction, response = _press(custom_id, message=card["message"], user_id="11111")
+    await on_interaction(interaction)
+
+    assert entry.result == "once"
+    response.send_message.assert_awaited_once()
+    assert response.send_message.await_args.kwargs.get("ephemeral") is True
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_unlisted_unmatched_press_is_refused_even_by_the_requester(monkeypatch):
+    # RIG-10927 M2: base admission. The requester passes the queue's authority check, so only the card's own
+    # _check_auth can refuse a clicker who is not on the platform allowlist. Removing that gate must fail this test.
+    for name in ("DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
+        monkeypatch.delenv(name, raising=False)
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    created: list[_FakeBot] = []
+    await _connect(adapter, monkeypatch, created)
+    adapter._allowed_user_ids = {"11111"}
+
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+    card = _capture_card(created[0])
+    assert (await adapter.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
+    await card["view"].retire("resolved")
+    entry.result = None
+    monkeypatch.setitem(approval._gateway_queues, session, [entry])
+
+    # 22222 is the requester in the queue but not on the platform allowlist.
+    entry.authority = {"requester_id": "22222"}
+    custom_id = f"hermes:exec:{request_id}:once"
+    on_interaction = created[0]._events["on_interaction"]
+    interaction, response = _press(custom_id, message=card["message"], user_id="22222")
+    await on_interaction(interaction)
+
+    assert entry.result is None
+    assert not entry.event.is_set()
+    response.send_message.assert_awaited_once()
+    assert response.send_message.await_args.args[0] == discord_platform._unauthorized()
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_non_admin_unmatched_press_is_refused_when_require_admin_is_on(monkeypatch):
+    # RIG-10927 M2: require_admin. The clicker passes base admission and the queue's authority (requester), but is not
+    # one of the allow_admin_from ids. Removing the view's require_admin gate must fail this test.
+    for name in ("DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
+        monkeypatch.delenv(name, raising=False)
+    adapter = DiscordAdapter(PlatformConfig(
+        enabled=True, token="test-token",
+        extra={"require_admin_for_exec_approval": True, "allow_admin_from": ["99999"]}))
+    created: list[_FakeBot] = []
+    await _connect(adapter, monkeypatch, created)
+    adapter._allowed_user_ids = {"11111"}
+
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+    card = _capture_card(created[0])
+    assert (await adapter.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
+    await card["view"].retire("resolved")
+    entry.result = None
+    monkeypatch.setitem(approval._gateway_queues, session, [entry])
+
+    # 11111 is the requester and on the allowlist, but is not in allow_admin_from.
+    custom_id = f"hermes:exec:{request_id}:once"
+    on_interaction = created[0]._events["on_interaction"]
+    interaction, _response = _press(custom_id, message=card["message"], user_id="11111")
+    await on_interaction(interaction)
+
+    assert entry.result is None
+    assert not entry.event.is_set()
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_approve_on_deny_only_request_resolves_nothing_but_deny_does(monkeypatch):
+    # RIG-10927 M2: a Deny-only request (its card could not show the whole command) must refuse an approve press
+    # from the fallback. The Deny press still resolves it. Removing the Deny-only check must fail the first assert.
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    created: list[_FakeBot] = []
+    await _connect(adapter, monkeypatch, created)
+    adapter._allowed_user_ids = {"11111"}
+
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+    card = _capture_card(created[0])
+    assert (await adapter.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
+    await card["view"].retire("resolved")
+    entry.result = None
+    entry.card_deny_only = True
+    monkeypatch.setitem(approval._gateway_queues, session, [entry])
+
+    on_interaction = created[0]._events["on_interaction"]
+    interaction, _response = _press(f"hermes:exec:{request_id}:once", message=card["message"], user_id="11111")
+    await on_interaction(interaction)
+    assert entry.result is None
+    assert not entry.event.is_set()
+
+    interaction, _response = _press(f"hermes:exec:{request_id}:deny", message=card["message"], user_id="11111")
+    await on_interaction(interaction)
+    assert entry.result == "deny"
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_unmatched_press_for_a_choice_the_card_lacks_resolves_nothing(monkeypatch):
+    # RIG-10927 L1: the fallback must check the choice is one of the card's own enabled buttons, as press() does. This
+    # card has no "always" button (allow_permanent=False), so an always press is forged and must resolve nothing.
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    created: list[_FakeBot] = []
+    await _connect(adapter, monkeypatch, created)
+    adapter._allowed_user_ids = {"11111"}
+
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+    card = _capture_card(created[0])
+    assert (await adapter.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id,
+        allow_permanent=False)).success is True
+    await card["view"].retire("resolved")
+    entry.result = None
+    monkeypatch.setitem(approval._gateway_queues, session, [entry])
+
+    on_interaction = created[0]._events["on_interaction"]
+    interaction, _response = _press(f"hermes:exec:{request_id}:always", message=card["message"], user_id="11111")
+    await on_interaction(interaction)
+
+    assert entry.result is None
+    assert not entry.event.is_set()
+    await adapter.disconnect()

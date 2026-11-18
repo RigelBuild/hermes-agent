@@ -211,8 +211,23 @@ def build_exec_approval_view(discord, base, *, unauthorized):
                                              request_id=self.request_id):
                 await interaction.response.send_message(refusal_text(requester), ephemeral=True)
                 return True
-            return bool(resolve_gateway_approval_card(
-                self.session_key, choice, self.request_id, actor_id=user_id, extra=self.approval_extra or {}))
+            offered = {getattr(item, "custom_id", "").rpartition(":")[2] for item in self.children}
+            if choice not in offered:
+                logger.info("[Discord] unmatched press dropped, choice not offered: request_id=%s choice=%s",
+                            self.request_id, choice)
+                return False
+            count = resolve_gateway_approval_card(
+                self.session_key, choice, self.request_id, actor_id=user_id, extra=self.approval_extra or {})
+            if not count:
+                return False
+            logger.info("[Discord] unmatched press resolved pending approval: request_id=%s choice=%s",
+                        self.request_id, choice)
+            # The card is already finished, so this press only answers the clicker; the settle observer edits the card.
+            label_key = {"once": "platform.discord.approval.resolved_once",
+                         "session": "platform.discord.approval.resolved_session",
+                         "always": "platform.discord.approval.resolved_always"}.get(choice, "platform.discord.approval.resolved_deny")
+            await interaction.response.send_message(t(label_key), ephemeral=True)
+            return True
 
         @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
         async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
