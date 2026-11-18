@@ -869,9 +869,8 @@ async def test_press_after_runner_rebuilds_discord_adapter_resolves_with_pressed
     old._set_fatal_error("discord_websocket_health_stale", "websocket stalled", retryable=True)
     await runner._handle_adapter_fatal_error(old)
 
-    new = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    new = DiscordAdapter(PlatformConfig(enabled=True, token="test-token", extra={"allow_from": ["11111"]}))
     await _connect(new, monkeypatch, created)
-    new._allowed_user_ids = {"11111"}
     with patch.object(runner, "_create_adapter", return_value=new):
         await runner._reconnect_failed_platform(Platform.DISCORD, time.monotonic() + 1)
     assert runner.adapters[Platform.DISCORD] is new
@@ -1095,11 +1094,14 @@ async def test_press_after_secondary_rebuilds_discord_adapter_resolves_with_pres
     assert (await old.send_exec_approval(
         chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
 
-    new = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    new = DiscordAdapter(PlatformConfig(enabled=True, token="test-token", extra={"allow_from": ["11111"]}))
     await _connect(new, monkeypatch, created)
-    new._allowed_user_ids = {"11111"}
     runner = _secondary_recovery_runner()
     _install_secondary_reconnect_context(monkeypatch, runner, new)
+    from gateway.config import GatewayConfig
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: GatewayConfig(
+        multiplex_profiles=True,
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="test-token", extra={"allow_from": ["11111"]})}))
     adapter, success = await runner._secondary_reconnect_attempt("reviewer", Platform.DISCORD, old)
     assert adapter is new
     assert success is True
