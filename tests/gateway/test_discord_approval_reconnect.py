@@ -635,3 +635,40 @@ async def test_failed_card_send_is_not_registered(monkeypatch):
     assert result.success is False
     assert request_id not in adapter._exec_approval_views
     await adapter.disconnect()
+
+@pytest.mark.asyncio
+async def test_ui_timeout_then_reconnect_press_still_resolves_pending_request(monkeypatch, caplog):
+    # Live sequence (RIG-10927): the card's UI timeout finishes the view while the backend request is still
+    # pending; a reconnect then swaps the client; the next Approve must still resolve the request.
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    created: list[_FakeBot] = []
+    await _connect(adapter, monkeypatch, created)
+    adapter._allowed_user_ids = {"11111"}
+    caplog.set_level(logging.INFO)
+
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+
+    card = _capture_card(created[0])
+    result = await adapter.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)
+    assert result.success is True
+
+    await card["view"].on_timeout()
+    assert card["view"].is_finished()
+    assert not entry.event.is_set()
+
+    await _connect(adapter, monkeypatch, created)
+    adapter._allowed_user_ids = {"11111"}
+    caplog.clear()
+
+    custom_id = f"hermes:exec:{request_id}:once"
+    on_interaction = created[1]._events["on_interaction"]
+    interaction, response = _press(custom_id, message=card["message"])
+    await on_interaction(interaction)
+
+    assert entry.result == "once"
+    assert entry.event.is_set()
+    assert not any("component press matched no pending approval" in r.getMessage() for r in caplog.records)
+    await adapter.disconnect()
