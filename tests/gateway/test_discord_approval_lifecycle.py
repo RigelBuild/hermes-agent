@@ -40,18 +40,18 @@ async def _pending_card(monkeypatch):
 async def test_click_stops_view_even_if_interaction_edit_fails(monkeypatch, edit_fails):
     adapter, view, entry, message = await _pending_card(monkeypatch)
     monkeypatch.setattr(view, "_gate", AsyncMock(return_value=True))
-    edit = AsyncMock(side_effect=RuntimeError("Discord unavailable") if edit_fails else None)
+    if edit_fails:
+        message.edit = AsyncMock(side_effect=RuntimeError("Discord unavailable"))
     interaction = SimpleNamespace(
         message=message, user=SimpleNamespace(display_name="tester"),
-        response=SimpleNamespace(edit_message=edit),
+        response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
     )
-    if edit_fails:
-        with pytest.raises(RuntimeError, match="Discord unavailable"):
-            await view._resolve(interaction, "once", 2, "platform.discord.approval.resolved_once")
-    else:
-        await view._resolve(interaction, "once", 2, "platform.discord.approval.resolved_once")
+    # A failed card edit is logged and never re-raised: the answer is already recorded.
+    await view._resolve(interaction, "once", 2, "platform.discord.approval.resolved_once")
     assert entry.result == "once"
     assert view.is_finished()
+    interaction.response.defer.assert_awaited_once()
     footer = message.embeds[0].footer
     entry.observers[0]("resolved")
     await asyncio.sleep(0)
@@ -59,15 +59,15 @@ async def test_click_stops_view_even_if_interaction_edit_fails(monkeypatch, edit
     assert view.is_finished()
     if edit_fails:
         # The recorded answer must not leave a pending-looking card: it is stamped through the message.
-        message.edit.assert_awaited_once()
+        assert message.edit.await_count == 2
         assert message.edit.await_args.kwargs["view"] is None
         footer = message.embeds[0].footer
         assert (footer["text"] if isinstance(footer, dict) else footer.text) == t(
             "platform.discord.approval.already_resolved")
+        interaction.followup.send.assert_awaited_once()
     else:
         assert message.embeds[0].footer == footer
-        message.edit.assert_not_awaited()
-
+        assert message.edit.await_count == 1
 
 @pytest.mark.asyncio
 async def test_observer_that_fires_before_a_failed_click_edit_still_sees_the_card_retired(monkeypatch):
@@ -75,22 +75,26 @@ async def test_observer_that_fires_before_a_failed_click_edit_still_sees_the_car
     still owns the card and skips it; the click itself must then retire the card."""
     adapter, view, entry, message = await _pending_card(monkeypatch)
     monkeypatch.setattr(view, "_gate", AsyncMock(return_value=True))
+    edits = {"n": 0}
 
-    async def edit_message(**_kwargs):
-        entry.observers[0]("resolved")
-        await asyncio.sleep(0)
-        await asyncio.gather(*adapter._background_tasks)
-        message.edit.assert_not_awaited()  # the observer skipped: the click owned the edit
-        raise RuntimeError("Discord unavailable")
+    async def edit(**_kwargs):
+        edits["n"] += 1
+        if edits["n"] == 1:
+            entry.observers[0]("resolved")
+            await asyncio.sleep(0)
+            await asyncio.gather(*adapter._background_tasks)
+            assert message.edit.await_count == 1  # the observer skipped: the click owned the edit
+            raise RuntimeError("Discord unavailable")
 
+    message.edit = AsyncMock(side_effect=edit)
     interaction = SimpleNamespace(
         message=message, user=SimpleNamespace(display_name="tester"),
-        response=SimpleNamespace(edit_message=edit_message))
+        response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()))
 
-    with pytest.raises(RuntimeError, match="Discord unavailable"):
-        await view._resolve(interaction, "once", 2, "platform.discord.approval.resolved_once")
+    await view._resolve(interaction, "once", 2, "platform.discord.approval.resolved_once")
 
-    message.edit.assert_awaited_once()
+    assert message.edit.await_count == 2
     assert message.edit.await_args.kwargs["view"] is None
     footer = message.embeds[0].footer
     assert (footer["text"] if isinstance(footer, dict) else footer.text) == t(
@@ -242,10 +246,8 @@ async def test_external_answer_then_stale_click_preserves_resolved_observer(monk
     interaction = SimpleNamespace(
         message=message,
         user=SimpleNamespace(id=42, display_name="tester"),
-        response=SimpleNamespace(
-            edit_message=AsyncMock(side_effect=interaction_edit),
-            send_message=AsyncMock(),
-        ),
+        response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
     )
 
     assert approval.resolve_gateway_approval(session, "once", request_id="request-1") == 1
@@ -262,9 +264,11 @@ async def test_external_answer_then_stale_click_preserves_resolved_observer(monk
     assert footer_text == t("platform.discord.approval.already_resolved")
     # The stale click only answers its clicker; the card edit belongs to the observer, so the
     # two edits can't race and leave "command was not run" on top.
-    interaction.response.edit_message.assert_not_awaited()
-    interaction.response.send_message.assert_awaited_once_with(
+    interaction.response.defer.assert_awaited_once()
+    interaction.followup.send.assert_awaited_once_with(
         t("platform.discord.approval.no_longer_pending"), ephemeral=True)
+    # The observer owns the one card edit; the stale click only answers its clicker.
+    message.edit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -278,13 +282,15 @@ async def test_failed_click_keeps_a_pending_card_live(monkeypatch):
     monkeypatch.setattr(approval, "resolve_gateway_approval", lambda *a, **k: 1 / 0)
     interaction = SimpleNamespace(
         user=SimpleNamespace(display_name="tester"),
-        response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock()))
+        response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+        message=message)
 
     await view._resolve(interaction, "once", 1, "gateway.exec_approval.action_once")
 
-    interaction.response.send_message.assert_awaited_once_with(
+    interaction.followup.send.assert_awaited_once_with(
         t("platform.discord.approval.click_failed"), ephemeral=True)
-    interaction.response.edit_message.assert_not_awaited()
+    message.edit.assert_not_awaited()
     assert not view.resolved and not view.is_finished()
     assert approval._gateway_queues[session] == [entry]  # still pending, nothing recorded
 
@@ -295,6 +301,81 @@ async def test_failed_click_keeps_a_pending_card_live(monkeypatch):
     footer = message.embeds[0].footer
     assert (footer["text"] if isinstance(footer, dict) else footer.text) == t(
         "platform.discord.approval.already_resolved")
+    assert view.is_finished()
+
+
+class _UnknownInteraction(Exception):
+    """Discord's 10062: the press was not acknowledged within its ~3s window."""
+    code = 10062
+
+
+@pytest.mark.asyncio
+async def test_press_is_acknowledged_before_a_slow_resolve_and_card_edited_after(monkeypatch):
+    # Discord drops a press not acknowledged within ~3s. A slow resolve must run after the defer, and the
+    # card must then be edited through its message, not through the expired response (10062).
+    adapter, view, entry, message = await _pending_card(monkeypatch)
+    monkeypatch.setattr(view, "_gate", AsyncMock(return_value=True))
+    window = {"now": 0.0, "acked": False}
+    order = []
+    real_resolve = approval.resolve_gateway_approval_card
+
+    def open_window_or_raise():
+        if not window["acked"] and window["now"] >= 3.0:
+            raise _UnknownInteraction("Unknown interaction")
+
+    async def defer(**_kwargs):
+        order.append("defer")
+        open_window_or_raise()
+        window["acked"] = True
+
+    async def edit_message(**_kwargs):
+        order.append("edit_message")
+        open_window_or_raise()
+
+    def slow_resolve(*args, **kwargs):
+        order.append("resolve")
+        window["now"] += 4.0  # the resolve outruns the ack window
+        return real_resolve(*args, **kwargs)
+
+    monkeypatch.setattr(approval, "resolve_gateway_approval_card", slow_resolve)
+    interaction = SimpleNamespace(
+        message=message, user=SimpleNamespace(display_name="tester"),
+        response=SimpleNamespace(
+            defer=AsyncMock(side_effect=defer), edit_message=AsyncMock(side_effect=edit_message),
+            send_message=AsyncMock()),
+    )
+
+    await view._resolve(interaction, "once", 2, "platform.discord.approval.resolved_once")
+
+    assert order == ["defer", "resolve"]
+    interaction.response.edit_message.assert_not_awaited()
+    message.edit.assert_awaited_once()
+    assert message.edit.await_args.kwargs["view"] is view
+    assert entry.result == "once"
+    assert view.is_finished()
+
+
+
+@pytest.mark.asyncio
+async def test_failed_defer_still_resolves_the_approval_and_edits_the_card(monkeypatch):
+    # A press whose ack fails with 10062 must still resolve: the answer is recorded and the card is edited
+    # through its message, which needs no interaction token. The ack failure is logged, not raised.
+    adapter, view, entry, message = await _pending_card(monkeypatch)
+    monkeypatch.setattr(view, "_gate", AsyncMock(return_value=True))
+    interaction = SimpleNamespace(
+        message=message, user=SimpleNamespace(display_name="tester"),
+        response=SimpleNamespace(
+            defer=AsyncMock(side_effect=_UnknownInteraction("Unknown interaction")),
+            send_message=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+
+    await view._resolve(interaction, "once", 2, "platform.discord.approval.resolved_once")
+
+    interaction.response.defer.assert_awaited_once()
+    assert entry.result == "once"
+    message.edit.assert_awaited_once()
+    assert message.edit.await_args.kwargs["view"] is view
     assert view.is_finished()
 
 

@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -103,18 +103,20 @@ async def test_expired_card_cannot_resolve_a_different_pending_request(monkeypat
     monkeypatch.setitem(approval._gateway_queues, session, [other])
     view = sent["view"]
     monkeypatch.setattr(view, "_gate", AsyncMock(return_value=True))
-    monkeypatch.setattr(view, "_finalize_embed", AsyncMock())
     monkeypatch.setattr(discord_adapter.discord, "Color", SimpleNamespace(dark_grey=lambda: 0))
     interaction = SimpleNamespace(
-        user=SimpleNamespace(display_name="tester"), response=SimpleNamespace(send_message=AsyncMock()))
+        user=SimpleNamespace(display_name="tester"),
+        response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+        message=SimpleNamespace(embeds=[], edit=AsyncMock()))
 
     await view._resolve(interaction, "once", 1, "gateway.exec_approval.action_once")
 
     assert not other.event.is_set()
     assert approval._gateway_queues[session] == [other]
     # Its own request already settled elsewhere: the clicker hears so, the card is left alone.
-    view._finalize_embed.assert_not_awaited()
-    interaction.response.send_message.assert_awaited_once_with(
+    interaction.message.edit.assert_not_called()
+    interaction.followup.send.assert_awaited_once_with(
         t("platform.discord.approval.no_longer_pending"), ephemeral=True)
 
 
@@ -123,18 +125,25 @@ async def test_unsettled_click_without_an_observer_marks_the_card_expired(monkey
     """A card with no request id has no observer, so its own no-op click stamps it, as before."""
     from plugins.platforms.discord import adapter as discord_adapter
     from plugins.platforms.discord.adapter import ExecApprovalView
-
     view = ExecApprovalView(session_key="agent:other:discord:555", allowed_user_ids=set())
     monkeypatch.setattr(view, "_gate", AsyncMock(return_value=True))
-    monkeypatch.setattr(view, "_finalize_embed", AsyncMock())
     monkeypatch.setattr(discord_adapter.discord, "Color", SimpleNamespace(dark_grey=lambda: 0))
+    embed = SimpleNamespace(set_footer=Mock(), color=None)
+    message = SimpleNamespace(embeds=[embed], edit=AsyncMock())
     interaction = SimpleNamespace(
-        user=SimpleNamespace(display_name="tester"), response=SimpleNamespace(send_message=AsyncMock()))
+        user=SimpleNamespace(display_name="tester"),
+        response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+        message=message)
 
     await view._resolve(interaction, "once", 1, "gateway.exec_approval.action_once")
 
-    view._finalize_embed.assert_awaited_once_with(interaction, 0, t("platform.discord.approval.expired"))
-    interaction.response.send_message.assert_not_awaited()
+    # No request id, so no observer: the no-op click itself stamps the card as expired through its message.
+    message.edit.assert_awaited_once()
+    assert message.edit.await_args.kwargs["view"] is view
+    embed.set_footer.assert_called_once_with(text=t("platform.discord.approval.expired"))
+    assert embed.color == 0
+    interaction.followup.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
