@@ -190,33 +190,58 @@ class StreamingThinkScrubber:
 
 _TAG_ALT = "|".join(re.escape(name) for name in THINK_TAG_NAMES)
 _CLOSER_RE = re.compile(rf"</(?:{_TAG_ALT})>", re.IGNORECASE)
-_OPENER_RE = re.compile(rf"<(?:{_TAG_ALT})>", re.IGNORECASE)
-# Code where a bare tag is a mention: a span wrapping one tag, or a fence with no bare closer inside.
-_CODE_RE = re.compile(
-    rf"(`+)(?:<(?:{_TAG_ALT})>|</(?:{_TAG_ALT})>)\1(?!`)"
-    r"|^(?P<fence>`{3,}|~{3,})[^\n]*\n.*?^(?P=fence)[`~]*[ \t]*$",
-    re.IGNORECASE | re.DOTALL | re.MULTILINE,
-)
+_OPENER_RE = re.compile(rf"<(?:{_TAG_ALT})\b[^>]*>", re.IGNORECASE)
+_FENCE = r"|^(?P<fence>`{3,}(?!`)|~{3,}(?!~))[^\n]*\n.*?^(?P=fence)[`~]*[ \t]*$"
+_FLAGS = re.IGNORECASE | re.DOTALL | re.MULTILINE
+# Where a bare reasoning tag is a mention: a span wrapping one tag, or a fence with no bare closer.
+_CODE_RE = re.compile(rf"(?<!`)(`+)(?:<(?:{_TAG_ALT})\b[^>]*>|</(?:{_TAG_ALT})>)\1(?!`)" + _FENCE, _FLAGS)
+# Where any tag is a mention for the shared patterns: a whole one-line inline span, or such a fence.
+_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)" + _FENCE, _FLAGS)
 
 
-def _mention_spans(text: str) -> list[tuple[int, int]]:
-    """Code spans where a bare tag is a mention: a span wrapping one tag, or a fence with no bare closer."""
-    return [m.span() for m in _CODE_RE.finditer(text)
+def _mention_spans(text: str, code_re: re.Pattern = _CODE_RE) -> list[tuple[int, int]]:
+    """Code spans that are mentions; a fence with a bare closer inside protects nothing."""
+    return [m.span() for m in code_re.finditer(text)
             if m.group("fence") is None or not _CLOSER_RE.search(text, *m.span())]
+
+
+def _drop(text: str, cuts: list[tuple[int, int]]) -> str:
+    starts = [0, *(b for _, b in cuts)]
+    return "".join(text[s:a] for s, (a, _) in zip(starts, cuts)) + text[starts[-1]:]
+
+
+def _strip_shared(text: str) -> str:
+    """``strip_think_blocks`` minus its orphan-tag pattern, never matching inside a mention span."""
+    from agent.agent_runtime_helpers import _ORPHAN_REASONING_TAG_PATTERN, _THINK_STRIP_PATTERNS
+
+    masked, pos = [], 0
+    for a, b in _mention_spans(text, _SPAN_RE):
+        masked += [text[pos:a], "\x01" * (b - a)]
+        pos = b
+    masked = "".join(masked) + text[pos:]  # same length as text, so match offsets apply to both
+    for pattern in _THINK_STRIP_PATTERNS:
+        if pattern is _ORPHAN_REASONING_TAG_PATTERN:
+            continue
+        cuts = [m.span() for m in pattern.finditer(masked)]
+        if cuts:
+            text, masked = _drop(text, cuts), _drop(masked, cuts)
+    return text
 
 
 def summary_visible_text(content: Any) -> str:
     """Visible text of a summarizer reply, for the stored summary only.
 
-    Runs the shared ``strip_think_blocks`` rules, then cuts text before a bare closing tag and an
-    unclosed opening tag through the end, even mid-line. A bare tag in an inline span or a fence with
-    no bare closer does not start a cut.
+    Runs the shared ``strip_think_blocks`` patterns (closed reasoning pairs, tool-call blocks, named
+    ``<function>`` blocks, stray tool-call closers, unclosed tool calls and arg fragments) outside
+    inline code spans and fences, then cuts text before a bare closing tag and from an unclosed
+    opening tag through the end, even mid-line. A bare tag does not start a cut when it is inside an
+    inline span that wraps exactly that one tag, or a fence with no bare closer.
     """
-    from agent.agent_runtime_helpers import _REASONING_BLOCK_PATTERNS, _flatten_content_text
+    from agent.agent_runtime_helpers import _flatten_content_text
 
     text = _flatten_content_text(content) if content else ""
-    for pattern in _REASONING_BLOCK_PATTERNS:
-        text = pattern.sub("", text)
+    # Shared patterns first, so the bare-tag cuts below (strict spans, re-found per cut) get the last word.
+    text = _strip_shared(text)
     spans = _mention_spans(text)
     closers = [m for m in _CLOSER_RE.finditer(text) if not any(a <= m.start() < b for a, b in spans)]
     if closers:
