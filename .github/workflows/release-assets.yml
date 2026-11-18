@@ -52,6 +52,18 @@ jobs:
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      - name: Check dispatch ref matches the tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ inputs.tag }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF" != "refs/tags/$TAG" ]]; then
+            echo "::error::Dispatch ref $REF is not refs/tags/$TAG; dispatch with --ref $TAG" >&2
+            exit 1
+          fi
+
       - name: Check committed release public key exists
         run: |
           set -euo pipefail
