@@ -100,7 +100,7 @@ python train.py \
 
 ## Workflow 1: Standard GRPO Training
 
-Use this workflow for training reasoning models with group-relative advantages.
+Use this workflow for training models that solve multi-step problems with group-relative advantages.
 
 ### Prerequisites Checklist
 - [ ] Docker environment or Megatron-LM + SGLang installed
@@ -202,7 +202,7 @@ python train_async.py \
 
 ## Workflow 3: Multi-Turn Agentic Training
 
-Use this workflow for training agents with tool use or multi-step reasoning.
+Use this workflow for training agents with tool use or multi-step problem solving.
 
 ### Prerequisites
 - [ ] Custom generate function for multi-turn logic

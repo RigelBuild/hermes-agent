@@ -1139,7 +1139,7 @@ Posting to arXiv is standard practice in ML but has important timing and anonymi
 |----------|------|----------|
 | Machine Learning | `cs.LG` | General ML methods |
 | Computation and Language | `cs.CL` | NLP, language models |
-| Artificial Intelligence | `cs.AI` | Reasoning, planning, agents |
+| Artificial Intelligence | `cs.AI` | Problem solving, planning, agents |
 | Computer Vision | `cs.CV` | Vision models |
 | Information Retrieval | `cs.IR` | Search, recommendation |
 
