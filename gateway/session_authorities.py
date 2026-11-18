@@ -267,16 +267,20 @@ def admission_owner(authority, session_id):
 
 
 def holds_admission(authority, session_id) -> bool:
-    """Whether *authority*'s store holds a pending canonical admission for *session_id*: one the FIFO
-    still owns (``queued``, ``started`` or ``unknown``). A ``terminal`` row is settled history and
-    holds nothing, so a session whose turns all ended can still auto-resume. A parked profile's
+    """Whether *authority*'s store holds *session_id* against a restart resume: a pending canonical
+    admission (``queued``, ``started`` or ``unknown``) the FIFO or an operator still owns, or a latest
+    admission that is not a restart-interrupted turn (see ``_restart_interrupted``). A parked profile's
     retained (retiring) store that cannot answer counts as holding one: startup auto-resume fails
     closed for that entry instead of stopping the boot or resuming a turn that FIFO may own."""
     try:
-        return bool(authority.db._read_one(
-            "SELECT 1 FROM session_admissions WHERE target_session_id IN (?,?) "
-            "AND status IN ('queued','started','unknown') LIMIT 1",
-            (session_id, admission_owner(authority, session_id))))
+        sids = (session_id, admission_owner(authority, session_id))
+        if authority.db._read_one(
+                "SELECT 1 FROM session_admissions WHERE target_session_id IN (?,?) "
+                "AND status IN ('queued','started','unknown') LIMIT 1", sids):
+            return True
+        latest = authority.db._read_one(
+            "SELECT * FROM session_admissions WHERE target_session_id IN (?,?) ORDER BY seq DESC LIMIT 1", sids)
+        return latest is not None and not _restart_interrupted(authority, latest)
     except Exception as exc:
         if not getattr(authority, 'retiring', False):
             raise
@@ -284,6 +288,21 @@ def holds_admission(authority, session_id) -> bool:
         logging.getLogger('gateway.run').warning("Skipping auto-resume of %s: retained store %s cannot answer: %s",
                                                  session_id, getattr(authority, 'profile_id', '?'), exc)
         return True
+
+
+def _restart_interrupted(authority, row) -> bool:
+    """Whether a latest admission *row* is an attended turn a gateway restart or shutdown interrupted: the
+    only terminal outcome that releases its session. The retained result records the stop cause. Completed,
+    failed and user-stopped turns hold, so a finished turn is never answered twice. An unattended row
+    (cron, automation, webhook, kanban) has nobody to resend it, so it holds too."""
+    from gateway.session_contract import GATEWAY_STOP_CAUSES
+    from gateway.session_results import admission_result
+    from gateway.session_unattended_unknown import is_unattended
+    from hermes_state_runtime import _row
+    if row['status'] != 'terminal' or row['outcome'] != 'interrupted' or is_unattended(_row(row)):
+        return False
+    saved = admission_result(authority.db, row['admission_id']) or {}
+    return (saved.get('result') or {}).get('interrupt_message') in GATEWAY_STOP_CAUSES
 
 
 def _prepare_owner_scope(home: Path):

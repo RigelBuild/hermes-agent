@@ -656,7 +656,7 @@ class GatewayStartupMixin:
             # Legacy synthetic resume must not race their restored FIFO.
             from gateway.session_authorities import all_authorities, holds_admission
             if any(holds_admission(authority, entry.session_id) for authority in all_authorities(self)):
-                logger.debug("Skipping auto-resume for %s: a pending canonical admission owns the restart",
+                logger.debug("Skipping auto-resume for %s: its canonical admission holds the session",
                              entry.session_id)
                 continue
             # Epoch math: the marker was stamped naive-local by the previous process, possibly

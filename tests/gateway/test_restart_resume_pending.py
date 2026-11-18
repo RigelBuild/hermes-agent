@@ -46,6 +46,7 @@ from gateway.run import (
     build_resume_recovery_note,
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore
+from gateway.session_contract import GATEWAY_RESTART_CAUSE, GATEWAY_SHUTDOWN_CAUSE
 from tests.gateway.restart_test_helpers import (
     RestartTestAdapter,
     make_restart_runner,
@@ -604,19 +605,16 @@ async def test_startup_auto_resume_skips_unauthorized_owner():
     runner._persist_active_agents.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_startup_auto_resume_schedules_session_whose_admissions_are_all_terminal(tmp_path, monkeypatch):
-    """A resume-pending session whose admission rows are all settled history owns no FIFO, so the
-    restart-interrupted turn must resume (RIG-10319)."""
-    from tests.gateway.test_session_authority_cancel_settlement import _authority, _submit
-    db, authority = _authority(tmp_path, monkeypatch)
-    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
-    runner, adapter = make_restart_runner()
-    runner.session_authority = authority
-    source = make_restart_source(chat_id="terminal-chat")
-    entry = SessionEntry(
-        session_key="agent:main:telegram:dm:terminal-chat",
-        session_id="s",
+def _interrupted_result(cause):
+    """The retained result a turn settles with when the owner's stop interrupted it (``owner_stop_notice`` reads it)."""
+    return {'result': {'interrupted': True, 'interrupt_message': cause}, 'usage': {}}
+
+
+def _auto_resume_entry(session_key, chat_id, session_id="s"):
+    source = make_restart_source(chat_id=chat_id)
+    return SessionEntry(
+        session_key=session_key,
+        session_id=session_id,
         created_at=datetime.now(),
         updated_at=datetime.now(),
         origin=source,
@@ -626,18 +624,136 @@ async def test_startup_auto_resume_schedules_session_whose_admissions_are_all_te
         resume_reason="restart_interrupted",
         last_resume_marked_at=datetime.now(),
     )
+
+
+def _restart_authority(tmp_path, monkeypatch):
+    from tests.gateway.test_session_authority_cancel_settlement import _authority
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    return db, authority
+
+
+def _settle_queued_head(db, authority, outcome, result=None):
+    """Claim the session's queued head and settle it through the real ``settle_session_input`` path
+    (started claim, owner epoch, generation). A cancelled head goes through ``cancel_session_input``."""
+    from hermes_state_runtime import cancel_session_input, claim_session_input, list_session_admissions, settle_session_input
+    if outcome == 'cancelled':
+        [queued] = list_session_admissions(db, session_id='s')
+        cancel_session_input(db, epoch=authority.epoch, admission_id=queued['admission_id'])
+        return
+    row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+    settle_session_input(db, epoch=authority.epoch, admission_id=row['admission_id'],
+                         generation=row['generation'], outcome=outcome, result=result)
+
+
+async def _startup_auto_resume(authority, entry):
+    """Run the startup auto-resume pass once for *entry*; returns (scheduled, adapter)."""
+    runner, adapter = make_restart_runner()
+    runner.session_authority = authority
     runner.session_store._entries = {entry.session_key: entry}
     adapter.handle_message = AsyncMock()
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+    return scheduled, adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cause", [GATEWAY_RESTART_CAUSE, GATEWAY_SHUTDOWN_CAUSE])
+async def test_turn_interrupted_by_restart_or_shutdown_resumes(tmp_path, monkeypatch, cause):
+    """(a) A canonical turn the gateway restart or shutdown interrupted settles terminal/interrupted,
+    and its session auto-resumes (RIG-10319)."""
+    from tests.gateway.test_session_authority_cancel_settlement import _submit
+    db, authority = _restart_authority(tmp_path, monkeypatch)
+    entry = _auto_resume_entry("agent:main:telegram:dm:interrupted-chat", "interrupted-chat")
     with db:
         await _submit(authority, 'interrupted-turn')
-        db._execute_write(lambda conn: conn.execute(
-            "UPDATE session_admissions SET status='terminal', outcome='interrupted' "
-            "WHERE request_id='interrupted-turn'"))
-        scheduled = runner._schedule_resume_pending_sessions()
-        await asyncio.sleep(0)
+        _settle_queued_head(db, authority, 'interrupted', _interrupted_result(cause))
+        scheduled, adapter = await _startup_auto_resume(authority, entry)
 
     assert scheduled == 1
     adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("outcome", "result"), [
+    ("completed", {'result': {'final_response': 'done', 'completed': True}, 'usage': {}}),
+    ("failed", {'result': {'final_response': '', 'failed': True, 'error': 'boom'}, 'usage': {}}),
+    ("interrupted", _interrupted_result(None)),  # a user Stop: no restart cause recorded
+    ("cancelled", None),
+])
+async def test_settled_turn_that_did_not_restart_holds_its_session(tmp_path, monkeypatch, outcome, result):
+    """(b) Completed, failed, user-stopped and cancelled turns hold the session: the restart did not
+    interrupt them, so re-running the session would answer a finished turn twice (M3, RIG-10319)."""
+    from tests.gateway.test_session_authority_cancel_settlement import _submit
+    db, authority = _restart_authority(tmp_path, monkeypatch)
+    entry = _auto_resume_entry("agent:main:telegram:dm:settled-chat", "settled-chat")
+    with db:
+        await _submit(authority, 'settled-turn')
+        _settle_queued_head(db, authority, outcome, result)
+        scheduled, adapter = await _startup_auto_resume(authority, entry)
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("settled_by", ["boot-recovery", "restart-cause"])
+async def test_unattended_interrupted_turn_holds_its_session(tmp_path, monkeypatch, settled_by):
+    """(c) An automation turn nobody sent has no one to resume it. Settled interrupted by boot
+    recovery, or by a restart cause, its row still holds the session (M2, RIG-10319)."""
+    from gateway.session_unattended_unknown import settle_recovered_unattended
+    from hermes_state_keys import CRON_PRINCIPAL_ID
+    from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input, recover_session_inputs
+    db, authority = _restart_authority(tmp_path, monkeypatch)
+    entry = _auto_resume_entry("agent:main:telegram:dm:automation-chat", "automation-chat")
+    with db:
+        admit_session_input(db, epoch=authority.epoch, principal_id=CRON_PRINCIPAL_ID, session_id='s',
+                            request_id='cron:job:1', payload={'text': 'nightly'})
+        if settled_by == 'boot-recovery':
+            claim_session_input(db, epoch=authority.epoch, session_id='s')
+            boot = begin_runtime_epoch(db, instance_id='restart')
+            recover_session_inputs(db, epoch=boot)
+            settle_recovered_unattended(db, boot)
+        else:
+            _settle_queued_head(db, authority, 'interrupted', _interrupted_result(GATEWAY_RESTART_CAUSE))
+        scheduled, adapter = await _startup_auto_resume(authority, entry)
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("outcome", "result", "resumes"), [
+    ("interrupted", _interrupted_result(GATEWAY_RESTART_CAUSE), 1),
+    ("completed", {'result': {'final_response': 'done', 'completed': True}, 'usage': {}}, 0),
+])
+async def test_compression_child_follows_its_root_admission(tmp_path, monkeypatch, outcome, result, resumes):
+    """(d) The admission's ``target_session_id`` is the compression root while the resume entry names
+    the child tip. The root's latest admission decides for the child (RIG-10319)."""
+    from tests.gateway.test_session_authority_cancel_settlement import _submit
+    db, authority = _restart_authority(tmp_path, monkeypatch)
+    with db:
+        await _submit(authority, 'root-turn')
+        _settle_queued_head(db, authority, outcome, result)
+        db.publish_compression_child(parent_session_id='s', child_session_id='child', source='test',
+                                     messages=[{'role': 'assistant', 'content': 'summary'}],
+                                     require_compression_lease=False)
+        entry = _auto_resume_entry('agent:main:telegram:dm:child-chat', 'child-chat', session_id='child')
+        scheduled, adapter = await _startup_auto_resume(authority, entry)
+
+    assert scheduled == resumes
+    assert adapter.handle_message.await_count == resumes
+
+
+def test_restart_and_shutdown_notices_say_the_turn_continues():
+    """(e) The notice must match the resume: the interrupted turn is not sent again, its session is
+    (RIG-10319)."""
+    from gateway.session_settlement_recovery import RESTART_INTERRUPT_NOTICE, SHUTDOWN_INTERRUPT_NOTICE
+    for notice in (RESTART_INTERRUPT_NOTICE, SHUTDOWN_INTERRUPT_NOTICE):
+        assert 'will not be run again' not in notice
+        assert 'will continue automatically' in notice
+
+
 
 
 @pytest.mark.asyncio

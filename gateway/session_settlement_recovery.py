@@ -122,18 +122,19 @@ def _publish_completion(authority, live, ref, row, settled, response, captured):
     live.event_stream.publish(ref.session_id, complete)
 
 
-RESTART_INTERRUPT_NOTICE = ('Gateway restarting: this turn was interrupted and will not be run again. '
-                            'Send your message again once Hermes reconnects.')
-SHUTDOWN_INTERRUPT_NOTICE = ('Gateway shutting down: this turn was interrupted and will not be run again. '
-                             'Send your message again once Hermes is back.')
+RESTART_INTERRUPT_NOTICE = ('Gateway restarting: this turn was interrupted by the restart and will continue '
+                            'automatically once Hermes reconnects.')
+SHUTDOWN_INTERRUPT_NOTICE = ('Gateway shutting down: this turn was interrupted by the shutdown and will continue '
+                             'automatically once Hermes is back.')
 
 
 def owner_stop_notice(captured, outcome, row=None):
     """The named notice for a turn the owner's restart/stop interrupted, or None. With the default
     ``agent.restart_drain_timeout: 0`` a restart interrupts in-flight turns at once; the admission
-    settles ``interrupted`` and is never replayed, so the viewer is told the restart did it.
-    An unattended ``row`` (cron, automation, webhook) has nobody to resend it, so it gets the
-    neutral automation copy instead of resend advice (#134889 GW-20, GW-10's rule)."""
+    settles ``interrupted`` without a replay, and its session auto-resumes on the new gateway
+    (``session_authorities.holds_admission``), so the viewer is told the restart interrupted the turn and
+    that it will continue automatically. An unattended ``row`` (cron, automation, webhook) has nobody to
+    resume it, so it gets the neutral automation copy instead (#134889 GW-20, GW-10's rule)."""
     # The cause is the one the turn recorded when it was interrupted (stop() interrupts with these
     # reasons), never the runner's flags at publication: a user Stop whose settlement was delayed
     # until after shutdown began is still the user's Stop.
