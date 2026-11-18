@@ -71,14 +71,20 @@ def _run(argv: list[str] | tuple[str, ...], deadline: float, *, encoding: str | 
                           creationflags=windows_hide_flags(), timeout=remaining(deadline), check=False)
 
 
+_BINDING_ERRORS = (ValueError, TypeError, KeyError, AttributeError, ExpatError)
+_BINDING_REASONS = {"profile_mismatch", "service_account_mismatch", "service_disabled"}
+
+
+def _binding_failure(exc: Exception) -> RuntimeStartError:
+    reason = str(exc)
+    return RuntimeStartError(reason if reason in _BINDING_REASONS else "service_identity_unverified")
+
+
 def _verify_binding(verify, *args, **kwargs):
     try:
         return verify(*args, **kwargs)
-    except (ValueError, TypeError, KeyError, AttributeError, ExpatError) as exc:
-        reason = str(exc)
-        raise RuntimeStartError(reason if reason in {
-            "profile_mismatch", "service_account_mismatch", "service_disabled"
-        } else "service_identity_unverified") from None
+    except _BINDING_ERRORS as exc:
+        raise _binding_failure(exc) from None
 
 
 def _exists(path: Path) -> bool:
@@ -183,18 +189,9 @@ def _s6(home: Path, deadline: float) -> ExistingService | None:
     return ExistingService("s6", (service_name,), manager.is_running(service_name))
 
 
-def _launchd(home: Path, deadline: float) -> ExistingService | None:
-    import pwd
-    suffix = service_suffix(home)
-    label = f"ai.hermes.gateway{'-' + suffix if suffix else ''}"
-    account = pwd.getpwuid(os.getuid())  # windows-footgun: ok — native launchd only
-    account_home = Path(account.pw_dir)
-    plist = account_home / "Library/LaunchAgents" / f"{label}.plist"
-    from hermes_cli.gateway_runtime_service_identity import verify_launchd_loaded, verify_launchd_plist, read_definition
-    installed = _exists(plist)
-    domains = [f"gui/{os.getuid()}", f"user/{os.getuid()}"]  # windows-footgun: ok — native launchd only
-    found = []
-    loaded = []
+def _launchd_loaded(label: str, domains: list[str], deadline: float) -> tuple[list[ExistingService], list[str]]:
+    """``(services, print outputs)`` for each domain where launchd has ``label`` loaded."""
+    found, loaded = [], []
     for domain in domains:
         result = _run(["launchctl", "print", f"{domain}/{label}"], deadline)
         if result.returncode == 0:
@@ -205,11 +202,45 @@ def _launchd(home: Path, deadline: float) -> ExistingService | None:
         # launchctl's native absent-service code; other errors retain uncertainty.
         if result.returncode != 113:
             raise RuntimeStartError("service_manager_unavailable")
+    return found, loaded
+
+
+def _launchd(home: Path, deadline: float) -> ExistingService | None:
+    import pwd
+    from gateway.restart import _HOME_MANAGER_LABEL_PREFIX
+    suffix = service_suffix(home)
+    label = f"ai.hermes.gateway{'-' + suffix if suffix else ''}"
+    account = pwd.getpwuid(os.getuid())  # windows-footgun: ok — native launchd only
+    account_home = Path(account.pw_dir)
+    plist = account_home / "Library/LaunchAgents" / f"{label}.plist"
+    from hermes_cli.gateway_runtime_service_identity import ForeignRoot, verify_launchd_loaded, verify_launchd_plist, read_definition
+    installed = _exists(plist)
+    domains = [f"gui/{os.getuid()}", f"user/{os.getuid()}"]  # windows-footgun: ok — native launchd only
+    found, loaded = _launchd_loaded(label, domains, deadline)
     if len(found) > 1:
         raise RuntimeStartError("service_scope_conflict", "conflict")
     if found:
         _verify_binding(verify_launchd_loaded, loaded[0], home, uid=os.getuid(), username=account.pw_name)  # windows-footgun: ok — native launchd only
         return found[0]
+    # Home Manager runs the gateway as its own job (nix/homeManagerModules.nix, logName "hermes-agent").
+    # Its label never carries a home suffix: one job per user, and verify_home decides which home it serves.
+    # A loaded job that verifies as this home's gateway is the owner: kickstart it, never spawn beside it.
+    # A job of another install root or another profile is not ours: keep probing. Any other failure on this
+    # home refuses, as the ai.hermes path does.
+    hm_label = f"{_HOME_MANAGER_LABEL_PREFIX}-agent"
+    hm_found, hm_loaded = _launchd_loaded(hm_label, domains, deadline)
+    if len(hm_found) > 1:
+        raise RuntimeStartError("service_scope_conflict", "conflict")
+    if hm_found:
+        try:
+            verify_launchd_loaded(hm_loaded[0], home, uid=os.getuid(), username=account.pw_name, home_manager=True)  # windows-footgun: ok — native launchd only
+        except ForeignRoot:
+            pass
+        except _BINDING_ERRORS as exc:
+            if str(exc) != "profile_mismatch":
+                raise _binding_failure(exc) from None
+        else:
+            return hm_found[0]
     if installed:
         definition = _verify_binding(plistlib.loads, read_definition(plist))
         _verify_binding(verify_launchd_plist, definition, label, home)
