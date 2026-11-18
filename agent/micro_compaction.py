@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from agent.compaction_events import publish_micro
 from agent.context_compressor_telemetry import _safe_int
 from agent.message_metadata import record_absorbed_message
+from agent.think_scrubber import summary_visible_text
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
 
 # Log name parity with the origin module.
@@ -148,11 +149,7 @@ class MicroCompactionMixin:
             return None
 
         message = response.choices[0].message
-        content = message.get("content") if isinstance(message, dict) else getattr(message, "content", message)
-        content = (content if isinstance(content, str) else str(content) if content else "").strip()
-
-        from agent.agent_runtime_helpers import strip_think_blocks
-        content = strip_think_blocks(None, content).strip()
+        content = summary_visible_text(message.get("content") if isinstance(message, dict) else getattr(message, "content", None))
         if not content:
             logger.info("micro-summarization returned empty content")
             return None

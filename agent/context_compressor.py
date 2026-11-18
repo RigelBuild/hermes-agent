@@ -42,6 +42,7 @@ from agent.context_compressor_tail import (
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import ClassifiedError, FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
+from agent.think_scrubber import summary_visible_text
 from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
     CHARS_PER_TOKEN, MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
@@ -3828,13 +3829,11 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         if self._compression_cancelled():
             raise AuxiliaryExplicitCancellation()
         self._note_aux_route_fallback(_aux_route)
-        # Summary text is the message ``content`` only. Reasoning fields are model thinking: they must never be
-        # stored as the summary or replayed as text later (RIG-10290 §3.1). A reasoning-only reply has empty
-        # content, so it takes the empty-content failure path below.
-        from agent.agent_runtime_helpers import strip_think_blocks
+        # Stored summary = visible message content only; reasoning fields and think text never reach it
+        # (RIG-10290 §3.1). Empty content takes the failure path below.
         msg = _coerce_llm_message(response)
         raw = msg if isinstance(msg, str) else _message_field(msg, "content")
-        content = strip_think_blocks(None, raw).strip() if isinstance(raw, str) else ""
+        content = summary_visible_text(raw)
         where = f"(provider={self.provider or 'auto'} model={self.summary_model or self.model})"
         # Some OpenAI-compatible proxies (e.g. cmkey.cn, one-api channels) return a well-formed HTTP 200
         # with an empty or whitespace-only ``content`` instead of an error or empty ``choices``. That
@@ -3907,9 +3906,6 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         prompt = self._build_summary_prompt(content_to_summarize, summary_budget, focus_topic, memory_context, has_user_turn)
         try:
             content = self._call_summary_llm(prompt, prompt_started_at)
-            # Strip <think> blocks: they would be stored, injected, and compounded on every iterative update.
-            from agent.agent_runtime_helpers import strip_think_blocks
-            content = strip_think_blocks(None, content).strip() or content
             # The summarizer may echo secrets verbatim; redact the output too.
             summary = _redact_compaction_text(content.strip())
             # Restore any [SKILL_PRUNED] marker the summarizer paraphrased away.

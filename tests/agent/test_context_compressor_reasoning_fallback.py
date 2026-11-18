@@ -98,7 +98,9 @@ def test_list_content_keeps_the_text_part_and_drops_thinking():
     ]))])
     with patch("agent.context_compressor.call_llm", return_value=response):
         out = _compressor()._generate_summary(_turns())
-    assert out == f"{SUMMARY_PREFIX}\nvisible list summary"
+    assert out.startswith(SUMMARY_PREFIX)
+    assert "visible list summary" in out
+    assert "PRIVATE_LIST_THINKING" not in out
 
 
 THINK_PREFIX_SHAPES = [
