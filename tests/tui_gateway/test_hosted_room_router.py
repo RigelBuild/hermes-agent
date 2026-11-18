@@ -399,3 +399,21 @@ def test_planner_is_pure_over_a_routed_and_continued_log(tmp_path, answers):
     pending = discussion.plan_next_task(room, [e for e in events if e["kind"] != "room.routed"],
                                         local_profiles=PROFILES, room_context={"routing": "auto"})
     assert (pending.status, pending.reason) == ("route", "router_pending")
+
+
+def test_reasoning_only_router_reply_is_not_a_pick(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    from agent import auxiliary_client
+
+    reasoning_only = SimpleNamespace(choices=[SimpleNamespace(
+        message=SimpleNamespace(content=None, reasoning='{"members": ["build"]}'))])
+    monkeypatch.setattr(auxiliary_client, "call_llm", lambda **kwargs: reasoning_only)
+    monkeypatch.setattr("gateway.run._profile_runtime_scope", lambda root: nullcontext())
+    monkeypatch.setattr(router_call, "_member_roster", lambda room, homes: [])
+    monkeypatch.setattr(router_call, "_recent_messages", lambda *args: [])
+    room = {"room_id": ROOM_ID, "name": "Ops", "members": [{"member_id": "m-build", "handle": "build"}]}
+    picked = router_call.ask_router(
+        root=tmp_path, db_path=tmp_path / "state.db", room=room, discussion={"seq": 1, "payload": {"text": "Fix CI"}},
+        context={"purpose": "Ship", "notes": ""}, homes={})
+    assert picked is None

@@ -656,3 +656,23 @@ async def test_resolve_meeting_reference_refuses_transcript_id_without_join_url(
             BoomGraphClient(),
             meeting_id="ktVizInGAAAA-TranscriptV2=",
         )
+
+
+@pytest.mark.anyio
+async def test_summary_reasoning_only_reply_is_not_the_summary(tmp_path, monkeypatch):
+    from plugins.teams_pipeline import pipeline as pipeline_module
+    from plugins.teams_pipeline.models import TeamsMeetingRef
+
+    reasoning_only = SimpleNamespace(choices=[SimpleNamespace(
+        message=SimpleNamespace(content=None, reasoning='{"summary": "leaked reasoning"}'))])
+
+    async def _reasoning_only_call(**kwargs):
+        return reasoning_only
+
+    monkeypatch.setattr(pipeline_module, "async_call_llm", _reasoning_only_call)
+    pipeline = TeamsMeetingPipeline(
+        graph_client=FakeGraphClient(), store=TeamsPipelineStore(tmp_path / "teams-store.json"))
+    payload = await pipeline._generate_summary_payload(
+        resolved_meeting=TeamsMeetingRef(meeting_id="m-1", metadata={"subject": "Weekly Sync"}),
+        transcript_text="Decision: ship the release.", artifacts=[])
+    assert "leaked reasoning" not in (payload.summary or "")
