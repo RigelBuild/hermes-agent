@@ -11,7 +11,7 @@ boundary (stream start / after a newline / whitespace-only line so far), so pros
 from __future__ import annotations
 
 import re
-from typing import Tuple
+from typing import Any, Tuple
 
 __all__ = ["THINK_CLOSE_TAGS", "THINK_OPEN_TAGS", "THINK_TAG_NAMES", "StreamingThinkScrubber"]
 
@@ -186,3 +186,82 @@ class StreamingThinkScrubber:
     def _strip_orphan_close_tags(cls, text: str) -> str:
         """Remove close tags with no matching open (always noise) plus trailing whitespace."""
         return cls._ORPHAN_CLOSE_RE.sub("", text) if "</" in text else text
+
+
+_TAG_ALT = "|".join(re.escape(name) for name in THINK_TAG_NAMES)
+_CLOSER_RE = re.compile(rf"</(?:{_TAG_ALT})>", re.IGNORECASE)
+_OPENER_RE = re.compile(rf"<(?:{_TAG_ALT})\b[^>]*>", re.IGNORECASE)
+_FENCE = r"|^(?P<fence>`{3,}(?!`)|~{3,}(?!~))[^\n]*\n.*?^(?P=fence)[`~]*[ \t]*$"
+_FLAGS = re.IGNORECASE | re.DOTALL | re.MULTILINE
+# Where a bare reasoning tag is a mention: a span wrapping one tag, or a fence with no bare closer.
+_CODE_RE = re.compile(rf"(?<!`)(`+)(?:<(?:{_TAG_ALT})\b[^>]*>|</(?:{_TAG_ALT})>)\1(?!`)" + _FENCE, _FLAGS)
+# Where any tag is a mention for the shared patterns: a whole one-line inline span, or such a fence.
+_INLINE = r"(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)"
+_SPAN_RE = re.compile(_INLINE + _FENCE, _FLAGS)
+_INLINE_RE = re.compile(_INLINE)
+_MASK_RE = re.compile(r"[^<\n]")
+
+
+def _mention_spans(text: str, code_re: re.Pattern = _CODE_RE) -> list[tuple[int, int]]:
+    """Code spans that are mentions; a fence with a bare closer inside protects nothing."""
+    return [m.span() for m in code_re.finditer(text)
+            if m.group("fence") is None or not _CLOSER_RE.search(text, *m.span())]
+
+
+def _drop(text: str, cuts: list[tuple[int, int]]) -> str:
+    starts = [0, *(b for _, b in cuts)]
+    return "".join(text[s:a] for s, (a, _) in zip(starts, cuts)) + text[starts[-1]:]
+
+
+def _strip_shared(text: str) -> str:
+    """``strip_think_blocks`` minus its orphan-tag pattern, never pairing a tag in code with one outside."""
+    from agent.agent_runtime_helpers import (
+        _ORPHAN_REASONING_TAG_PATTERN, _REASONING_BLOCK_PATTERNS, _THINK_STRIP_PATTERNS)
+
+    def drop_pairs(m: re.Match) -> str:
+        span = m.group(0)
+        for pattern in _REASONING_BLOCK_PATTERNS:
+            span = pattern.sub("", span)
+        return span
+
+    # A pair wholly inside one inline span goes first, so its closer is not left bare for the cut.
+    text = _INLINE_RE.sub(drop_pairs, text)
+    masked, pos = [], 0
+    for a, b in _mention_spans(text, _SPAN_RE):
+        masked += [text[pos:a], _MASK_RE.sub("\x01", text[a:b])]  # keep `<` and `\n` for line patterns
+        pos = b
+    masked = "".join(masked) + text[pos:]  # same length as text, so match offsets apply to both
+    for pattern in _THINK_STRIP_PATTERNS:
+        if pattern is _ORPHAN_REASONING_TAG_PATTERN:
+            continue
+        cuts = [m.span() for m in pattern.finditer(masked)]
+        if cuts:
+            text, masked = _drop(text, cuts), _drop(masked, cuts)
+    return text
+
+
+def summary_visible_text(content: Any) -> str:
+    """Visible text of a summarizer reply, for the stored summary only.
+
+    Removes closed reasoning pairs that sit wholly inside one inline span, then runs the shared
+    ``strip_think_blocks`` patterns except the orphan-tag one (closed reasoning pairs, tool-call
+    blocks, named ``<function>`` blocks, an unclosed line-start reasoning opener, stray tool-call
+    closers, unclosed tool calls and arg fragments) outside inline code spans and fences. Then it
+    cuts text before a bare closing tag and from an unclosed opening tag through the
+    end, even mid-line. A bare tag does not start a cut when it is inside an inline span that wraps
+    exactly that one tag, or a fence with no bare closer.
+    """
+    from agent.agent_runtime_helpers import _flatten_content_text
+
+    text = _flatten_content_text(content) if content else ""
+    # Shared patterns first, so the bare-tag cuts below (strict spans, re-found per cut) get the last word.
+    text = _strip_shared(text)
+    spans = _mention_spans(text)
+    closers = [m for m in _CLOSER_RE.finditer(text) if not any(a <= m.start() < b for a, b in spans)]
+    if closers:
+        text = text[closers[-1].end():]
+    spans = _mention_spans(text)
+    openers = [m for m in _OPENER_RE.finditer(text) if not any(a <= m.start() < b for a, b in spans)]
+    if openers:
+        text = text[:openers[0].start()]
+    return text.strip()
