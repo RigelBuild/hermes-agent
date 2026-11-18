@@ -218,3 +218,33 @@ class TestNamespacedReasoningTags:
 
         out = strip_think_blocks(None, "a <mm:think>hidden</mm:think> b. Report.</mm:think>Fixed.\n<mm:think>open")
         assert out == "a  b. Report.Fixed."
+
+
+class TestSummaryVisibleText:
+    """Summary-only scrub (``summary_visible_text``): stored summary text carries no reasoning."""
+
+    def test_block_list_drops_thinking_and_keeps_text(self) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        parts = [{"type": "thinking", "thinking": "PRIVATE"}, {"type": "text", "text": "visible"}]
+        assert summary_visible_text(parts) == "visible"
+
+    def test_orphan_close_takes_the_reasoning_before_it(self) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        assert summary_visible_text("PRIVATE step</think>\n\n## Goal") == "## Goal"
+
+    def test_unclosed_open_takes_the_tail(self) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        assert summary_visible_text("visible <think>PRIVATE tail") == "visible"
+
+    def test_closed_pair_keeps_its_neighbours(self) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        assert summary_visible_text("A <think>r</think> B") == "A  B"
+
+    def test_non_text_content_is_empty(self) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        assert summary_visible_text(None) == ""
