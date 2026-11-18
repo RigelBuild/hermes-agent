@@ -538,7 +538,8 @@ async def test_turn_marker_start_survives_a_timezone_change_across_the_crash(tmp
                                                   "timestamp": time.time() - 60})
     original_tz = os.environ.get("TZ")
     try:
-        os.environ["TZ"] = "Etc/GMT+7"  # UTC-7 when the turn starts ...
+        # POSIX rule: zone names need /usr/share/zoneinfo, which this host lacks (Etc/GMT+7 silently became UTC).
+        os.environ["TZ"] = "<-07>7"  # UTC-7 when the turn starts ...
         time.tzset()
         store.mark_turn_active(entry.session_key)
         os.environ["TZ"] = "UTC"  # ... UTC when the gateway comes back

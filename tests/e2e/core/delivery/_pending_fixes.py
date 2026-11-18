@@ -42,7 +42,8 @@ _PRELUDE = "import json, os, sys\nsys.path.insert(0, os.getcwd())\n"
 PROBES: dict[int, tuple] = {
     # No timezone configured: the next cron occurrence kept the base time's fixed UTC offset, so a
     # 09:00 job in a DST process zone fired at 10:00 local the day after spring-forward.
-    119970: ({"TZ": "America/New_York"}, r'''
+    # POSIX rule, not "America/New_York": zone names need /usr/share/zoneinfo, which this host lacks.
+    119970: ({"TZ": "EST5EDT,M3.2.0,M11.1.0"}, r'''
 from datetime import datetime
 from cron import jobs
 # what an unconfigured clock returns: the process zone's offset of the moment, as a fixed offset

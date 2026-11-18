@@ -582,9 +582,19 @@ def soak_env(tmp_path, monkeypatch):
     hermes_time.reset_cache()
 
 
+# Zone name -> POSIX TZ rule for the process TZ. A bare name silently becomes UTC where /usr/share/zoneinfo is absent.
+_POSIX_TZ = {
+    "UTC": "UTC0",
+    "America/Los_Angeles": "PST8PDT,M3.2.0,M11.1.0",
+    "America/New_York": "EST5EDT,M3.2.0,M11.1.0",
+    "Asia/Shanghai": "CST-8",
+}
+
+
 def _run_scenario(sc: Scenario, soak_env) -> dict[str, int]:
     tmp_path, hermes_home, monkeypatch = soak_env
-    monkeypatch.setenv("TZ", sc.process_tz)
+    # The oracle reads the zone name (ZoneInfo); TZ gets its POSIX rule, since zone names need zoneinfo files.
+    monkeypatch.setenv("TZ", _POSIX_TZ[sc.process_tz])
     time.tzset()
     lines = ["platforms:", "  telegram:", "    enabled: true", "    token: fake-soak-token"]
     if sc.hermes_tz:
