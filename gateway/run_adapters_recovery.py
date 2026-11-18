@@ -19,7 +19,7 @@ from typing import Optional
 
 from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.helpers import carry_inbound_dedup, hand_over_held_inbound
+from gateway.platforms.helpers import carry_exec_approval_views, carry_inbound_dedup, hand_over_held_inbound
 from gateway.restart import is_global_startup_conflict
 from gateway.run_shutdown import _log_suppressed
 
@@ -227,6 +227,7 @@ class GatewaySecondaryReconnectMixin:
                 self._hold_secondary_claims(
                     profile_name, platform, asyncio.current_task(), self._adapter_claims(platform, adapter))
             carry_inbound_dedup(predecessor, adapter)
+            carry_exec_approval_views(predecessor, adapter)
             try:
                 self._configure_profile_adapter(adapter, profile_name, platform)
                 success = await self._connect_adapter_with_timeout(adapter, platform, is_reconnect=True)
