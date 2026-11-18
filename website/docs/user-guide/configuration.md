@@ -1228,9 +1228,10 @@ agent:
 ```
 
 With the default `0`, a restart interrupts a running turn immediately. The turn settles as
-interrupted and is never run again; the TUI and Desktop show a "Gateway restarting" (or "Gateway
-shutting down") notice on that turn, and you send the message again once Hermes reconnects.
-Queued messages behind it are kept and run in order on the new gateway.
+interrupted and is not run again. Hermes resumes the session on the new gateway, and the TUI and
+Desktop show a "Gateway restarting" (or "Gateway shutting down") notice on that turn saying it
+will continue automatically once Hermes reconnects. Queued messages behind it are kept and run in
+order on the new gateway.
 
 Recorded background `hermes chat` jobs without a recorded exit are reported as having an unknown
 outcome after a gateway restart. Hermes does not replay their prompt. Verify their effects before

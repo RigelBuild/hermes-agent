@@ -127,9 +127,15 @@ queued when a route, transport, or authorization is unavailable. Restoring that
 configuration permits recovery on a later startup.
 
 An interrupted started admission becomes `unknown` and pauses its session's FIFO;
-its followers do not automatically run. Legacy synthetic restart turns are excluded
-from sessions with canonical admission history, so they cannot race the durable
-queue or bypass an unknown pause. Completed inputs are not reinferred on restart.
+its followers do not automatically run. A turn a gateway restart or shutdown interrupts
+settles `interrupted` without a replay, and its session resumes on the new gateway through the
+legacy synthetic restart turn, which shows the viewer a notice that the turn will continue
+automatically. A session still holds, and is not resumed, while any of its admissions is
+`queued`, `started` or `unknown`, or while its latest admission is a `completed`, `failed`,
+`cancelled` or user-stopped `interrupted` turn, or an unattended (cron, automation, webhook, kanban) row.
+Legacy synthetic restart turns are otherwise excluded from sessions with canonical admission
+history, so they cannot race the durable queue or bypass an unknown pause. Completed inputs
+are not reinferred on restart.
 Under `gateway.multiplex_profiles` the bootstrap builds one session authority per
 served profile home (the default plus every directory under `profiles/`), each bound
 to that home's `state.db` and entered under that profile's runtime scope. Every
