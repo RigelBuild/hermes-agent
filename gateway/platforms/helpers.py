@@ -82,6 +82,14 @@ def carry_inbound_dedup(predecessor: Any, adapter: Any) -> None:
             current.absorb(previous)
 
 
+def carry_exec_approval_views(predecessor: Any, adapter: Any) -> None:
+    """Hand a replaced adapter's live exec-approval card views to its rebuild (call before connect).
+    An adapter that renders native approval cards implements ``adopt_exec_approval_views``; others have nothing to carry."""
+    adopt = getattr(adapter, "adopt_exec_approval_views", None)
+    if predecessor is not None and callable(adopt):
+        adopt(predecessor)
+
+
 def hand_over_held_inbound(source: Any, target: Any) -> None:
     """Move inbound ``source`` is holding to ``target`` (#132829, #133399).
 

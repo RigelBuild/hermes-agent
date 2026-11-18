@@ -257,6 +257,14 @@ def list_gateway_approvals(session_key: str) -> list[dict]:
     with _lock:
         return [dict(entry.data) for entry in _gateway_queues.get(session_key, [])]
 
+def gateway_approval_session(request_id: str) -> Optional[str]:
+    """The session whose queue holds the pending approval *request_id*, else None."""
+    with _lock:
+        for session_key, queue in _gateway_queues.items():
+            if any(e.data.get("request_id") == request_id for e in queue):
+                return session_key
+    return None
+
 
 def list_gateway_approval_authority(session_key: str) -> list[dict]:
     """Per unresolved approval: its ``request_id`` and who may answer it (requester, approvers)."""
