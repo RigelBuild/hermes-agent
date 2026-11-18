@@ -1045,3 +1045,37 @@ async def test_press_after_secondary_rebuilds_discord_adapter_resolves_with_pres
     assert entry.result == "once"
     assert entry.event.is_set()
     await new.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_rebuilt_adapter_allowlist_reaches_adopted_card(monkeypatch):
+    # The rebuild carries the old card view, so the view must take the rebuilt adapter's allowlist. A user
+    # the new adapter admits must be able to answer an adopted card, not be refused by the old snapshot.
+    for name in ("DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
+        monkeypatch.delenv(name, raising=False)
+    created: list[_FakeBot] = []
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+    entry.authority = {"requester_id": "22222", "approvers": ["22222"]}
+
+    old = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    await _connect(old, monkeypatch, created)
+    old._allowed_user_ids = {"11111"}
+    card = _capture_card(created[0])
+    assert (await old.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
+
+    new = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    await _connect(new, monkeypatch, created)
+    new._allowed_user_ids = {"22222"}
+    new.adopt_exec_approval_views(old)
+
+    custom_id = f"hermes:exec:{request_id}:once"
+    interaction, _response = _press(custom_id, message=card["message"], user_id="22222")
+    await created[-1]._events["on_interaction"](interaction)
+
+    assert entry.result == "once"
+    assert entry.event.is_set()
+    await old.disconnect()
+    await new.disconnect()
