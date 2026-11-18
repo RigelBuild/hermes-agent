@@ -5797,9 +5797,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 withdraw_gateway_approval(session_key or "", request_id,
                                           "the approval card was lost in a platform reconnect")
                 continue
-            # Take the rebuilt adapter's allowlist, not the snapshot the old client held.
+            # The carry runs before connect(), so a copied allowlist would be the empty pre-connect set. Bind the view to
+            # this adapter instead, so each press reads the allowlist connect() sets.
             view.live_auth = self._component_live_auth
-            view.allowed_user_ids = self._allowed_user_ids
+            view.allowed_user_ids = lambda: self._allowed_user_ids
             self._exec_approval_views[request_id] = view
 
     async def _on_platform_interaction(self, interaction) -> None:
@@ -6629,8 +6630,9 @@ def _define_discord_view_classes() -> None:
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             from plugins.platforms.discord.adapter_component_auth import _component_check_auth
-            return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids, live_auth=self.live_auth)
+            # An adopted view holds a callable that reads its rebuilt adapter's allowlist at press time.
+            allowed = self.allowed_user_ids() if callable(self.allowed_user_ids) else self.allowed_user_ids
+            return _component_check_auth(interaction, allowed, self.allowed_role_ids, live_auth=self.live_auth)
 
         async def _gate(self, interaction: discord.Interaction, *, resolved_msg: Optional[str], unauth_msg: str, refusal=None) -> bool:
             """Reject (ephemerally) an already-resolved or unauthorized click, or one ``refusal(user_id)``
