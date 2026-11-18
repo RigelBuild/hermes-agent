@@ -349,3 +349,28 @@ class TestSummaryVisibleText:
         start = time.perf_counter()
         summary_visible_text("`" * 40000)
         assert time.perf_counter() - start < 0.5
+
+    @pytest.mark.parametrize("text,visible", [
+        ("## Goal\nFix the `<think>...</think>` stripping in the parser.\n## Progress\nDone A.\n## Next\nShip.",
+         "## Goal\nFix the `` stripping in the parser.\n## Progress\nDone A.\n## Next\nShip."),
+        ("## Goal\nShip.\n## Notes\nThe `<thinking>a</thinking>` case is covered.",
+         "## Goal\nShip.\n## Notes\nThe `` case is covered."),
+        ("## Goal\nFix `<think>x</think>` parse.\n<think>PRIVATE_THINK", "## Goal\nFix `` parse."),
+    ])
+    def test_closed_pair_inside_inline_span_keeps_the_prefix(self, text: str, visible: str) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        assert summary_visible_text(text) == visible
+
+    def test_reasoning_between_two_tag_spans_is_cut(self) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        out = summary_visible_text("`<think>`PRIVATE_THINK\nmore PRIVATE_THINK\n`</think>`\n## Goal\nREAL")
+        assert "PRIVATE_THINK" not in out
+        assert out.endswith("## Goal\nREAL")
+
+    def test_span_before_line_end_arg_closer_survives(self) -> None:
+        from agent.think_scrubber import summary_visible_text
+
+        text = "## Goal\n- Parser: `<arg_key>` fragments end with </arg_value>\n## Next\nShip."
+        assert summary_visible_text(text) == text

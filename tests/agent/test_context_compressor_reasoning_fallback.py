@@ -250,3 +250,29 @@ def test_inline_tool_call_mention_survives_on_micro_path():
     with patch("agent.auxiliary_client.call_llm", return_value=_micro_response(summary)):
         out = _compressor()._micro_summarize_one("user: hi\nassistant: hello")
     assert out == summary
+
+
+# F3: a closed reasoning pair inside one inline span must not cut the summary text before it.
+PAIR_IN_SPAN_SHAPES = [
+    ("## Goal\nFix the `<think>...</think>` stripping in the parser.\n## Next\nShip.",
+     "## Goal\nFix the `` stripping in the parser.\n## Next\nShip."),
+    ("## Goal\nShip.\n## Notes\nThe `<thinking>a</thinking>` case is covered.",
+     "## Goal\nShip.\n## Notes\nThe `` case is covered."),
+    ("## Goal\nFix `<think>x</think>` parse.\n<think>PRIVATE_THINK", "## Goal\nFix `` parse."),
+]
+
+
+@pytest.mark.parametrize("reply,visible", PAIR_IN_SPAN_SHAPES)
+def test_pair_in_span_keeps_prefix_on_compressor_path(reply, visible):
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=reply))])
+    with patch("agent.context_compressor.call_llm", return_value=response):
+        out = _compressor()._generate_summary(_turns())
+    assert out is not None
+    assert out.endswith(visible)
+
+
+@pytest.mark.parametrize("reply,visible", PAIR_IN_SPAN_SHAPES)
+def test_pair_in_span_keeps_prefix_on_micro_path(reply, visible):
+    with patch("agent.auxiliary_client.call_llm", return_value=_micro_response(reply)):
+        out = _compressor()._micro_summarize_one("user: hi\nassistant: hello")
+    assert out == visible
