@@ -278,8 +278,16 @@ def holds_admission(authority, session_id) -> bool:
                 "SELECT 1 FROM session_admissions WHERE target_session_id IN (?,?) "
                 "AND status IN ('queued','started','unknown') LIMIT 1", sids):
             return True
+        # A steer transfer rides on the claim of an earlier admission on the same session: its row carries
+        # that head's ``(owner_epoch, generation)`` and is not a turn of its own. The head decides, so a
+        # steer row (bound to a lower-``seq`` claim) is skipped. An unattended or own-claim row shares no
+        # earlier claim and still decides.
         latest = authority.db._read_one(
-            "SELECT * FROM session_admissions WHERE target_session_id IN (?,?) ORDER BY seq DESC LIMIT 1", sids)
+            "SELECT a.* FROM session_admissions a WHERE a.target_session_id IN (?,?) "
+            "AND NOT (a.status = 'terminal' AND a.owner_epoch IS NOT NULL AND EXISTS ("
+            "  SELECT 1 FROM session_admissions h WHERE h.target_session_id = a.target_session_id "
+            "  AND h.seq < a.seq AND h.owner_epoch = a.owner_epoch AND h.generation = a.generation)) "
+            "ORDER BY a.seq DESC LIMIT 1", sids)
         return latest is not None and not _restart_interrupted(authority, latest)
     except Exception as exc:
         if not getattr(authority, 'retiring', False):

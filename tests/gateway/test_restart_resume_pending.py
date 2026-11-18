@@ -745,6 +745,43 @@ async def test_compression_child_follows_its_root_admission(tmp_path, monkeypatc
     assert adapter.handle_message.await_count == resumes
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("head_outcome", ["interrupted", "completed"])
+async def test_steer_transfer_does_not_decide_the_session_latest_admission(tmp_path, monkeypatch, head_outcome):
+    """A later input steered into the running head settles with it: the restart rewrites it to
+    ``terminal/interrupted`` with no retained result, so it is the latest row by ``seq`` but is not a
+    turn of its own. The head decides: an interrupted head resumes, a completed head holds (RIG-10319)."""
+    from hermes_state_runtime import (admit_session_input, begin_runtime_epoch, claim_session_input,
+                                      recover_session_inputs, settle_session_input, steer_session_input)
+    db, authority = _restart_authority(tmp_path, monkeypatch)
+    entry = _auto_resume_entry("agent:main:telegram:dm:steered-chat", "steered-chat")
+    with db:
+        admit_session_input(db, epoch=authority.epoch, principal_id='person', session_id='s',
+                            request_id='head-turn', payload={'text': 'head'})
+        head = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        follower = admit_session_input(db, epoch=authority.epoch, principal_id='person', session_id='s',
+                                       request_id='steered-follow', payload={'text': 'also this'})
+        steer_session_input(db, epoch=authority.epoch, admission_id=follower['admission_id'],
+                            generation=head['generation'])
+        # The owner settles the head once, with its own result envelope, then the restart fences what is
+        # still bound to the claim.
+        if head_outcome == 'interrupted':
+            settle_session_input(db, epoch=authority.epoch, admission_id=head['admission_id'],
+                                 generation=head['generation'], outcome='interrupted',
+                                 result=_interrupted_result(GATEWAY_RESTART_CAUSE))
+        else:
+            settle_session_input(db, epoch=authority.epoch, admission_id=head['admission_id'],
+                                 generation=head['generation'], outcome='completed',
+                                 result={'final_response': 'done', 'completed': True})
+        boot = begin_runtime_epoch(db, instance_id='restart')
+        recover_session_inputs(db, epoch=boot)
+        scheduled, adapter = await _startup_auto_resume(authority, entry)
+
+    assert scheduled == (1 if head_outcome == 'interrupted' else 0)
+    assert adapter.handle_message.await_count == (1 if head_outcome == 'interrupted' else 0)
+
+
+
 def test_restart_and_shutdown_notices_say_the_turn_continues():
     """(e) The notice must match the resume: the interrupted turn is not sent again, its session is
     (RIG-10319)."""
