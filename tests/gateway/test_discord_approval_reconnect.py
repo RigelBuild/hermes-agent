@@ -5,10 +5,12 @@ store of the client that sent it. A press on an older client's card is dropped b
 with no reply, so the agent turn never resumes. The adapter answers these presses itself.
 """
 
+import asyncio
 import logging
+import time
 import uuid
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -55,6 +57,7 @@ class _FakeBot:
         self.application_id = 999
         self.user = SimpleNamespace(id=999, name="Hermes")
         self._events = {}
+        self._closed = asyncio.Event()
         self.tree = SimpleNamespace(
             sync=AsyncMock(return_value=[]),
             fetch_commands=AsyncMock(return_value=[]),
@@ -71,11 +74,15 @@ class _FakeBot:
         return fn
 
     async def start(self, token):
+        # A live websocket runs until closed. Returning early would make the adapter's gateway task exit and
+        # be treated as a post-startup fatal, which re-queues the reconnected adapter.
         if "on_ready" in self._events:
             await self._events["on_ready"]()
+        await self._closed.wait()
 
     async def close(self):
-        return None
+        self._closed.set()
+
 
 
 async def _connect(adapter, monkeypatch, created):
@@ -761,3 +768,46 @@ async def test_authorized_unmatched_press_on_pending_card_resolves_request(monke
     assert entry.result == "once"
     assert entry.event.is_set()
     await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_press_after_runner_rebuilds_discord_adapter_resolves_with_pressed_choice(monkeypatch):
+    # RIG-10927 H2: the incident path. Adapter A sends the card, then fails with the stale-websocket fatal
+    # (retryable). The runner's _reconnect_failed_platform builds a NEW adapter B. A press on B must end the
+    # pending wait with the pressed choice, not hang until /stop.
+    from gateway.config import Platform
+    from tests.gateway.test_platform_reconnect import _make_runner
+    created: list[_FakeBot] = []
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+
+    old = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    await _connect(old, monkeypatch, created)
+    old._allowed_user_ids = {"11111"}
+    card = _capture_card(created[0])
+    assert (await old.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
+
+    runner = _make_runner()
+    runner.config.platforms[Platform.DISCORD] = PlatformConfig(enabled=True, token="test-token")
+    runner.stop = AsyncMock()
+    runner._sync_voice_mode_state_to_adapter = MagicMock()
+    runner.adapters[Platform.DISCORD] = old
+    old._set_fatal_error("discord_websocket_health_stale", "websocket stalled", retryable=True)
+    await runner._handle_adapter_fatal_error(old)
+
+    new = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    await _connect(new, monkeypatch, created)
+    new._allowed_user_ids = {"11111"}
+    with patch.object(runner, "_create_adapter", return_value=new):
+        await runner._reconnect_failed_platform(Platform.DISCORD, time.monotonic() + 1)
+    assert runner.adapters[Platform.DISCORD] is new
+
+    custom_id = f"hermes:exec:{request_id}:once"
+    interaction, response = _press(custom_id, message=card["message"])
+    await created[-1]._events["on_interaction"](interaction)
+
+    assert entry.result == "once"
+    assert entry.event.is_set()
+    await new.disconnect()
