@@ -605,6 +605,81 @@ async def test_startup_auto_resume_skips_unauthorized_owner():
 
 
 @pytest.mark.asyncio
+async def test_startup_auto_resume_schedules_session_whose_admissions_are_all_terminal(tmp_path, monkeypatch):
+    """A resume-pending session whose admission rows are all settled history owns no FIFO, so the
+    restart-interrupted turn must resume (RIG-10319)."""
+    from tests.gateway.test_session_authority_cancel_settlement import _authority, _submit
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    runner, adapter = make_restart_runner()
+    runner.session_authority = authority
+    source = make_restart_source(chat_id="terminal-chat")
+    entry = SessionEntry(
+        session_key="agent:main:telegram:dm:terminal-chat",
+        session_id="s",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {entry.session_key: entry}
+    adapter.handle_message = AsyncMock()
+    with db:
+        await _submit(authority, 'interrupted-turn')
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE session_admissions SET status='terminal', outcome='interrupted' "
+            "WHERE request_id='interrupted-turn'"))
+        scheduled = runner._schedule_resume_pending_sessions()
+        await asyncio.sleep(0)
+
+    assert scheduled == 1
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held_status", ["queued", "started", "unknown"])
+async def test_startup_auto_resume_skips_session_with_a_pending_admission(tmp_path, monkeypatch, held_status):
+    """A pending admission (queued, started or unknown) belongs to the canonical FIFO, which owns the
+    restart decision, so the legacy synthetic resume must not race it."""
+    from tests.gateway.test_session_authority_cancel_settlement import _authority, _submit
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    runner, adapter = make_restart_runner()
+    runner.session_authority = authority
+    source = make_restart_source(chat_id="pending-chat")
+    entry = SessionEntry(
+        session_key="agent:main:telegram:dm:pending-chat",
+        session_id="s",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {entry.session_key: entry}
+    adapter.handle_message = AsyncMock()
+    with db:
+        await _submit(authority, 'pending-turn')
+        claim = (authority.epoch, 1) if held_status == 'started' else (None, None)
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE session_admissions SET status=?, owner_epoch=?, generation=? WHERE request_id='pending-turn'",
+            (held_status, *claim)))
+        scheduled = runner._schedule_resume_pending_sessions()
+        await asyncio.sleep(0)
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+
+
+
+@pytest.mark.asyncio
 async def test_reconnect_reschedule_is_platform_scoped():
     """The platform filter limits the pass to that platform's sessions, so
     reconnecting one platform never resumes another's pending session."""
