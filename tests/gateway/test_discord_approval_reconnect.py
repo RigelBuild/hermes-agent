@@ -1005,3 +1005,43 @@ async def test_unmatched_press_for_a_choice_the_card_lacks_resolves_nothing(monk
     assert entry.result is None
     assert not entry.event.is_set()
     await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_press_after_secondary_rebuilds_discord_adapter_resolves_with_pressed_choice(monkeypatch):
+    # The secondary-profile rebuild path: adapter A sends the card, then a retryable fatal makes
+    # _secondary_reconnect_attempt build adapter B with A as the predecessor. A press on B must still
+    # resolve the pending request with the pressed choice, not wait for /stop.
+    from gateway.config import Platform
+    from tests.gateway.test_multiplex_adapter_registry import (
+        _install_secondary_reconnect_context,
+        _secondary_recovery_runner,
+    )
+    created: list[_FakeBot] = []
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+
+    old = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    await _connect(old, monkeypatch, created)
+    old._allowed_user_ids = {"11111"}
+    card = _capture_card(created[0])
+    assert (await old.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
+
+    new = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    await _connect(new, monkeypatch, created)
+    new._allowed_user_ids = {"11111"}
+    runner = _secondary_recovery_runner()
+    _install_secondary_reconnect_context(monkeypatch, runner, new)
+    adapter, success = await runner._secondary_reconnect_attempt("reviewer", Platform.DISCORD, old)
+    assert adapter is new
+    assert success is True
+
+    custom_id = f"hermes:exec:{request_id}:once"
+    interaction, _response = _press(custom_id, message=card["message"])
+    await created[-1]._events["on_interaction"](interaction)
+
+    assert entry.result == "once"
+    assert entry.event.is_set()
+    await new.disconnect()
