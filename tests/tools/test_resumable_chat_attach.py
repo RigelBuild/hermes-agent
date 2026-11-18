@@ -143,7 +143,7 @@ async def test_submit_uses_the_input_id_it_was_given():
             return {"admission_id": "adm-10342"}
 
     def submitted():
-        return [params for method, params in sent if method == "prompt.submit"][0]
+        return next(params for method, params in sent if method == "prompt.submit")
 
     snapshot = {"stored_session_id": SESSION_ID, "execution_generation": 3, "pending": [], "info": {}}
     await GatewayChatView(Peer(), snapshot, quiet=True, input_id=INPUT_ID).submit("hello")

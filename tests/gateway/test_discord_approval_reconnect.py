@@ -540,7 +540,7 @@ async def test_orphan_press_naming_another_cards_message_is_refused(monkeypatch,
     entry_a = _queue_entry(monkeypatch, session_a, request_a)
     _queue_entry(monkeypatch, session_b, request_b)
 
-    card_a = _capture_card(created[0], message_id=1111)
+    _card_a = _capture_card(created[0], message_id=1111)
     assert (await adapter.send_exec_approval(
         chat_id="555", command="rm x", session_key=session_a, request_id=request_a)).success is True
     card_b = _capture_card(created[0], message_id=2222)
