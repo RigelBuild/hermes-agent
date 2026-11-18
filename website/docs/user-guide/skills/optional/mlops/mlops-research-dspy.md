@@ -83,7 +83,7 @@ response = qa(question="What is the capital of France?")
 print(response.answer)  # "Paris"
 ```
 
-### Chain of Thought Reasoning
+### ChainOfThought: Rationale Before Answer
 
 ```python
 import dspy
@@ -91,17 +91,17 @@ import dspy
 lm = dspy.Claude(model="claude-sonnet-4-5-20250929")
 dspy.settings.configure(lm=lm)
 
-# Use ChainOfThought for better reasoning
+# Use ChainOfThought for better answers
 class MathProblem(dspy.Signature):
     """Solve math word problems."""
     problem = dspy.InputField()
     answer = dspy.OutputField(desc="numerical answer")
 
-# ChainOfThought generates reasoning steps automatically
+# ChainOfThought generates intermediate steps automatically
 cot = dspy.ChainOfThought(MathProblem)
 
 response = cot(problem="If John has 5 apples and gives 2 to Mary, how many does he have?")
-print(response.rationale)  # Shows reasoning steps
+print(response.rationale)  # Shows the intermediate steps
 print(response.answer)     # "3"
 ```
 
@@ -142,17 +142,17 @@ result = predictor(context="Paris is the capital of France",
 ```
 
 #### dspy.ChainOfThought
-Generates reasoning steps before answering:
+Generates rationale steps before answering:
 
 ```python
 cot = dspy.ChainOfThought("question -> answer")
 result = cot(question="Why is the sky blue?")
-print(result.rationale)  # Reasoning steps
+print(result.rationale)  # Intermediate steps
 print(result.answer)     # Final answer
 ```
 
 #### dspy.ReAct
-Agent-like reasoning with tools:
+Agent-style loop with tools:
 
 ```python
 from dspy.predict import ReAct
@@ -172,7 +172,7 @@ result = react(question="When was Python created?")
 ```
 
 #### dspy.ProgramOfThought
-Generates and executes code for reasoning:
+Generates and executes code to work out answers:
 
 ```python
 pot = dspy.ProgramOfThought("question -> answer")
@@ -345,7 +345,7 @@ dspy.settings.configure(lm=lm)
 cheap_lm = dspy.OpenAI(model="gpt-3.5-turbo")
 strong_lm = dspy.Claude(model="claude-sonnet-4-5-20250929")
 
-# Use cheap model for retrieval, strong model for reasoning
+# Use cheap model for retrieval, strong model for hard questions
 with dspy.settings.context(lm=cheap_lm):
     context = retriever(question)
 
@@ -509,7 +509,7 @@ print(f"Improvement: {score_after - score_before:.2%}")
 # Start with Predict
 qa = dspy.Predict("question -> answer")
 
-# Add reasoning if needed
+# Add intermediate steps if needed
 qa = dspy.ChainOfThought("question -> answer")
 
 # Add optimization when you have data
@@ -537,7 +537,7 @@ class SummarizeArticle(dspy.Signature):
 # Create diverse training examples
 trainset = [
     dspy.Example(question="factual", answer="...).with_inputs("question"),
-    dspy.Example(question="reasoning", answer="...").with_inputs("question"),
+    dspy.Example(question="multi-step", answer="...").with_inputs("question"),
     dspy.Example(question="calculation", answer="...").with_inputs("question"),
 ]
 
