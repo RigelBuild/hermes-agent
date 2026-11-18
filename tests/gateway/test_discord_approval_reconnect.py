@@ -715,6 +715,39 @@ async def test_lost_view_press_settles_pending_request_as_cancelled(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_unauthorized_lost_view_press_leaves_the_request_pending(monkeypatch):
+    # A press on a card whose view is gone must not withdraw the request for a clicker the adapter refuses:
+    # the same gates as a live card apply first, so an outsider cannot end someone else's approval.
+    for name in ("DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
+        monkeypatch.delenv(name, raising=False)
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    created: list[_FakeBot] = []
+    await _connect(adapter, monkeypatch, created)
+    adapter._allowed_user_ids = {"11111"}
+
+    session = "agent:other:discord:555"
+    request_id = uuid.uuid4().hex
+    entry = _queue_entry(monkeypatch, session, request_id)
+
+    card = _capture_card(created[0])
+    assert (await adapter.send_exec_approval(
+        chat_id="555", command="rm x", session_key=session, request_id=request_id)).success is True
+
+    adapter._exec_approval_views.pop(request_id)
+    custom_id = f"hermes:exec:{request_id}:once"
+    on_interaction = created[0]._events["on_interaction"]
+    interaction, response = _press(custom_id, message=card["message"], user_id="99999")
+    await on_interaction(interaction)
+
+    assert not entry.event.is_set()
+    assert entry.result is None
+    assert entry.cancelled is None
+    assert request_id in [e.data.get("request_id") for e in approval._gateway_queues.get(session, [])]
+    response.send_message.assert_awaited_once()
+    assert response.send_message.await_args.args[0] == discord_platform._unauthorized()
+    await adapter.disconnect()
+
+@pytest.mark.asyncio
 async def test_unauthorized_unmatched_press_on_pending_card_resolves_nothing(monkeypatch):
     # RIG-10927 authority: a press that reaches the unmatched fallback must not settle a pending request for a user
     # the card's own gates refuse. Only the one-click requester (or an admin) may answer it.
