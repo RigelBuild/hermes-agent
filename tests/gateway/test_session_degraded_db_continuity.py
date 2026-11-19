@@ -30,7 +30,7 @@ from unittest.mock import patch
 SESSION_ID = "degraded-db-continuity-session"
 CHAT_ID = "-1001234567890"
 THREAD_ID = "42"
-SESSION_KEY = "agent:orion:telegram:group:-1001234567890:8148316720"
+SESSION_KEY = "agent:route-a:telegram:group:-1001234567890:8148316720"
 
 
 def _make_gateway_agent(session_db):
@@ -57,9 +57,9 @@ def _make_gateway_agent(session_db):
             gateway_session_key=SESSION_KEY,
         )
     # The multiplexed profile scope would resolve the active profile name to
-    # the route's profile (e.g. "orion"); pin it so the row + origin_json
+    # the route's profile (e.g. "route-a"); pin it so the row + origin_json
     # carry the profile deterministically.
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="orion"):
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="route-a"):
         agent._ensure_db_session()
     return agent
 
@@ -82,7 +82,7 @@ class TestEnsureDbSessionPersistsRoutingIdentity:
                 assert row["user_id"] == "8148316720"
                 assert row["display_name"] == "Test Group"
                 assert row["source"] == "telegram"
-                assert row["profile_name"] == "orion"
+                assert row["profile_name"] == "route-a"
                 origin = json.loads(row["origin_json"])
                 assert origin["platform"] == "telegram"
                 assert origin["chat_id"] == CHAT_ID
@@ -91,7 +91,7 @@ class TestEnsureDbSessionPersistsRoutingIdentity:
                 assert origin["user_id"] == "8148316720"
                 assert origin["user_name"] == "testuser"
                 assert origin["thread_id"] == THREAD_ID
-                assert origin["profile"] == "orion"
+                assert origin["profile"] == "route-a"
             finally:
                 db.close()
 
