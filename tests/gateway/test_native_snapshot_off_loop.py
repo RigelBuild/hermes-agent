@@ -57,3 +57,33 @@ async def test_slow_admission_read_does_not_block_the_loop(tmp_path, monkeypatch
     assert payload["text"] == "hello"
     assert ticks >= 10, ticks  # the loop kept running through the 0.5 s read
     assert calls == [{"session_id": "s1", "pending_only": False, "request_id": "m1"}]
+
+
+@pytest.mark.asyncio
+async def test_event_without_message_id_skips_the_legacy_read(tmp_path, monkeypatch):
+    """An event with no message id can match no legacy row, so it never reads the session's admissions."""
+    import hermes_state_runtime
+    from gateway.session_authority import SessionAuthority, initialize_session_authority
+    from gateway.session_envelope import snapshot_native
+    from gateway.session_ingress_context import native_callback, register_transport_home
+    from hermes_constants import get_hermes_home
+    from plugins.platforms.a2a.adapter import A2AAdapter
+
+    for key in ("A2A_ALLOWED_USERS", "A2A_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+    adapter = A2AAdapter(PlatformConfig(enabled=True))
+    runner.adapters = {Platform("a2a"): adapter}
+    await initialize_session_authority(runner, profile_id="default", instance_id="no-message-id")
+    register_transport_home(runner, None, get_hermes_home())
+    source = adapter.build_source(chat_id="ctx-2", chat_name="a2a:peer", chat_type="dm", user_id="peer",
+                                  user_name="peer")
+    event = MessageEvent(text="hello", message_type=MessageType.TEXT, message_id=None, source=source)
+    monkeypatch.setattr(runner.session_store, "lookup_by_session_key", lambda key: SimpleNamespace(session_id="s1"))
+    calls = []
+    monkeypatch.setattr(hermes_state_runtime, "list_session_admissions", lambda db, **kwargs: calls.append(kwargs) or [])
+    with native_callback(runner, event, get_hermes_home()):
+        payload = snapshot_native(runner, event)
+    assert payload["text"] == "hello"
+    assert calls == []

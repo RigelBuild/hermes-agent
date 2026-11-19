@@ -202,7 +202,7 @@ def _legacy_rows(runner, event, provenance):
     """The rows an exact persisted legacy retry of ``event`` could match: only this request's rows
     of its route's session, read through the (target, request_id) index. A blocking store read:
     ``prepare_native`` runs it in a worker thread."""
-    if provenance is None or getattr(runner.config, 'multiplex_profiles', False):
+    if provenance is None or event.message_id is None or getattr(runner.config, 'multiplex_profiles', False):
         return ()
     from hermes_state_runtime import list_session_admissions
     from gateway.session_authorities import active_authority
