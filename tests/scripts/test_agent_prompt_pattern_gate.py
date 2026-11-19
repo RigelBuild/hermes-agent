@@ -105,3 +105,55 @@ def test_shipped_gate_is_clean_on_the_tree():
     cfg = _cfg()
     findings = gate.scan(ROOT, cfg, gate.scoped_paths(ROOT, cfg))
     assert findings == [], [str(f) for f in findings]
+
+
+def test_stale_exception_fails_the_gate(tmp_path):
+    """An exception that matches no raw hit is reported stale, so the gate fails."""
+    gate = _load()
+    skill = tmp_path / "skills" / "x" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("Plain prose.\n", encoding="utf-8")
+    cfg = _cfg(exceptions=frozenset({"skills/x/SKILL.md:1"}))
+    findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
+    assert [str(f) for f in findings] == ["skills/x/SKILL.md:1: stale exception"]
+
+
+@pytest.mark.parametrize(
+    "config_text",
+    [
+        'globs = ["skills/**/SKILL.md"]\npattern = "(unclosed"\n',
+        'globs = [""]\npattern = "show your work"\n',
+    ],
+    ids=["bad-regex", "bad-glob"],
+)
+def test_invalid_config_exits_2(tmp_path, monkeypatch, config_text):
+    gate = _load()
+    bad = tmp_path / "bad.toml"
+    bad.write_text(config_text, encoding="utf-8")
+    load = gate.load_config
+    monkeypatch.setattr(gate, "load_config", lambda _path: load(bad))
+    assert gate.main(["--root", str(tmp_path)]) == 2
+
+
+@pytest.fixture
+def fixture_gate(monkeypatch):
+    """The shipped patterns with no exceptions, so a fixture tree is judged on its own lines."""
+    gate = _load()
+    shipped = gate.load_config
+    empty = dataclasses.replace(shipped(CONFIG), exceptions=frozenset())
+    monkeypatch.setattr(gate, "load_config", lambda _path: empty)
+    return gate
+
+
+def test_main_exit_code_follows_banned_line(tmp_path, fixture_gate):
+    skill = tmp_path / "skills" / "x" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("Show your work.\n", encoding="utf-8")
+    assert fixture_gate.main(["--root", str(tmp_path)]) == 1
+    skill.write_text("Plain prose.\n", encoding="utf-8")
+    assert fixture_gate.main(["--root", str(tmp_path)]) == 0
+
+
+def test_python_identifier_passes_but_prose_in_same_file_is_flagged():
+    text = "effort = reasoning_effort\nShow your work.\n"
+    assert _lines(text, path="agent/prompt_builder.py") == [2]

@@ -107,7 +107,7 @@ Every role is a **fresh, isolated agent** with no shared context:
 | **In-loop judges** | 3 | Balance per-pass cost vs evaluation stability |
 | **Final evaluation judges** | 7 | Higher statistical power for final comparison |
 | **Max tokens** | 4096 | Standard; 8192 for long-form (papers) |
-| **Judge type** | Chain-of-thought | 3x faster convergence on some tasks. Always use. |
+| **Judge type** | Per-criterion answers, then ranking | 3x faster convergence on some tasks. Always use. |
 | **Tiebreak** | Conservative (incumbent wins) | Prevents false positives — A must be genuinely beaten |
 | **Max passes** | 25 (constrained), 50 (remedy) | Safety cap; most converge by pass 10-15 |
 
@@ -145,7 +145,7 @@ User: [TASK] + [VERSION X] + [VERSION Y]
 (labels randomized — synthesizer doesn't know which is incumbent)
 ```
 
-#### Judge (Chain-of-Thought) — ALWAYS USE THIS VERSION
+#### Judge (Per-Criterion, Then Ranking) — ALWAYS USE THIS VERSION
 ```
 System: You are an independent evaluator. Decide on the evidence in the proposals.
 
@@ -362,7 +362,7 @@ Author B prompt: "Revise this paper draft to fix the identified problems. For ea
 change, cite the specific problem it addresses. Do not add claims not supported by 
 the provided experimental data."
 
-Judge prompt (CoT): "Compare three versions of this paper. For each, evaluate:
+Judge prompt (per-criterion): "Compare three versions of this paper. For each, evaluate:
 1. Factual accuracy against the provided results
 2. Clarity of the narrative and contribution
 3. Whether claims are properly hedged and supported
@@ -391,4 +391,4 @@ Then rank all three. RANKING: [best], [second], [worst]"
 
 **Cost-quality tradeoff**: Autoreason uses ~6x more compute per pass and typically runs more passes. This is a real tradeoff. The method trades compute for evaluation quality. On constrained tasks with mid-tier models, this tradeoff is strongly positive. On unconstrained tasks with frontier models, it's negative.
 
-**CoT judges reduce cost**: 1 CoT judge provides evaluation quality comparable to 3 standard judges, at ~40% cost savings. Always use CoT judges.
+**Per-criterion judges reduce cost**: 1 per-criterion judge provides evaluation quality comparable to 3 standard judges, at ~40% cost savings. Always use per-criterion judges.

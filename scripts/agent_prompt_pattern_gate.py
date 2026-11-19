@@ -22,6 +22,8 @@ Usage:
 
 Exit codes: 0 clean, 1 at least one finding, 2 configuration or I/O error.
 Each finding prints as ``<path>:<line>: disallowed prompt pattern``.
+A stale exception, an entry in ``exceptions`` that matches no raw hit,
+prints as ``<path>:<line>: stale exception``.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ from pathlib import Path
 
 CONFIG_NAME = "agent_prompt_pattern_gate.toml"
 FINDING_TEXT = "disallowed prompt pattern"
+STALE_TEXT = "stale exception"
 
 
 @dataclass(frozen=True)
@@ -51,9 +54,10 @@ class Config:
 class Finding:
     path: str
     line: int
+    text: str = FINDING_TEXT
 
     def __str__(self) -> str:
-        return f"{self.path}:{self.line}: {FINDING_TEXT}"
+        return f"{self.path}:{self.line}: {self.text}"
 
 
 def load_config(path: Path) -> Config:
@@ -124,22 +128,40 @@ def _segments_match(path: list[str], pat: list[str]) -> bool:
     return fnmatch.fnmatchcase(path[0], head) and _segments_match(path[1:], rest)
 
 
-def scan_text(path: str, text: str, cfg: Config) -> list[Finding]:
-    """Findings for one file's text. ``path`` is the repo-relative name used for exceptions."""
-    findings: list[Finding] = []
+def raw_hit_lines(text: str, cfg: Config) -> list[int]:
+    """1-based line numbers matched by ``pattern`` after every config key is blanked out."""
+    hits: list[int] = []
     for number, line in enumerate(text.split("\n"), start=1):
         for key in cfg.config_keys:
             line = key.sub(lambda m: " " * len(m.group(0)), line)
-        if cfg.pattern.search(line) and f"{path}:{number}" not in cfg.exceptions:
-            findings.append(Finding(path, number))
-    return findings
+        if cfg.pattern.search(line):
+            hits.append(number)
+    return hits
+
+
+def scan_text(path: str, text: str, cfg: Config) -> list[Finding]:
+    """Findings for one file's text. ``path`` is the repo-relative name used for exceptions."""
+    return [
+        Finding(path, number)
+        for number in raw_hit_lines(text, cfg)
+        if f"{path}:{number}" not in cfg.exceptions
+    ]
 
 
 def scan(root: Path, cfg: Config, paths: list[str]) -> list[Finding]:
+    """Findings for ``paths``; exceptions that match no raw hit are reported as stale."""
     findings: list[Finding] = []
+    hit_locations: set[str] = set()
     for rel in paths:
         text = (root / rel).read_text(encoding="utf-8", errors="replace")
-        findings.extend(scan_text(rel, text, cfg))
+        for number in raw_hit_lines(text, cfg):
+            location = f"{rel}:{number}"
+            hit_locations.add(location)
+            if location not in cfg.exceptions:
+                findings.append(Finding(rel, number))
+    for location in sorted(cfg.exceptions - hit_locations):
+        rel, _, number = location.rpartition(":")
+        findings.append(Finding(rel, int(number), STALE_TEXT))
     return findings
 
 
