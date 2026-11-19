@@ -307,3 +307,29 @@ def test_nonce_redeems_once():
     instance._self_start_tokens[(str(THREAD), "nonce")] = time.monotonic() + 60
     assert instance.redeem_self_start(source)
     assert not instance.redeem_self_start(source)
+
+
+@pytest.mark.asyncio
+async def test_self_authored_message_starts_no_session_or_reply(tmp_path, monkeypatch):
+    from gateway import discord_self_start
+
+    monkeypatch.setattr(
+        discord_self_start, "_path", lambda _home=None: tmp_path / "registry.json"
+    )
+    instance = adapter()
+    bot = instance._client.user
+    channel = Mock(spec=discord.TextChannel)
+    channel.id = PARENT
+    own = message()
+    own.id = THREAD
+    own.author = bot
+    own.channel = channel
+    handle = AsyncMock()
+    send = AsyncMock()
+    instance.handle_message = handle
+    instance.send = send
+
+    assert instance._discord_message_admission(own, claim=False) == (False, False)
+    assert not await instance._dispatch_discord_message(own)
+    handle.assert_not_awaited()
+    send.assert_not_awaited()
