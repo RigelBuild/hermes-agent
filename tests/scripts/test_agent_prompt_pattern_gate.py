@@ -115,7 +115,7 @@ def test_stale_exception_fails_the_gate(tmp_path):
     skill = tmp_path / "skills" / "x" / "SKILL.md"
     skill.parent.mkdir(parents=True)
     skill.write_text("Plain prose.\n", encoding="utf-8")
-    cfg = _cfg(exceptions=frozenset({"skills/x/SKILL.md:1"}), file_exceptions=frozenset())
+    cfg = _cfg(exceptions=frozenset({"skills/x/SKILL.md:1"}), symbol_exceptions=frozenset())
     findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
     assert [str(f) for f in findings] == ["skills/x/SKILL.md:1: stale exception"]
 
@@ -130,9 +130,34 @@ def test_stale_exception_fails_the_gate(tmp_path):
         'exceptions = ["agent/prompt_builder.py:1"]\n',
         'globs = ["skills/**/SKILL.md"]\n'
         'pattern = "show your work"\n'
-        'file_exceptions = ["agent/prompt_builder.md"]\n',
+        'symbol_exceptions = ["agent/prompt_builder.md:keep"]\n',
+        'globs = ["skills/**/SKILL.md"]\n'
+        'pattern = "show your work"\n'
+        'symbol_exceptions = ["agent/prompt_builder.py"]\n',
+        'globs = ["skills/**/SKILL.md"]\n'
+        'pattern = "show your work"\n'
+        'symbol_exceptions = ["agent/prompt_builder.py:not a symbol"]\n',
+        'globs = ["skills/**/SKILL.md"]\n'
+        'pattern = "show your work"\n'
+        'symbol_exceptions = ["agent/prompt_builder.py:Foo..bar"]\n',
+        'globs = ["skills/**/SKILL.md"]\n'
+        'pattern = "show your work"\n'
+        'symbol_exceptions = ["agent/prompt_builder.py:Foo.bar.baz"]\n',
+        'globs = ["skills/**/SKILL.md"]\n'
+        'pattern = "show your work"\n'
+        'symbol_exceptions = "agent/prompt_builder.py:keep"\n',
     ],
-    ids=["bad-regex", "bad-glob", "py-path-line-exception", "non-py-file-exception"],
+    ids=[
+        "bad-regex",
+        "bad-glob",
+        "py-path-line-exception",
+        "non-py-symbol-exception",
+        "symbol-without-colon",
+        "symbol-not-identifier",
+        "symbol-empty-part",
+        "symbol-nested-too-deep",
+        "symbol-not-list",
+    ],
 )
 def test_invalid_config_exits_2(tmp_path, monkeypatch, config_text):
     gate = _load()
@@ -149,7 +174,7 @@ def fixture_gate(monkeypatch):
     gate = _load()
     shipped = gate.load_config
     empty = dataclasses.replace(
-        shipped(CONFIG), exceptions=frozenset(), file_exceptions=frozenset()
+        shipped(CONFIG), exceptions=frozenset(), symbol_exceptions=frozenset()
     )
     monkeypatch.setattr(gate, "load_config", lambda _path: empty)
     return gate
@@ -186,52 +211,195 @@ def test_json_reasoning_key_in_prose_is_flagged():
     assert _lines(line) == [1]
 
 
-def test_file_exception_skips_whole_python_file(tmp_path):
+def test_symbol_exception_exempts_only_its_span(tmp_path):
     gate = _load()
     module = tmp_path / "agent" / "prompt_builder.py"
     module.parent.mkdir(parents=True)
-    module.write_text("Show your work.\nShow your work.\n", encoding="utf-8")
-    flagged = _cfg(exceptions=frozenset(), file_exceptions=frozenset())
-    assert len(gate.scan(tmp_path, flagged, gate.scoped_paths(tmp_path, flagged))) == 2
-    exempt = frozenset({"agent/prompt_builder.py"})
-    cfg = _cfg(exceptions=frozenset(), file_exceptions=exempt)
-    assert gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg)) == []
+    module.write_text(
+        'def keep():\n    return "Show your work."\n\n\nNOTE = "Show your work."\n',
+        encoding="utf-8",
+    )
+    flagged = _cfg(exceptions=frozenset(), symbol_exceptions=frozenset())
+    findings = gate.scan(tmp_path, flagged, gate.scoped_paths(tmp_path, flagged))
+    assert [str(f) for f in findings] == [
+        "agent/prompt_builder.py:2: disallowed prompt pattern",
+        "agent/prompt_builder.py:5: disallowed prompt pattern",
+    ]
+    exempt = frozenset({("agent/prompt_builder.py", "keep")})
+    cfg = _cfg(exceptions=frozenset(), symbol_exceptions=exempt)
+    findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
+    assert [str(f) for f in findings] == ["agent/prompt_builder.py:5: disallowed prompt pattern"]
 
 
-def test_file_exception_with_zero_raw_hits_is_stale(tmp_path):
+def test_symbol_exception_covers_decorator_and_comment_run_above(tmp_path):
+    gate = _load()
+    module = tmp_path / "agent" / "prompt_builder.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        "# Show your work in this note.\n"
+        "@decorator  # Show your work.\n"
+        "def keep():\n"
+        "    return 1\n"
+        "\n"
+        "# Show your work.\n"
+        "\n"
+        "def other():\n"
+        "    return 2\n",
+        encoding="utf-8",
+    )
+    exempt = frozenset({("agent/prompt_builder.py", "keep")})
+    cfg = _cfg(exceptions=frozenset(), symbol_exceptions=exempt)
+    findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
+    assert [str(f) for f in findings] == ["agent/prompt_builder.py:6: disallowed prompt pattern"]
+
+
+def test_symbol_exception_with_zero_raw_hits_is_stale(tmp_path):
+    gate = _load()
+    module = tmp_path / "agent" / "prompt_builder.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("def keep():\n    return 1\n", encoding="utf-8")
+    exempt = frozenset({("agent/prompt_builder.py", "keep")})
+    cfg = _cfg(exceptions=frozenset(), symbol_exceptions=exempt)
+    findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
+    assert [str(f) for f in findings] == ["agent/prompt_builder.py:0: stale symbol exception: keep"]
+
+
+def test_symbol_exception_naming_no_symbol_is_stale(tmp_path):
+    gate = _load()
+    module = tmp_path / "agent" / "prompt_builder.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("def keep():\n    return 1\n", encoding="utf-8")
+    gone = frozenset({("agent/prompt_builder.py", "gone")})
+    cfg = _cfg(exceptions=frozenset(), symbol_exceptions=gone)
+    findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
+    assert [str(f) for f in findings] == ["agent/prompt_builder.py:0: stale symbol exception: gone"]
+
+
+def test_symbol_exception_missing_from_tree_is_stale(tmp_path):
     gate = _load()
     module = tmp_path / "agent" / "prompt_builder.py"
     module.parent.mkdir(parents=True)
     module.write_text("Plain prose.\n", encoding="utf-8")
-    cfg = _cfg(exceptions=frozenset(), file_exceptions=frozenset({"agent/prompt_builder.py"}))
+    gone = frozenset({("agent/gone.py", "keep")})
+    cfg = _cfg(exceptions=frozenset(), symbol_exceptions=gone)
     findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
-    assert [str(f) for f in findings] == ["agent/prompt_builder.py:0: stale file exception"]
+    assert [str(f) for f in findings] == ["agent/gone.py:0: stale symbol exception: keep"]
 
 
-def test_file_exception_missing_from_tree_is_stale(tmp_path):
+def test_ambiguous_symbol_exception_exempts_nothing_and_fails(tmp_path, monkeypatch):
     gate = _load()
     module = tmp_path / "agent" / "prompt_builder.py"
     module.parent.mkdir(parents=True)
-    module.write_text("Plain prose.\n", encoding="utf-8")
-    cfg = _cfg(exceptions=frozenset(), file_exceptions=frozenset({"agent/gone.py"}))
+    module.write_text(
+        'def keep():\n    return "Show your work."\n\nkeep = "Walk me through your reasoning."\n',
+        encoding="utf-8",
+    )
+    exempt = frozenset({("agent/prompt_builder.py", "keep")})
+    cfg = _cfg(exceptions=frozenset(), symbol_exceptions=exempt)
     findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
-    assert [str(f) for f in findings] == ["agent/gone.py:0: stale file exception"]
+    assert [str(f) for f in findings] == [
+        "agent/prompt_builder.py:0: ambiguous symbol exception: keep",
+        "agent/prompt_builder.py:2: disallowed prompt pattern",
+        "agent/prompt_builder.py:4: disallowed prompt pattern",
+    ]
+    monkeypatch.setattr(gate, "load_config", lambda _path: cfg)
+    assert gate.main(["--root", str(tmp_path)]) == 1
 
 
-def test_markdown_exception_and_file_exception_in_one_tree(tmp_path):
+def test_unparseable_symbol_file_exits_2(tmp_path, monkeypatch):
+    gate = _load()
+    module = tmp_path / "agent" / "prompt_builder.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("def keep(:\n    return 1\n", encoding="utf-8")
+    exempt = frozenset({("agent/prompt_builder.py", "keep")})
+    cfg = _cfg(exceptions=frozenset(), symbol_exceptions=exempt)
+    monkeypatch.setattr(gate, "load_config", lambda _path: cfg)
+    assert gate.main(["--root", str(tmp_path)]) == 2
+
+
+def test_markdown_exception_and_symbol_exception_in_one_tree(tmp_path):
     gate = _load()
     skill = tmp_path / "skills" / "x" / "SKILL.md"
     skill.parent.mkdir(parents=True)
     skill.write_text("Show your work.\n", encoding="utf-8")
     module = tmp_path / "agent" / "prompt_builder.py"
     module.parent.mkdir(parents=True)
-    module.write_text("Show your work.\n", encoding="utf-8")
-    exempt = frozenset({"agent/prompt_builder.py"})
-    cfg = _cfg(exceptions=frozenset({"skills/x/SKILL.md:1"}), file_exceptions=exempt)
+    module.write_text("def keep():\n    return 'Show your work.'\n", encoding="utf-8")
+    exempt = frozenset({("agent/prompt_builder.py", "keep")})
+    cfg = _cfg(exceptions=frozenset({"skills/x/SKILL.md:1"}), symbol_exceptions=exempt)
     assert gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg)) == []
     cfg = _cfg(
         exceptions=frozenset({"skills/x/SKILL.md:1", "skills/x/SKILL.md:9"}),
-        file_exceptions=exempt,
+        symbol_exceptions=exempt,
     )
     findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
     assert [str(f) for f in findings] == ["skills/x/SKILL.md:9: stale exception"]
+
+
+def test_dotted_symbol_exempts_only_that_method(tmp_path):
+    gate = _load()
+    module = tmp_path / "agent" / "prompt_builder.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        "class Box:\n"
+        "    NOTE = 'Show your work.'\n"
+        "    def keep(self):\n"
+        "        return 'Show your work.'\n"
+        "    def other(self):\n"
+        "        return 'Show your work.'\n",
+        encoding="utf-8",
+    )
+    exempt = frozenset({("agent/prompt_builder.py", "Box.keep")})
+    cfg = _cfg(exceptions=frozenset(), symbol_exceptions=exempt)
+    findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
+    assert [str(f) for f in findings] == [
+        "agent/prompt_builder.py:2: disallowed prompt pattern",
+        "agent/prompt_builder.py:6: disallowed prompt pattern",
+    ]
+
+
+def _copied_findings(tmp_path, rel, text):
+    """Findings for ``rel`` after ``text`` is written there and scanned with the shipped config.
+
+    Other exempt files are absent from this tree, so their entries report stale; only ``rel`` counts.
+    """
+    gate = _load()
+    target = tmp_path / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    cfg = _cfg(exceptions=frozenset())
+    findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
+    return [str(f) for f in findings if f.path == rel]
+
+
+def test_banned_line_in_skill_review_prompt_is_flagged(tmp_path):
+    rel = "agent/background_review.py"
+    lines = (ROOT / rel).read_text(encoding="utf-8").split("\n")
+    opener = lines.index("_SKILL_REVIEW_PROMPT = (")
+    lines.insert(opener + 1, '    "Walk me through your reasoning. "')
+    assert _copied_findings(tmp_path, rel, "\n".join(lines)) == [
+        f"{rel}:{opener + 2}: disallowed prompt pattern"
+    ]
+
+
+def test_banned_line_in_build_summary_prompt_is_flagged(tmp_path):
+    rel = "agent/context_compressor.py"
+    lines = (ROOT / rel).read_text(encoding="utf-8").split("\n")
+    method = lines.index("    def _build_summary_prompt(")
+    opener = next(
+        i for i in range(method, len(lines)) if lines[i].strip() == "_summarizer_preamble = ("
+    )
+    lines.insert(opener + 1, '            "Walk me through your reasoning. "')
+    assert _copied_findings(tmp_path, rel, "\n".join(lines)) == [
+        f"{rel}:{opener + 2}: disallowed prompt pattern"
+    ]
+
+
+def test_banned_module_constant_is_flagged(tmp_path):
+    rel = "agent/background_review.py"
+    text = (ROOT / rel).read_text(encoding="utf-8")
+    if not text.endswith("\n"):
+        text += "\n"
+    line_no = text.count("\n") + 1
+    text += '_NEW_REVIEW_PROMPT = "Show your work."\n'
+    assert _copied_findings(tmp_path, rel, text) == [f"{rel}:{line_no}: disallowed prompt pattern"]
