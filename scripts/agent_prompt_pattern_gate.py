@@ -11,7 +11,8 @@ the same reason. This scanner is the hermes port of that gate.
 A line is flagged when the ``pattern`` matches it after every ``configKeys``
 match is blanked out. Config keys such as ``reasoning_effort: high`` or
 ``--reasoning`` are therefore never flagged. A flagged line is allowed only when
-its exact ``path:line`` appears in ``exceptions``.
+its exact ``path:line`` appears in ``exceptions``; those entries are markdown only.
+A ``.py`` file listed in ``file_exceptions`` is skipped whole.
 
 Config: ``agent_prompt_pattern_gate.toml`` beside this file. It is read with
 ``tomllib`` and has no third-party dependency.
@@ -48,6 +49,7 @@ class Config:
     pattern: re.Pattern[str]
     config_keys: tuple[re.Pattern[str], ...]
     exceptions: frozenset[str]
+    file_exceptions: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,15 @@ def load_config(path: Path) -> Config:
     exceptions = raw.get("exceptions", [])
     if not isinstance(exceptions, list) or not all(isinstance(e, str) for e in exceptions):
         raise ValueError("config: exceptions must be a list of strings")
+    if not all(e.rpartition(":")[0].endswith(".md") for e in exceptions):
+        raise ValueError(
+            "config: exceptions must be markdown; use file_exceptions for .py"
+        )
+    file_exceptions = raw.get("file_exceptions", [])
+    if not isinstance(file_exceptions, list) or not all(
+        isinstance(f, str) for f in file_exceptions
+    ):
+        raise ValueError("config: file_exceptions must be a list of strings")
 
     try:
         pattern = re.compile(pattern_src)
@@ -95,6 +106,7 @@ def load_config(path: Path) -> Config:
         pattern=pattern,
         config_keys=keys,
         exceptions=frozenset(exceptions),
+        file_exceptions=frozenset(file_exceptions),
     )
 
 
@@ -141,6 +153,8 @@ def raw_hit_lines(text: str, cfg: Config) -> list[int]:
 
 def scan_text(path: str, text: str, cfg: Config) -> list[Finding]:
     """Findings for one file's text. ``path`` is the repo-relative name used for exceptions."""
+    if path in cfg.file_exceptions:
+        return []
     return [
         Finding(path, number)
         for number in raw_hit_lines(text, cfg)
@@ -153,6 +167,8 @@ def scan(root: Path, cfg: Config, paths: list[str]) -> list[Finding]:
     findings: list[Finding] = []
     hit_locations: set[str] = set()
     for rel in paths:
+        if rel in cfg.file_exceptions:
+            continue
         text = (root / rel).read_text(encoding="utf-8", errors="replace")
         for number in raw_hit_lines(text, cfg):
             location = f"{rel}:{number}"

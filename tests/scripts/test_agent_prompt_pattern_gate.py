@@ -123,8 +123,11 @@ def test_stale_exception_fails_the_gate(tmp_path):
     [
         'globs = ["skills/**/SKILL.md"]\npattern = "(unclosed"\n',
         'globs = [""]\npattern = "show your work"\n',
+        'globs = ["skills/**/SKILL.md"]\n'
+        'pattern = "show your work"\n'
+        'exceptions = ["agent/prompt_builder.py:1"]\n',
     ],
-    ids=["bad-regex", "bad-glob"],
+    ids=["bad-regex", "bad-glob", "py-path-line-exception"],
 )
 def test_invalid_config_exits_2(tmp_path, monkeypatch, config_text):
     gate = _load()
@@ -154,6 +157,52 @@ def test_main_exit_code_follows_banned_line(tmp_path, fixture_gate):
     assert fixture_gate.main(["--root", str(tmp_path)]) == 0
 
 
-def test_python_identifier_passes_but_prose_in_same_file_is_flagged():
-    text = "effort = reasoning_effort\nShow your work.\n"
+def test_python_assignment_passes_but_prose_in_same_file_is_flagged():
+    text = 'reasoning_effort = "high"\nShow your work.\n'
     assert _lines(text, path="agent/prompt_builder.py") == [2]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'reasoning_effort = "high"',
+        "model.reasoning = x",
+        'kwargs["reasoning"] = x',
+    ],
+)
+def test_python_config_assignment_is_not_flagged(line):
+    assert _lines(line, path="agent/prompt_builder.py") == []
+
+
+def test_json_reasoning_key_in_prose_is_flagged():
+    line = 'Return JSON: {"reasoning": "<why>", "answer": "<final>"}'
+    assert _lines(line) == [1]
+
+
+def test_file_exception_skips_whole_python_file(tmp_path):
+    gate = _load()
+    module = tmp_path / "agent" / "prompt_builder.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("Show your work.\nShow your work.\n", encoding="utf-8")
+    flagged = _cfg(exceptions=frozenset(), file_exceptions=frozenset())
+    assert len(gate.scan(tmp_path, flagged, gate.scoped_paths(tmp_path, flagged))) == 2
+    exempt = frozenset({"agent/prompt_builder.py"})
+    cfg = _cfg(exceptions=frozenset(), file_exceptions=exempt)
+    assert gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg)) == []
+
+
+def test_markdown_exception_and_file_exception_in_one_tree(tmp_path):
+    gate = _load()
+    skill = tmp_path / "skills" / "x" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("Show your work.\n", encoding="utf-8")
+    module = tmp_path / "agent" / "prompt_builder.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("Show your work.\n", encoding="utf-8")
+    exempt = frozenset({"agent/prompt_builder.py"})
+    cfg = _cfg(exceptions=frozenset({"skills/x/SKILL.md:1"}), file_exceptions=exempt)
+    assert gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg)) == []
+    cfg = _cfg(exceptions=frozenset({"skills/x/SKILL.md:1", "skills/x/SKILL.md:9"}))
+    cfg = dataclasses.replace(cfg, file_exceptions=exempt)
+    findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
+    assert [str(f) for f in findings] == ["skills/x/SKILL.md:9: stale exception"]
