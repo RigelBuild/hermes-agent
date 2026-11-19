@@ -347,3 +347,82 @@ class TestDroppedBlockNotice:
         data = json.loads(handler({}))
         assert data["structuredContent"] == payload
         assert "[MCP content dropped" in data["result"]
+
+
+class TestOutputSchemaExtraProperties:
+    """An extra property beyond outputSchema passes through with a warning. Any other
+    output-schema violation still raises (SDK ``validate_tool_result``)."""
+
+    _SCHEMA = {
+        "type": "object",
+        "properties": {"id": {"type": "string"}, "start": {"type": "string"}},
+        "required": ["id"],
+        "additionalProperties": False,
+    }
+
+    def _session(self, schema=None):
+        from unittest.mock import MagicMock
+
+        from mcp.client.session import ClientSession
+
+        from tools import mcp_tool_transport
+
+        session = ClientSession(dispatcher=MagicMock())
+        session._tool_output_schemas["get_event"] = self._SCHEMA if schema is None else schema
+        mcp_tool_transport._tolerate_extra_output_properties("akiflow", session)
+        return session
+
+    @staticmethod
+    def _result(structured):
+        from mcp.types import CallToolResult
+
+        return CallToolResult(content=[], structured_content=structured)
+
+    def test_extra_property_passes_through_with_warning(self, caplog):
+        session = self._session()
+        result = self._result({"id": "e1", "edit_limited_to": "all"})
+        with caplog.at_level("WARNING", logger="tools.mcp_tool"):
+            asyncio.run(session.validate_tool_result("get_event", result))
+        assert result.structured_content == {"id": "e1", "edit_limited_to": "all"}
+        assert "akiflow" in caplog.text
+        assert "get_event" in caplog.text
+        assert "edit_limited_to" in caplog.text
+
+    def test_wrong_type_still_raises(self):
+        session = self._session()
+        with pytest.raises(RuntimeError, match="Invalid structured content returned by tool get_event"):
+            asyncio.run(session.validate_tool_result("get_event", self._result({"id": 7})))
+
+    def test_extra_property_plus_missing_required_still_raises(self):
+        session = self._session()
+        with pytest.raises(RuntimeError, match="Invalid structured content returned by tool get_event"):
+            asyncio.run(session.validate_tool_result("get_event", self._result({"edit_limited_to": "all"})))
+
+    def test_serve_session_installs_tolerance(self):
+        from mcp.client.session import ClientSession
+
+        from tools import mcp_tool
+
+        class _Negotiated(Exception):
+            pass
+
+        session = ClientSession(dispatcher=MagicMock())
+        session._tool_output_schemas["get_event"] = self._SCHEMA
+        task = mcp_tool.MCPServerTask("akiflow")
+        with patch.object(mcp_tool.MCPServerTask, "_negotiate_session", AsyncMock(side_effect=_Negotiated)):
+            with pytest.raises(_Negotiated):
+                asyncio.run(task._serve_session(session, 5))
+        result = self._result({"id": "e1", "edit_limited_to": "all"})
+        asyncio.run(session.validate_tool_result("get_event", result))
+        assert result.structured_content == {"id": "e1", "edit_limited_to": "all"}
+
+    def test_pattern_properties_schema_still_raises(self):
+        schema = {
+            "type": "object",
+            "patternProperties": {"^x-": {"type": "string"}},
+            "additionalProperties": False,
+        }
+        session = self._session(schema)
+        result = self._result({"x-ok": "a", "edit_limited_to": "all"})
+        with pytest.raises(RuntimeError, match="Invalid structured content returned by tool get_event"):
+            asyncio.run(session.validate_tool_result("get_event", result))
