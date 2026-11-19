@@ -168,3 +168,50 @@ async def test_same_principal_without_adapter_declaration_is_refused_by_native_a
         with pytest.raises(RuntimeStoreError, match="permission_denied") as refused:
             await authority.admit_native(event)
     assert refused.value.field == "user_not_authorized"
+
+
+
+@pytest.mark.asyncio
+async def test_exact_retry_of_a_legacy_admission_gets_the_legacy_payload(tmp_path, monkeypatch):
+    """A row admitted before provenance was stored is what an exact retry of its message gets back.
+    A real authority and session store: nothing stubs the route lookup. A new message id gets the provenance payload."""
+    import json
+    from copy import deepcopy
+
+    from gateway.session_authority import SessionAuthority, initialize_session_authority
+    from gateway.session_envelope import prepare_native, snapshot_native
+    from gateway.session_ingress_context import native_callback, register_transport_home
+    from hermes_constants import get_hermes_home
+    from hermes_state_runtime import list_session_admissions
+    from plugins.platforms.a2a.adapter import A2AAdapter
+
+    _clear_authz_env(monkeypatch)
+    monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+    adapter = A2AAdapter(PlatformConfig(enabled=True))
+    runner.adapters = {Platform("a2a"): adapter}
+    authority = await initialize_session_authority(
+        runner, profile_id="default", instance_id="a2a-legacy-retry"
+    )
+    register_transport_home(runner, None, get_hermes_home())
+    source = adapter.build_source(
+        chat_id="ctx-1", chat_name="a2a:peer", chat_type="dm", user_id="peer", user_name="peer"
+    )
+    event = _fresh_native_event(source, text="legacy text", message_id="m1")
+    with native_callback(runner, event, get_hermes_home()):
+        receipt = await authority.admit_native(event)
+    [row] = list_session_admissions(authority.db, session_id=receipt.ref.session_id, pending_only=False)
+    legacy = deepcopy(row["payload"])
+    legacy["native_text_v1"].pop("provenance")
+    authority.db._execute_write(lambda conn: conn.execute(
+        "UPDATE session_admissions SET payload_json=? WHERE admission_id=?",
+        (json.dumps(legacy), row["admission_id"])))
+
+    with native_callback(runner, event, get_hermes_home()):
+        assert await prepare_native(runner, event) == legacy
+        assert snapshot_native(runner, event) == legacy
+
+    retry = _fresh_native_event(source, text="legacy text", message_id="m2")
+    with native_callback(runner, retry, get_hermes_home()):
+        fresh = await prepare_native(runner, retry)
+    assert fresh["native_text_v1"]["provenance"]["platform"] == "a2a"

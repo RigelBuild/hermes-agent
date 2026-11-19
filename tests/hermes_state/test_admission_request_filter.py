@@ -64,3 +64,21 @@ def test_filtered_read_searches_the_request_index(db, monkeypatch, tmp_path):
         plans = [row[3] for sql in reads for row in plan_conn.execute('EXPLAIN QUERY PLAN ' + sql)]
     assert any('INDEX session_admissions_request' in plan for plan in plans), plans
     assert not any(plan.startswith('SCAN') for plan in plans), plans
+
+
+
+def test_request_index_is_created_on_an_existing_store(tmp_path):
+    """An older store gains ``session_admissions_request`` on its next writable open."""
+    path = tmp_path / 'state.db'
+    with closing(SessionDB(path)):
+        pass
+    raw = sqlite3.connect(path)
+    raw.execute('DROP INDEX IF EXISTS session_admissions_request')  # an older store
+    raw.commit()
+    raw.close()
+    with closing(SessionDB(path)):  # reopening migrates it
+        pass
+    with closing(sqlite3.connect(path)) as conn:
+        indexes = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='session_admissions'")}
+    assert 'session_admissions_request' in indexes
