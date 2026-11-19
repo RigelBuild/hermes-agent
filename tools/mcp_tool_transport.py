@@ -183,10 +183,11 @@ def _tolerate_extra_output_properties(server_name: str, session) -> None:
             extras = _unexpected_output_properties(list(errors))
             if extras is None:
                 raise
+            names = sorted(set(extras))
             logger.warning(
-                "MCP server '%s': tool '%s' returned structuredContent with undeclared properties %s; "
+                "MCP server '%s': tool '%s' returned structuredContent with undeclared properties %s (%d total); "
                 "passing the result through",
-                server_name, name, sorted(set(extras)))
+                server_name, name, names[:10], len(names))
 
     session.validate_tool_result = tolerant
 
@@ -297,7 +298,8 @@ class MCPServerTransportMixin:
         """Handshake, discover, publish readiness, then serve until a lifecycle event. Clears stale
         breaker state but leaves the session UNPROVEN: flapping transports handshake fine and drop
         moments later, so only keepalive/tool-call success clears the reconnect budget."""
-        # Every ClientSession funnels here; see _tolerate_extra_output_properties.
+        # Every MCPServerTask session funnels here (computer_use opens its own ClientSession);
+        # see _tolerate_extra_output_properties.
         _tolerate_extra_output_properties(self.name, session)
         self.initialize_result = await self._negotiate_session(session, connect_timeout)
         self.session = session
