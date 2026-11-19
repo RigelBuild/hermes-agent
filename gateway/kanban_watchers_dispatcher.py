@@ -219,7 +219,7 @@ class _KanbanDispatcher:
     def ready_nonempty(self) -> bool:
         """Is there a ready+assigned+unclaimed task on ANY board the dispatcher would spawn for?
 
-        Control-plane lanes (e.g. ``orion-cc``) are pulled by terminals via
+        Control-plane lanes (e.g. ``lane-cc``) are pulled by terminals via
         ``claim_task`` and never spawnable — a queue full of those is
         "correctly idle", not "stuck". The review column is probed only when
         review dispatch is on (same gate as the dispatcher): a task waiting

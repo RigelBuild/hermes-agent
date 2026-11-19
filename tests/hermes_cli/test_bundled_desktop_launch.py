@@ -138,8 +138,8 @@ class TestResolveBundleLayout:
         with pytest.raises(NotBundledApp):
             resolve_bundle_layout(checkout)
 
-    def test_a_sealed_tree_with_no_app_is_not_a_bundle(self, tmp_path):
-        # docker/nix shape: sealed repo, no agent-payload parent.
+    def test_a_locked_tree_with_no_app_is_not_a_bundle(self, tmp_path):
+        # docker/nix shape: read-only repo, no agent-payload parent.
         repo = tmp_path / "opt" / "hermes" / "repo"
         repo.mkdir(parents=True)
         with pytest.raises(NotBundledApp):
