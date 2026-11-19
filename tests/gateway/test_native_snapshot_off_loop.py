@@ -2,7 +2,7 @@
 the owner loop, and the read is bounded to the event's request."""
 
 import asyncio
-import time
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -34,28 +34,23 @@ async def test_slow_admission_read_does_not_block_the_loop(tmp_path, monkeypatch
     event = MessageEvent(text="hello", message_type=MessageType.TEXT, message_id="m1", source=source)
     monkeypatch.setattr(runner.session_store, "lookup_by_session_key", lambda key: SimpleNamespace(session_id="s1"))
     calls = []
+    loop = asyncio.get_running_loop()
+    loop_ran = threading.Event()
+    observed = []
 
-    def slow_list(db, **kwargs):
+    def blocking_list(db, **kwargs):
         assert db is authority.db
         calls.append(kwargs)
-        time.sleep(0.5)
+        # The loop sets loop_ran. It can run that callback only while this read is off the loop,
+        # so the wait returns at once off the loop and times out on it.
+        loop.call_soon_threadsafe(loop_ran.set)
+        observed.append(loop_ran.wait(timeout=5))
         return []
-    monkeypatch.setattr(hermes_state_runtime, "list_session_admissions", slow_list)
-    ticks = 0
-
-    async def ticker():
-        nonlocal ticks
-        while True:
-            ticks += 1
-            await asyncio.sleep(0.01)  # health: allow HX013 -- the loop's heartbeat under test
-    task = asyncio.create_task(ticker())
-    try:
-        with native_callback(runner, event, get_hermes_home()):
-            payload = await prepare_native(runner, event)
-    finally:
-        task.cancel()
+    monkeypatch.setattr(hermes_state_runtime, "list_session_admissions", blocking_list)
+    with native_callback(runner, event, get_hermes_home()):
+        payload = await prepare_native(runner, event)
     assert payload["text"] == "hello"
-    assert ticks >= 10, ticks  # the loop kept running through the 0.5 s read
+    assert observed == [True], "the admissions read blocked the event loop: loop_ran was not set within 5 s"
     assert calls == [{"session_id": "s1", "pending_only": False, "request_id": "m1"}]
 
 
