@@ -28,7 +28,9 @@ Each finding prints as ``<path>:<line>: disallowed prompt pattern``.
 A stale exception, an entry in ``exceptions`` that matches no raw hit,
 prints as ``<path>:<line>: stale exception``.
 A ``symbol_exceptions`` entry that names no symbol, whose span has no raw hit, or whose
-file is not scanned, prints as ``<path>:0: stale symbol exception``.
+file is not scanned, prints as ``<path>:0: stale symbol exception: <symbol>``.
+A name bound more than once in its file prints as ``<path>:0: ambiguous symbol exception: <symbol>``
+and exempts nothing; its raw hits still print.
 """
 
 from __future__ import annotations
@@ -46,6 +48,7 @@ CONFIG_NAME = "agent_prompt_pattern_gate.toml"
 FINDING_TEXT = "disallowed prompt pattern"
 STALE_TEXT = "stale exception"
 STALE_SYMBOL_TEXT = "stale symbol exception"
+AMBIGUOUS_SYMBOL_TEXT = "ambiguous symbol exception"
 
 
 @dataclass(frozen=True)
@@ -104,6 +107,8 @@ def load_config(path: Path) -> Config:
             raise ValueError(f"config: symbol_exceptions must be <.py path>:<symbol>: {entry}")
         if not symbol or not all(part.isidentifier() for part in symbol.split(".")):
             raise ValueError(f"config: symbol_exceptions has a bad symbol: {entry}")
+        if symbol.count(".") > 1:
+            raise ValueError(f"config: symbol_exceptions nests deeper than Class.member: {entry}")
         symbols.append((src, symbol))
 
     try:
@@ -209,11 +214,11 @@ def _exempt_spans(path: str, text: str, cfg: Config) -> dict[str, list[tuple[int
 
 
 def _covering_symbols(exempt: dict[str, list[tuple[int, int]]], number: int) -> list[str]:
-    """Exempt symbols whose span contains 1-based line ``number``."""
+    """Exempt symbols bound once in the file whose span contains 1-based line ``number``."""
     return [
         sym
         for sym, spans in exempt.items()
-        if any(first <= number <= last for first, last in spans)
+        if len(spans) == 1 and any(first <= number <= last for first, last in spans)
     ]
 
 
@@ -228,13 +233,18 @@ def scan_text(path: str, text: str, cfg: Config) -> list[Finding]:
 
 
 def scan(root: Path, cfg: Config, paths: list[str]) -> list[Finding]:
-    """Findings for ``paths``; stale exceptions and stale symbol exceptions are reported too."""
+    """Findings for ``paths``, plus stale and ambiguous exceptions."""
     findings: list[Finding] = []
     hit_locations: set[str] = set()
     hit_symbols: set[tuple[str, str]] = set()
+    ambiguous: set[tuple[str, str]] = set()
     for rel in paths:
         text = (root / rel).read_text(encoding="utf-8", errors="replace")
         exempt = _exempt_spans(rel, text, cfg)
+        for sym, spans in exempt.items():
+            if len(spans) > 1:
+                ambiguous.add((rel, sym))
+                findings.append(Finding(rel, 0, f"{AMBIGUOUS_SYMBOL_TEXT}: {sym}"))
         for number in raw_hit_lines(text, cfg):
             location = f"{rel}:{number}"
             hit_locations.add(location)
@@ -245,8 +255,8 @@ def scan(root: Path, cfg: Config, paths: list[str]) -> list[Finding]:
     for location in sorted(cfg.exceptions - hit_locations):
         rel, _, number = location.rpartition(":")
         findings.append(Finding(rel, int(number), STALE_TEXT))
-    for rel, sym in sorted(cfg.symbol_exceptions - hit_symbols):
-        findings.append(Finding(rel, 0, STALE_SYMBOL_TEXT))
+    for rel, sym in sorted(cfg.symbol_exceptions - hit_symbols - ambiguous):
+        findings.append(Finding(rel, 0, f"{STALE_SYMBOL_TEXT}: {sym}"))
     return findings
 
 

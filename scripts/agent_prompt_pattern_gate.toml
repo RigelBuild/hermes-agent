@@ -9,6 +9,8 @@
 # symbol_exceptions: "<repo-relative .py path>:<dotted symbol>" entries. A raw hit inside the source
 #   span of that top-level or class-nested def, class, or assignment is allowed. The span covers
 #   its decorators and the comment lines directly above it. A symbol with no raw hit is stale.
+#   A name bound twice in its file is ambiguous: it exempts nothing and is reported.
+#   A symbol nests at most one level, Class.member; deeper names are rejected at load.
 
 globs = [
   "skills/**/SKILL.md",
@@ -92,7 +94,6 @@ symbol_exceptions = [
   "agent/context_compressor.py:_STALE_REPLAY_PRUNE_KEYS",
   "agent/context_compressor.py:_reasoning_details_text_chars",
   "agent/context_compressor.py:_estimate_msg_budget_tokens",
-  "agent/context_compressor.py:ContextCompressor._call_summary_llm",
   "agent/context_compressor.py:ContextCompressor._find_inflight_user_task",
   "agent/context_compressor.py:ContextCompressor._native_anthropic_budget",
   "agent/context_compressor.py:ContextCompressor._finalize_compressed",

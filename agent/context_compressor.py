@@ -3790,7 +3790,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             },
             "messages": [{"role": "user", "content": prompt}], "route_info": _aux_route,
             # NO max_tokens: Anthropic/NIM wires forward it and a hard cap truncates summaries
-            # (thinking models burn it on reasoning). Timeout comes from call_llm config.
+            # (thinking models spend it on internal thought before the answer). Timeout comes from call_llm config.
         }
         # Pinned route (stall fallback) replaces task routing so the retry leaves the stalled backend.
         self._apply_summary_route(call_kwargs, _pinned_summary_call_kwargs())
@@ -3829,7 +3829,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         if self._compression_cancelled():
             raise AuxiliaryExplicitCancellation()
         self._note_aux_route_fallback(_aux_route)
-        # Stored summary = visible message content only; reasoning fields and think text never reach it
+        # Stored summary = visible message content only; hidden model fields and thought text never reach it
         # (RIG-10290 §3.1). Empty content takes the failure path below.
         msg = _coerce_llm_message(response)
         raw = msg if isinstance(msg, str) else _message_field(msg, "content")

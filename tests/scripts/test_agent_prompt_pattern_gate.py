@@ -142,6 +142,9 @@ def test_stale_exception_fails_the_gate(tmp_path):
         'symbol_exceptions = ["agent/prompt_builder.py:Foo..bar"]\n',
         'globs = ["skills/**/SKILL.md"]\n'
         'pattern = "show your work"\n'
+        'symbol_exceptions = ["agent/prompt_builder.py:Foo.bar.baz"]\n',
+        'globs = ["skills/**/SKILL.md"]\n'
+        'pattern = "show your work"\n'
         'symbol_exceptions = "agent/prompt_builder.py:keep"\n',
     ],
     ids=[
@@ -152,6 +155,7 @@ def test_stale_exception_fails_the_gate(tmp_path):
         "symbol-without-colon",
         "symbol-not-identifier",
         "symbol-empty-part",
+        "symbol-nested-too-deep",
         "symbol-not-list",
     ],
 )
@@ -257,7 +261,7 @@ def test_symbol_exception_with_zero_raw_hits_is_stale(tmp_path):
     exempt = frozenset({("agent/prompt_builder.py", "keep")})
     cfg = _cfg(exceptions=frozenset(), symbol_exceptions=exempt)
     findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
-    assert [str(f) for f in findings] == ["agent/prompt_builder.py:0: stale symbol exception"]
+    assert [str(f) for f in findings] == ["agent/prompt_builder.py:0: stale symbol exception: keep"]
 
 
 def test_symbol_exception_naming_no_symbol_is_stale(tmp_path):
@@ -268,7 +272,7 @@ def test_symbol_exception_naming_no_symbol_is_stale(tmp_path):
     gone = frozenset({("agent/prompt_builder.py", "gone")})
     cfg = _cfg(exceptions=frozenset(), symbol_exceptions=gone)
     findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
-    assert [str(f) for f in findings] == ["agent/prompt_builder.py:0: stale symbol exception"]
+    assert [str(f) for f in findings] == ["agent/prompt_builder.py:0: stale symbol exception: gone"]
 
 
 def test_symbol_exception_missing_from_tree_is_stale(tmp_path):
@@ -279,7 +283,38 @@ def test_symbol_exception_missing_from_tree_is_stale(tmp_path):
     gone = frozenset({("agent/gone.py", "keep")})
     cfg = _cfg(exceptions=frozenset(), symbol_exceptions=gone)
     findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
-    assert [str(f) for f in findings] == ["agent/gone.py:0: stale symbol exception"]
+    assert [str(f) for f in findings] == ["agent/gone.py:0: stale symbol exception: keep"]
+
+
+def test_ambiguous_symbol_exception_exempts_nothing_and_fails(tmp_path, monkeypatch):
+    gate = _load()
+    module = tmp_path / "agent" / "prompt_builder.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        'def keep():\n    return "Show your work."\n\nkeep = "Walk me through your reasoning."\n',
+        encoding="utf-8",
+    )
+    exempt = frozenset({("agent/prompt_builder.py", "keep")})
+    cfg = _cfg(exceptions=frozenset(), symbol_exceptions=exempt)
+    findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
+    assert [str(f) for f in findings] == [
+        "agent/prompt_builder.py:0: ambiguous symbol exception: keep",
+        "agent/prompt_builder.py:2: disallowed prompt pattern",
+        "agent/prompt_builder.py:4: disallowed prompt pattern",
+    ]
+    monkeypatch.setattr(gate, "load_config", lambda _path: cfg)
+    assert gate.main(["--root", str(tmp_path)]) == 1
+
+
+def test_unparseable_symbol_file_exits_2(tmp_path, monkeypatch):
+    gate = _load()
+    module = tmp_path / "agent" / "prompt_builder.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("def keep(:\n    return 1\n", encoding="utf-8")
+    exempt = frozenset({("agent/prompt_builder.py", "keep")})
+    cfg = _cfg(exceptions=frozenset(), symbol_exceptions=exempt)
+    monkeypatch.setattr(gate, "load_config", lambda _path: cfg)
+    assert gate.main(["--root", str(tmp_path)]) == 2
 
 
 def test_markdown_exception_and_symbol_exception_in_one_tree(tmp_path):
