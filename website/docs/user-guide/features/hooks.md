@@ -583,6 +583,15 @@ An approval directive may set `review: True` to run the smart reviewer first. It
 ESCALATE results still go to you for a decision. A DENY shows the reviewer's reason as a warning
 and also asks you; your approval allows this call once, while your denial or a timeout blocks it.
 
+An approval directive may also set `session_ttl_seconds` (a positive, finite number of seconds) so that a
+"session" answer expires after that long, measured on the wall clock so host sleep counts. Expiry is at
+exactly that many seconds. A timed grant never offers "Always" and is never saved to the permanent
+allowlist. Without the key, a session grant lasts for the session. A grant is also gone once its session
+is cleared or its process restarts; grants are never written to disk. The directive may set
+`allow_permanent: False` to hide "Always" for that key, and then "Always" is treated as a session answer.
+Neither key changes the reviewer order: a live grant still lets the reviewer run first, and a reviewer
+DENY still blocks.
+
 **Return value — rewrite the tool's arguments:**
 
 ```python
