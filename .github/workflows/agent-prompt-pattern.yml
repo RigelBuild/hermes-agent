@@ -1,0 +1,23 @@
+name: Agent prompt pattern gate
+
+# RIG-10290. Blocks agent-facing prompt text that asks a model to show, explain or walk
+# through its reasoning. The scanner and its config are scripts/agent_prompt_pattern_gate.py
+# and scripts/agent_prompt_pattern_gate.toml. Runs on every PR and every push to rigel-release.
+
+on:
+  pull_request:
+  push:
+    branches: [rigel-release]
+
+permissions:
+  contents: read
+
+jobs:
+  agent-prompt-pattern:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+
+      - name: Scan agent prompt surfaces
+        run: python3 scripts/agent_prompt_pattern_gate.py

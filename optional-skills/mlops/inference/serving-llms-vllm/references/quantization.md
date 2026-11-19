@@ -59,7 +59,7 @@ from openai import OpenAI
 
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="EMPTY")
 
-# Test complex reasoning
+# Check the answer quality on a multi-step question
 response = client.chat.completions.create(
     model="TheBloke/Llama-2-70B-AWQ",
     messages=[{"role": "user", "content": "Explain quantum entanglement"}]

@@ -1,0 +1,82 @@
+# Config for scripts/agent_prompt_pattern_gate.py (RIG-10290).
+#
+# globs: repo-relative patterns of agent-facing prompt text. Each file is scanned line by line.
+# exclude_globs: paths dropped after globbing.
+# pattern: a case-insensitive regex. A line that matches it is a finding.
+# config_keys: regexes blanked out of a line before `pattern` runs, so config terms such as
+#   `reasoning_effort: high` or `--reasoning max` are not flagged.
+# exceptions: exact markdown `path:line` strings allowed through. Keep each one to a real, reviewed hit.
+# file_exceptions: repo-relative .py paths skipped whole. List only files with raw hits after config_keys.
+
+globs = [
+  "skills/**/SKILL.md",
+  "optional-skills/**/SKILL.md",
+  "plugins/**/SKILL.md",
+  "skills/**/references/**/*.md",
+  "optional-skills/**/references/**/*.md",
+  "plugins/**/references/**/*.md",
+  "agent/prompt_builder.py",
+  "agent/system_prompt.py",
+  "agent/delegation_prompt.py",
+  "agent/learn_prompt.py",
+  "agent/plan_prompt.py",
+  "agent/background_review.py",
+  "agent/context_compressor*.py",
+  "agent/conversation_compression*.py",
+  "cron/scheduler_prompt.py",
+  "AGENTS.md",
+  "**/AGENTS.md",
+]
+exclude_globs = [
+  "**/node_modules/**",
+  # Vendored upstream docs (generated from each project's docs site). Edits here conflict on
+  # every upstream sync, so the gate leaves them alone.
+  "optional-skills/mlops/training/**",
+  "optional-skills/mlops/pytorch-fsdp/references/**",
+]
+
+pattern = "(?i)reasoning|chain of thought|chain-of-thought|thinking process|your thought process|explain (your|how you)|walk (me )?through (your|how)|show your work|step[- ]by[- ]step|think (out loud|aloud)|internal monologue|scratchpad"
+
+config_keys = [
+  "(?i)^\\s*[\"']?(?:reasonin[g]_effort|thinking[-_]level|thinkingLevel)[\"']?\\s*:",
+  "^\\s*--reasonin[g](?:[= ]|$)",
+  "(?i)\\b\\w*reasoning\\w*\\s*=(?!=)",
+  "(?i)\\[\\s*[\"']\\w*reasoning\\w*[\"']\\s*\\]\\s*=(?!=)",
+]
+
+exceptions = [
+  "agent/AGENTS.md:49",
+  "agent/AGENTS.md:101",
+  "optional-skills/creative/system-atlas/SKILL.md:25",
+  "optional-skills/devops/actual-setup/SKILL.md:105",
+  "optional-skills/devops/actual-setup/SKILL.md:111",
+  "optional-skills/devops/actual-setup/SKILL.md:121",
+  "optional-skills/devops/actual-setup/SKILL.md:126",
+  "optional-skills/devops/actual-setup/references/opencode.md:75",
+  "optional-skills/devops/actual-setup/references/opencode.md:77",
+  "optional-skills/devops/actual-setup/references/opencode.md:79",
+  "optional-skills/devops/actual-setup/references/opencode.md:80",
+  "optional-skills/mlops/evaluation/evaluating-llms-harness/SKILL.md:67",
+  "optional-skills/mlops/evaluation/evaluating-llms-harness/references/benchmark-guide.md:267",
+  "optional-skills/mlops/research/dspy/references/examples.md:77",
+  "optional-skills/mlops/research/dspy/references/examples.md:223",
+  "optional-skills/mlops/research/dspy/references/modules.md:70",
+  "optional-skills/mlops/research/dspy/references/modules.md:77",
+  "optional-skills/mlops/research/dspy/references/optimizers.md:147",
+  "optional-skills/mlops/saelens/references/README.md:8",
+  "optional-skills/mlops/simpo/references/datasets.md:71",
+  "optional-skills/research/research-paper-writing/references/paper-types.md:231",
+  "optional-skills/security/godmode/SKILL.md:91",
+  "optional-skills/security/godmode/references/jailbreak-templates.md:66",
+  "optional-skills/security/godmode/references/refusal-detection.md:106",
+  "skills/autonomous-ai-agents/hermes-agent/references/configuration.md:14",
+  "skills/autonomous-ai-agents/hermes-agent/references/slash-commands.md:41",
+]
+
+file_exceptions = [
+  "agent/background_review.py",
+  "agent/context_compressor.py",
+  "agent/context_compressor_telemetry.py",
+  "agent/conversation_compression.py",
+  "agent/conversation_compression_reply_anchor.py",
+]
