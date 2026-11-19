@@ -5,7 +5,7 @@ RIG-10290. Prompts that an agent reads or sends (skills, their references, the
 prompt-builder modules, the compressor's summary prompts, the scheduler prompt,
 and the repo AGENTS.md files) must not ask the model for its reasoning, thinking,
 chain of thought, or step-by-step narration. Those requests pull hidden reasoning
-into visible output, and the orion ``agent-prompt-pattern-gate`` blocks them for
+into visible output, and the source repo's agent-prompt-pattern gate blocks them for
 the same reason. This scanner is the hermes port of that gate.
 
 A line is flagged when the ``pattern`` matches it after every ``configKeys``
