@@ -1164,7 +1164,7 @@ def clear_thread_tool_whitelist() -> None:
 
 def _positive_ttl(value: Any) -> Optional[float]:
     """A hook's ``session_ttl_seconds`` when it is a positive number; anything else means no TTL."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < float("inf"):
         return None
     return float(value)
 

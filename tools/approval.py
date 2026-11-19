@@ -56,7 +56,7 @@ _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 _lock = threading.RLock()  # re-entrant: a card settle checks and resolves under one hold
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
-# Expiry (time.monotonic) of a session grant made with a TTL; a grant absent here never expires.
+# Expiry (time.time, wall clock, so host sleep counts) of a session grant made with a TTL; a grant absent here never expires.
 _session_approval_expiry: dict[str, dict[str, float]] = {}
 _session_yolo: set[str] = set()
 # Session keys whose launch YOLO (`hermes chat --yolo` session policy) was already seeded by
@@ -188,6 +188,9 @@ def resolve_gateway_approval(session_key: str, choice: str,
             effective_choice = choice
             if entry.data.get("smart_denied") and choice in {"session", "always"}:
                 effective_choice = "once"
+            if effective_choice == "always" and entry.data.get("allow_permanent") is False:
+                # The card never offered "Always" (a timed grant, or the plugin's allow_permanent=False).
+                effective_choice = "session"
             entry.result = effective_choice
             if reason:
                 entry.reason = reason
@@ -353,7 +356,7 @@ def approve_session(session_key: str, pattern_key: str, ttl_seconds: float | Non
         if ttl_seconds is None:
             expiry.pop(pattern_key, None)
         else:
-            expiry[pattern_key] = time.monotonic() + ttl_seconds
+            expiry[pattern_key] = time.time() + ttl_seconds
 
 
 def _release_permission_mode_dependents(session_key: str) -> None:
@@ -392,6 +395,7 @@ def clear_session(session_key: str) -> None:
         return
     with _lock:
         _session_approved.pop(session_key, None)
+        _session_approval_expiry.pop(session_key, None)
         _session_yolo.discard(session_key)
         _launch_yolo_applied.discard(session_key)
         _pending.pop(session_key, None)
@@ -479,7 +483,7 @@ def _approval_scope(session_key: str, pattern_key: str) -> str | None:
         permanent = _permanent_set()
         session = _session_approved.get(session_key, set())
         expiry = _session_approval_expiry.get(session_key, {})
-        now = time.monotonic()
+        now = time.time()
         for alias in aliases:
             deadline = expiry.get(alias)
             if deadline is not None and now >= deadline:
@@ -519,9 +523,12 @@ def load_permanent(patterns: set):
 
 
 def _persist_choice(session_key: str, choice: str, keys: list[str],
-                    ttl_seconds: float | None = None) -> None:
+                    ttl_seconds: float | None = None, allow_permanent: bool = True) -> None:
     """Persist a human ``session``/``always`` choice for each pattern key. ``once`` persists nothing.
-    ``ttl_seconds`` makes a session grant expire; a TTL'd grant is never written to the permanent list."""
+    ``ttl_seconds`` makes a session grant expire; a TTL'd grant is never written to the permanent list.
+    ``allow_permanent=False`` (the key's policy) turns "always" into a session grant, whatever the surface sent."""
+    if choice == "always" and not allow_permanent:
+        choice = "session"
     for key in keys:
         if choice not in ("session", "always"):
             continue
@@ -992,8 +999,9 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             description = f"{description}\n{_gate_note.text}"
     pending_body = pending_body() if pending_body else None
     one_shot = smart_denied or plugin_origin
-    # A plugin key may refuse "Always" (allow_permanent=False); a smart-DENY or plugin one-shot never offers it.
-    allow_permanent = not one_shot and allow_permanent_policy
+    # A plugin key may refuse "Always" (allow_permanent=False), and a timed grant never offers it. A smart-DENY or
+    # plugin one-shot never offers it either.
+    allow_permanent = not one_shot and allow_permanent_policy and session_ttl_seconds is None
 
     def deny(template: str, outcome: str, **fmt) -> dict:
         has_breaker = "{breaker}" in template
@@ -1008,7 +1016,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
 
     def grant(choice: str) -> dict:
         if not one_shot:
-            _persist_choice(session_key, choice, pattern_keys, ttl_seconds=session_ttl_seconds)
+            _persist_choice(session_key, choice, pattern_keys, ttl_seconds=session_ttl_seconds,
+                            allow_permanent=allow_permanent)
         if spec.user_approved:
             return _user_approved(session_key, description)
         if smart_denied:

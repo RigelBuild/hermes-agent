@@ -176,6 +176,35 @@ def test_directive_review_must_be_literal_true(monkeypatch):
     assert seen["display"] is None
 
 
+@pytest.mark.parametrize(
+    ("directive", "ttl", "permanent"),
+    [
+        ({"session_ttl_seconds": 3600, "allow_permanent": False}, 3600.0, False),
+        ({"session_ttl_seconds": 90}, 90.0, True),
+        ({"session_ttl_seconds": 0}, None, True),
+        ({"session_ttl_seconds": -5}, None, True),
+        ({"session_ttl_seconds": True}, None, True),
+        ({"session_ttl_seconds": "3600"}, None, True),
+        ({"session_ttl_seconds": float("nan")}, None, True),
+        ({"session_ttl_seconds": float("inf")}, None, True),
+        ({"allow_permanent": False}, None, False),
+    ],
+)
+def test_directive_session_keys_reach_the_gate(monkeypatch, directive, ttl, permanent):
+    from hermes_cli.plugins import resolve_pre_tool_block
+
+    monkeypatch.setattr(
+        "hermes_cli.lifecycle.invoke_hook",
+        lambda hook_name, **kwargs: [{"action": "approve", "message": "why", "rule_key": "k", **directive}],
+    )
+    seen = {}
+    monkeypatch.setattr("tools.approval.request_tool_approval",
+                        lambda tool_name, reason, **kw: seen.update(kw) or {"approved": True, "message": None})
+    assert resolve_pre_tool_block("terminal", {}) is None
+    assert seen["session_ttl_seconds"] == ttl
+    assert seen["allow_permanent"] is permanent
+
+
 def _verdict_with_note(monkeypatch, verdict, note):
     from tools import approval_smart
 

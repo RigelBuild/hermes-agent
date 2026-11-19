@@ -8,9 +8,11 @@ import pytest
 
 from tools import approval
 from tools.approval import request_tool_approval
+from tools.approval_gateway_wait import _ApprovalEntry
 
 SESSION = "grant-session"
-KEY = "nemo-secret:vault_secret:run"
+KEY = "plugin-x:cls:run"
+PLUGIN_KEY = f"plugin_rule:{KEY}"
 
 
 @pytest.fixture(autouse=True)
@@ -24,6 +26,8 @@ def _session(monkeypatch):
     yield
     approval._session_approved.pop(SESSION, None)
     approval._session_approval_expiry.pop(SESSION, None)
+    with approval._lock:
+        approval._permanent_set().discard(PLUGIN_KEY)
 
 
 class _Clock:
@@ -35,8 +39,9 @@ class _Clock:
 
 @pytest.fixture
 def clock(monkeypatch):
+    # Expiry reads the wall clock (time.time), so a host sleep counts toward a grant's TTL.
     c = _Clock()
-    monkeypatch.setattr(approval.time, "monotonic", c)
+    monkeypatch.setattr(approval.time, "time", c)
     return c
 
 
@@ -79,6 +84,14 @@ def test_session_grant_expires_after_the_ttl(monkeypatch, clock):
     assert len(shown) == 2, "an expired grant must fall back to the human prompt"
 
 
+def test_session_grant_expires_at_exactly_the_ttl(monkeypatch, clock):
+    shown = _prompt(monkeypatch, "session")
+    request_tool_approval("vault_secret", "run", rule_key=KEY, session_ttl_seconds=3600)
+    clock.now += 3600
+    request_tool_approval("vault_secret", "run", rule_key=KEY, session_ttl_seconds=3600)
+    assert len(shown) == 2, "a grant is expired at exactly its TTL, not one second later"
+
+
 def test_grant_without_ttl_never_expires(monkeypatch, clock):
     shown = _prompt(monkeypatch, "session")
     request_tool_approval("terminal", "run", rule_key=KEY)
@@ -99,10 +112,60 @@ def test_always_is_refused_when_allow_permanent_is_false(monkeypatch):
         "vault_secret", "run", rule_key=KEY, session_ttl_seconds=3600, allow_permanent=False,
     )
     assert shown[0]["allow_permanent"] is False
-    assert approval._is_permanently_approved(f"plugin_rule:{KEY}") is False
+    assert approval._is_permanently_approved(PLUGIN_KEY) is False
     assert result["approved"] is True  # the prompt's "always" downgrades to a session grant
-    assert approval.is_approved(SESSION, f"plugin_rule:{KEY}") is True
+    assert approval.is_approved(SESSION, PLUGIN_KEY) is True
 
+
+def test_always_without_a_ttl_is_not_saved_when_allow_permanent_is_false(monkeypatch):
+    _prompt(monkeypatch, "always")
+    result = request_tool_approval("plugin-x", "run", rule_key=KEY, allow_permanent=False)
+    assert result["approved"] is True
+    assert approval._is_permanently_approved(PLUGIN_KEY) is False
+    assert approval.is_approved(SESSION, PLUGIN_KEY) is True
+
+
+def test_a_ttl_hides_always(monkeypatch):
+    shown = _prompt(monkeypatch, "once")
+    request_tool_approval("plugin-x", "run", rule_key=KEY, session_ttl_seconds=3600)
+    assert shown[0]["allow_permanent"] is False, "a timed grant must not offer a permanent save"
+
+
+def test_persist_choice_never_saves_always_when_policy_forbids(monkeypatch):
+    approval._persist_choice(SESSION, "always", [PLUGIN_KEY], allow_permanent=False)
+    assert approval._is_permanently_approved(PLUGIN_KEY) is False
+    assert approval.is_approved(SESSION, PLUGIN_KEY) is True
+
+
+def test_typed_always_on_a_card_that_forbids_it_is_a_session_answer(monkeypatch):
+    entry = _ApprovalEntry({
+        "command": "run", "pattern_key": PLUGIN_KEY, "pattern_keys": [PLUGIN_KEY],
+        "allow_permanent": False, "allow_session": True,
+    })
+    with approval._lock:
+        approval._gateway_queues.setdefault(SESSION, []).append(entry)
+    try:
+        assert approval.resolve_gateway_approval(SESSION, "always", request_id=entry.data["request_id"]) == 1
+        assert entry.result == "session"
+    finally:
+        with approval._lock:
+            approval._gateway_queues.pop(SESSION, None)
+
+
+
+def test_a_grant_is_not_reused_after_a_process_restart(monkeypatch, clock):
+    """Grants live only in process memory. A fresh process with the same session id sees none."""
+    import importlib
+
+    _prompt(monkeypatch, "session")
+    request_tool_approval("plugin-x", "run", rule_key=KEY, session_ttl_seconds=3600)
+    assert approval.is_approved(SESSION, PLUGIN_KEY) is True
+
+    restarted = importlib.reload(approval)
+    try:
+        assert restarted.is_approved(SESSION, PLUGIN_KEY) is False, "a restarted process must not carry the grant"
+    finally:
+        importlib.reload(approval)
 
 def test_always_is_offered_when_no_policy_is_given(monkeypatch):
     shown = _prompt(monkeypatch, "once")
@@ -110,11 +173,19 @@ def test_always_is_offered_when_no_policy_is_given(monkeypatch):
     assert shown[0]["allow_permanent"] is True
 
 
+def test_clear_session_also_drops_the_expiry(monkeypatch, clock):
+    _prompt(monkeypatch, "session")
+    request_tool_approval("plugin-x", "run", rule_key=KEY, session_ttl_seconds=3600)
+    approval.clear_session(SESSION)
+    assert SESSION not in approval._session_approval_expiry
+    assert approval.is_approved(SESSION, PLUGIN_KEY) is False
+
+
 def test_reviewer_deny_blocks_inside_a_live_grant(monkeypatch, clock):
     """Invariant 2: inside a live grant the reviewer runs, and a DENY blocks."""
     _prompt(monkeypatch, "session")
     request_tool_approval("vault_secret", "run", rule_key=KEY, session_ttl_seconds=3600)
-    assert approval.is_approved(SESSION, f"plugin_rule:{KEY}") is True
+    assert approval.is_approved(SESSION, PLUGIN_KEY) is True
 
     calls = _reviewer(monkeypatch, "deny")
     shown = _prompt(monkeypatch, "deny")
