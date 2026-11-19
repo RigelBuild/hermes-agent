@@ -307,3 +307,53 @@ def test_nonce_redeems_once():
     instance._self_start_tokens[(str(THREAD), "nonce")] = time.monotonic() + 60
     assert instance.redeem_self_start(source)
     assert not instance.redeem_self_start(source)
+
+
+@pytest.mark.asyncio
+async def test_self_authored_message_starts_no_session_or_reply(tmp_path, monkeypatch):
+    from gateway import discord_self_start
+
+    monkeypatch.setattr(
+        discord_self_start, "_path", lambda _home=None: tmp_path / "registry.json"
+    )
+    # Admit all bots and turn off the mention and auto-thread gates, so only the
+    # self-author check can stop dispatch.
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    monkeypatch.setenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    instance = adapter()
+    bot = instance._client.user
+
+    class Member:
+        """Equal to the bot by id, with the fields dispatch reads, as discord.py's users are."""
+
+        def __init__(self, user_id):
+            self.id = user_id
+            self.bot = True
+            self.name = "bot"
+            self.display_name = "bot"
+
+        def __eq__(self, other):
+            return getattr(other, "id", None) == self.id
+
+        def __hash__(self):
+            return hash(self.id)
+
+    channel = Mock()
+    channel.id = PARENT
+    channel.send = AsyncMock()
+    own = message()
+    own.id = THREAD
+    own.author = Member(bot.id)
+    own.channel = channel
+    handle = AsyncMock()
+    send = AsyncMock()
+    instance.handle_message = handle
+    instance.send = send
+
+    assert instance._discord_message_admission(own, claim=False) == (False, False)
+    assert not await instance._dispatch_discord_message(own)
+    handle.assert_not_awaited()
+    send.assert_not_awaited()
+    channel.send.assert_not_awaited()
