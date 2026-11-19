@@ -316,6 +316,9 @@ async def test_self_authored_message_starts_no_session_or_reply(tmp_path, monkey
     monkeypatch.setattr(
         discord_self_start, "_path", lambda _home=None: tmp_path / "registry.json"
     )
+    # Admit all bots and drop the inline-mention gate so only the self-author check can stop it.
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    monkeypatch.setenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", "false")
     instance = adapter()
     bot = instance._client.user
     channel = Mock(spec=discord.TextChannel)
