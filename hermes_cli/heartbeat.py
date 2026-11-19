@@ -114,7 +114,7 @@ def _last_scheduled_slot(schedule: str, timezone: Optional[str], start: float, n
         slot, base = nxt, datetime.fromtimestamp(nxt, UTC)
 
 
-def _scan_start(state: "HeartbeatState", now: float) -> float:
+def _scan_start(state: HeartbeatState, now: float) -> float:
     """Earliest instant the slot scan may start from: the last slot or claim, but never more than a day back."""
     return max(state.schedule_anchor, state.last_fired_at, state.created_at, now - 86400)
 

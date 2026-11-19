@@ -313,7 +313,7 @@ class _UnknownInteraction(Exception):
 async def test_press_is_acknowledged_before_a_slow_resolve_and_card_edited_after(monkeypatch):
     # Discord drops a press not acknowledged within ~3s. A slow resolve must run after the defer, and the
     # card must then be edited through its message, not through the expired response (10062).
-    adapter, view, entry, message = await _pending_card(monkeypatch)
+    _adapter, view, entry, message = await _pending_card(monkeypatch)
     monkeypatch.setattr(view, "_gate", AsyncMock(return_value=True))
     window = {"now": 0.0, "acked": False}
     order = []
@@ -360,7 +360,7 @@ async def test_press_is_acknowledged_before_a_slow_resolve_and_card_edited_after
 async def test_failed_defer_still_resolves_the_approval_and_edits_the_card(monkeypatch):
     # A press whose ack fails with 10062 must still resolve: the answer is recorded and the card is edited
     # through its message, which needs no interaction token. The ack failure is logged, not raised.
-    adapter, view, entry, message = await _pending_card(monkeypatch)
+    _adapter, view, entry, message = await _pending_card(monkeypatch)
     monkeypatch.setattr(view, "_gate", AsyncMock(return_value=True))
     interaction = SimpleNamespace(
         message=message, user=SimpleNamespace(display_name="tester"),
