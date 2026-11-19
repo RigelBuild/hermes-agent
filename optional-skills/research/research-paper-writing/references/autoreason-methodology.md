@@ -147,14 +147,14 @@ User: [TASK] + [VERSION X] + [VERSION Y]
 
 #### Judge (Chain-of-Thought) — ALWAYS USE THIS VERSION
 ```
-System: You are an independent evaluator. Think carefully before deciding.
+System: You are an independent evaluator. Decide on the evidence in the proposals.
 
-User: [TASK] + Three proposals. For each, think step by step:
+User: [TASK] + Three proposals. For each, answer the four questions below, then rank all three.
 1. What does it get right?
 2. What does it get wrong or miss?
 3. Are numbers and claims defensible?
 4. Is detail appropriate or bloated?
-After reasoning, rank all three.
+Output: the four answers per proposal, then the ranking.
 RANKING: [best], [second], [worst]
 ```
 
@@ -367,7 +367,7 @@ Judge prompt (CoT): "Compare three versions of this paper. For each, evaluate:
 2. Clarity of the narrative and contribution
 3. Whether claims are properly hedged and supported
 4. Writing quality (concision, precision, no filler)
-After reasoning, rank all three. RANKING: [best], [second], [worst]"
+Then rank all three. RANKING: [best], [second], [worst]"
 ```
 
 ### What to Provide as Ground Truth
