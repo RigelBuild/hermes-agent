@@ -1146,6 +1146,8 @@ class _PreToolCallDirective:
     modified_args: Optional[dict[str, Any]] = None
     display: Optional[str] = None
     review: bool = False
+    session_ttl_seconds: Optional[float] = None
+    allow_permanent: bool = True
 
 
 def set_thread_tool_whitelist(
@@ -1158,6 +1160,13 @@ def set_thread_tool_whitelist(
 
 def clear_thread_tool_whitelist() -> None:
     _thread_tool_whitelist.allowed = None
+
+
+def _positive_ttl(value: Any) -> Optional[float]:
+    """A hook's ``session_ttl_seconds`` when it is a positive number; anything else means no TTL."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return float(value)
 
 
 def _get_pre_tool_call_directive_details(
@@ -1216,6 +1225,8 @@ def _get_pre_tool_call_directive_details(
                 rule_key=(rule_key.strip() or None) if isinstance(rule_key, str) else None,
                 display=display if isinstance(display, str) and display.strip() else None,
                 review=result.get("review") is True,
+                session_ttl_seconds=_positive_ttl(result.get("session_ttl_seconds")),
+                allow_permanent=result.get("allow_permanent") is not False,
             )
     if first_approve is not None:
         return replace(first_approve, modified_args=modified_args)
@@ -1266,7 +1277,9 @@ def _resolve_block_from_details(
                 turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id)
         try:
             result = request_tool_approval(tool_name, details.message or "", rule_key=details.rule_key or tool_name,
-                                           display=details.display, review=details.review, args=args)
+                                           display=details.display, review=details.review, args=args,
+                                           session_ttl_seconds=details.session_ttl_seconds,
+                                           allow_permanent=details.allow_permanent)
         finally:
             if approval_tokens is not None:
                 with suppress(Exception):

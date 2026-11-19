@@ -158,7 +158,7 @@ def test_directive_carries_display_and_review(monkeypatch):
     monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
     assert resolve_pre_tool_block("terminal", {}) is None
     assert seen == {"tool_name": "terminal", "reason": "why", "rule_key": "k", "display": "cmd", "review": True,
-                    "args": {}}
+                    "args": {}, "session_ttl_seconds": None, "allow_permanent": True}
 
 
 def test_directive_review_must_be_literal_true(monkeypatch):

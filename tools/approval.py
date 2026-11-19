@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import threading
+import time
 from typing import Any, Iterable, Optional
 
 from utils import env_var_enabled, is_truthy_value
@@ -55,6 +56,8 @@ _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 _lock = threading.RLock()  # re-entrant: a card settle checks and resolves under one hold
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
+# Expiry (time.monotonic) of a session grant made with a TTL; a grant absent here never expires.
+_session_approval_expiry: dict[str, dict[str, float]] = {}
 _session_yolo: set[str] = set()
 # Session keys whose launch YOLO (`hermes chat --yolo` session policy) was already seeded by
 # ``tools.approval_yolo.apply_launch_yolo``: once per boundary, so a later `/yolo` off sticks.
@@ -341,10 +344,16 @@ def submit_pending(session_key: str, approval: dict):
         _pending[session_key] = approval
 
 
-def approve_session(session_key: str, pattern_key: str):
-    """Approve a pattern for this session only."""
+def approve_session(session_key: str, pattern_key: str, ttl_seconds: float | None = None):
+    """Approve a pattern for this session. With ``ttl_seconds`` the grant expires after that long;
+    without it the grant lasts for the session, as before."""
     with _lock:
         _session_approved.setdefault(session_key, set()).add(pattern_key)
+        expiry = _session_approval_expiry.setdefault(session_key, {})
+        if ttl_seconds is None:
+            expiry.pop(pattern_key, None)
+        else:
+            expiry[pattern_key] = time.monotonic() + ttl_seconds
 
 
 def _release_permission_mode_dependents(session_key: str) -> None:
@@ -463,11 +472,19 @@ def _approval_scope(session_key: str, pattern_key: str) -> str | None:
     """``'permanent'``, ``'session'`` or None for one key, from ONE read of both stores, so the
     decision and its provenance label cannot disagree when a grant is revoked concurrently.
     Accepts the canonical key and the legacy regex-derived key so existing command_allowlist
-    entries survive key migrations."""
+    entries survive key migrations. A session grant whose TTL has run out is dropped here, so it
+    reads as absent and the human is asked again."""
     aliases = _approval_key_aliases(pattern_key)
     with _lock:
         permanent = _permanent_set()
         session = _session_approved.get(session_key, set())
+        expiry = _session_approval_expiry.get(session_key, {})
+        now = time.monotonic()
+        for alias in aliases:
+            deadline = expiry.get(alias)
+            if deadline is not None and now >= deadline:
+                session.discard(alias)
+                expiry.pop(alias, None)
         if any(alias in permanent for alias in aliases):
             return "permanent"
         if any(alias in session for alias in aliases):
@@ -501,13 +518,18 @@ def load_permanent(patterns: set):
         governing.update(patterns)
 
 
-def _persist_choice(session_key: str, choice: str, keys: list[str]) -> None:
-    """Persist a human ``session``/``always`` choice for each pattern key. ``once`` persists nothing."""
+def _persist_choice(session_key: str, choice: str, keys: list[str],
+                    ttl_seconds: float | None = None) -> None:
+    """Persist a human ``session``/``always`` choice for each pattern key. ``once`` persists nothing.
+    ``ttl_seconds`` makes a session grant expire; a TTL'd grant is never written to the permanent list."""
     for key in keys:
         if choice not in ("session", "always"):
             continue
-        approve_session(session_key, key)
-        if choice == "always":
+        if ttl_seconds is None:
+            approve_session(session_key, key)
+        else:
+            approve_session(session_key, key, ttl_seconds=ttl_seconds)
+        if choice == "always" and ttl_seconds is None:
             approve_permanent(key)
             # Pass only this process's grants, taken against the baseline of the same snapshot. A
             # check that syncs a hand removal before the save runs advances the baseline, so a
@@ -951,7 +973,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
                     is_ask: bool, smart: bool = False, smart_denied: bool = False,
-                    pending_body=None, plugin_origin: bool = False) -> dict:
+                    pending_body=None, plugin_origin: bool = False,
+                    session_ttl_seconds: float | None = None, allow_permanent_policy: bool = True) -> dict:
     """Ask a human and turn the answer into a gate result.
 
     A smart-DENY owner override reduces every surface to once/deny and persists nothing.
@@ -969,7 +992,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             description = f"{description}\n{_gate_note.text}"
     pending_body = pending_body() if pending_body else None
     one_shot = smart_denied or plugin_origin
-    allow_permanent = not one_shot
+    # A plugin key may refuse "Always" (allow_permanent=False); a smart-DENY or plugin one-shot never offers it.
+    allow_permanent = not one_shot and allow_permanent_policy
 
     def deny(template: str, outcome: str, **fmt) -> dict:
         has_breaker = "{breaker}" in template
@@ -984,7 +1008,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
 
     def grant(choice: str) -> dict:
         if not one_shot:
-            _persist_choice(session_key, choice, pattern_keys)
+            _persist_choice(session_key, choice, pattern_keys, ttl_seconds=session_ttl_seconds)
         if spec.user_approved:
             return _user_approved(session_key, description)
         if smart_denied:
@@ -1151,6 +1175,7 @@ def _run_approval_gate(
     autoapprove_log_prefix: str, fail_closed_when_no_human: bool = False, no_human_block_message: str = "",
     review_first: bool = False,
     pattern_keys: list[str] | None = None,
+    session_ttl_seconds: float | None = None, allow_permanent: bool = True,
 ) -> dict:
     """Shared human-approval gate for a flagged action (tool call or write): decision core for
     :func:`request_tool_approval` and the file-tool write gates.
@@ -1229,6 +1254,7 @@ def _run_approval_gate(
         pattern_keys=pattern_keys or [pattern_key], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
         plugin_origin=plugin_origin, smart_denied=reviewer_denied,
+        session_ttl_seconds=session_ttl_seconds, allow_permanent_policy=allow_permanent,
     )
 
 
@@ -1404,7 +1430,8 @@ def _vault_approval_context(tool_name: str, args: Optional[dict]) -> str:
 
 def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", approval_callback=None,
                           display: Optional[str] = None, review: bool = False,
-                          args: Optional[dict] = None) -> dict:
+                          args: Optional[dict] = None, session_ttl_seconds: float | None = None,
+                          allow_permanent: bool = True) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
 
     Entry point for a plugin ``pre_tool_call`` hook returning ``{"action": "approve", ...}``:
@@ -1417,6 +1444,7 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
     ``<tool> (plugin approval rule)`` label in the prompt's code block with the actual request;
     without it, ``args`` (the call's arguments) are rendered there instead, credentials masked;
     ``review`` runs the smart reviewer first (see ``_run_approval_gate(review_first=...)``).
+    ``session_ttl_seconds`` makes a session grant expire; ``allow_permanent=False`` hides "Always".
     Returns the ``check_dangerous_command`` result shape.
     """
     description = reason or f"Plugin requires approval for {tool_name}"
@@ -1429,7 +1457,7 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
                         (_render_tool_call(tool_name, args) if args is not None
                          else f"<{tool_name}> (plugin approval rule)") + _vault_approval_context(tool_name, args)),
         approval_callback=approval_callback,
-        review_first=review,
+        review_first=review, session_ttl_seconds=session_ttl_seconds, allow_permanent=allow_permanent,
         subject=subject, advice="Find an alternative approach.",
         autoapprove_log_prefix=f"plugin-escalated tool call '{tool_name}' in non-interactive non-gateway context",
         fail_closed_when_no_human=True,
