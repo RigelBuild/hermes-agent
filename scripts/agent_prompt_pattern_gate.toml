@@ -6,7 +6,9 @@
 # config_keys: regexes blanked out of a line before `pattern` runs, so config terms such as
 #   `reasoning_effort: high` or `--reasoning max` are not flagged.
 # exceptions: exact markdown `path:line` strings allowed through. Keep each one to a real, reviewed hit.
-# file_exceptions: repo-relative .py paths skipped whole. List only files with raw hits after config_keys.
+# symbol_exceptions: "<repo-relative .py path>:<dotted symbol>" entries. A raw hit inside the source
+#   span of that top-level or class-nested def, class, or assignment is allowed. The span covers
+#   its decorators and the comment lines directly above it. A symbol with no raw hit is stale.
 
 globs = [
   "skills/**/SKILL.md",
@@ -73,10 +75,30 @@ exceptions = [
   "skills/autonomous-ai-agents/hermes-agent/references/slash-commands.md:41",
 ]
 
-file_exceptions = [
-  "agent/background_review.py",
-  "agent/context_compressor.py",
-  "agent/context_compressor_telemetry.py",
-  "agent/conversation_compression.py",
-  "agent/conversation_compression_reply_anchor.py",
+symbol_exceptions = [
+  "agent/background_review.py:_warn_review_routing_fallback",
+  "agent/background_review.py:_USAGE_COUNTERS",
+  "agent/background_review.py:_same_model_parity_kwargs",
+  "agent/background_review.py:_warn_ignored_reasoning_effort",
+  "agent/background_review.py:_routed_reasoning_config",
+  "agent/background_review.py:_fork_init_kwargs",
+  "agent/background_review.py:build_cache_parity_fork",
+  "agent/context_compressor.py:drop_shadowed_checkpoints",
+  "agent/context_compressor.py:_prune_stale_reasoning_replay",
+  "agent/context_compressor.py:salvage_grown_transcript",
+  "agent/context_compressor.py:_REPLAY_BUDGET_KEYS",
+  "agent/context_compressor.py:_ALWAYS_REPLAYED_BUDGET_KEYS",
+  "agent/context_compressor.py:_NEWEST_TURN_ONLY_BUDGET_KEYS",
+  "agent/context_compressor.py:_STALE_REPLAY_PRUNE_KEYS",
+  "agent/context_compressor.py:_reasoning_details_text_chars",
+  "agent/context_compressor.py:_estimate_msg_budget_tokens",
+  "agent/context_compressor.py:ContextCompressor._call_summary_llm",
+  "agent/context_compressor.py:ContextCompressor._find_inflight_user_task",
+  "agent/context_compressor.py:ContextCompressor._native_anthropic_budget",
+  "agent/context_compressor.py:ContextCompressor._finalize_compressed",
+  "agent/context_compressor_telemetry.py:CompressionTelemetryMixin._begin_compression_telemetry",
+  "agent/context_compressor_telemetry.py:CompressionTelemetryMixin._record_compression_effect",
+  "agent/conversation_compression.py:_salvage_or_refuse_grown_transcript",
+  "agent/conversation_compression.py:_commit_compaction",
+  "agent/conversation_compression_reply_anchor.py:_ensure_compressed_keeps_last_assistant_reply",
 ]
