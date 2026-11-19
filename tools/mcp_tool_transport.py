@@ -151,6 +151,46 @@ def _connect_inputs(server_name: str, config: dict) -> tuple[list, set]:
     return list(_stdio_launch(config)), set()
 
 
+def _unexpected_output_properties(errors: list) -> Optional[list[str]]:
+    """Unexpected property names when every output-schema error is an
+    ``additionalProperties: false`` violation; ``None`` for any other violation."""
+    names: list[str] = []
+    for error in errors:
+        if (error.validator != "additionalProperties" or error.validator_value is not False
+                or "patternProperties" in error.schema):
+            return None
+        declared = error.schema.get("properties", {})
+        names.extend(key for key in error.instance if key not in declared)
+    return names or None
+
+
+def _tolerate_extra_output_properties(server_name: str, session) -> None:
+    """Let a result through when its only output-schema violation is unexpected extra
+    properties (a server adds fields its outputSchema forbids). Other violations still raise."""
+    validate = getattr(session, "validate_tool_result", None)
+    if validate is None:
+        return
+
+    async def tolerant(name: str, result) -> None:
+        try:
+            await validate(name, result)
+        except RuntimeError as exc:
+            from jsonschema import ValidationError
+            if not isinstance(exc.__cause__, ValidationError):
+                raise
+            validator = session._output_schema_validator(name, session._tool_output_schemas[name])
+            errors = validator.iter_errors(result.structured_content)
+            extras = _unexpected_output_properties(list(errors))
+            if extras is None:
+                raise
+            logger.warning(
+                "MCP server '%s': tool '%s' returned structuredContent with undeclared properties %s; "
+                "passing the result through",
+                server_name, name, sorted(set(extras)))
+
+    session.validate_tool_result = tolerant
+
+
 class MCPServerTransportMixin:
     """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
 
@@ -257,6 +297,8 @@ class MCPServerTransportMixin:
         """Handshake, discover, publish readiness, then serve until a lifecycle event. Clears stale
         breaker state but leaves the session UNPROVEN: flapping transports handshake fine and drop
         moments later, so only keepalive/tool-call success clears the reconnect budget."""
+        # Every ClientSession funnels here; see _tolerate_extra_output_properties.
+        _tolerate_extra_output_properties(self.name, session)
         self.initialize_result = await self._negotiate_session(session, connect_timeout)
         self.session = session
         if mark_lifecycle:
