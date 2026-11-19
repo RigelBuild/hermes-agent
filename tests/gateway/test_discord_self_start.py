@@ -321,7 +321,7 @@ async def test_self_authored_message_starts_no_session_or_reply(tmp_path, monkey
     monkeypatch.setenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", "false")
     instance = adapter()
     bot = instance._client.user
-    channel = Mock(spec=discord.TextChannel)
+    channel = Mock()
     channel.id = PARENT
     own = message()
     own.id = THREAD
