@@ -613,6 +613,10 @@ CREATE TABLE IF NOT EXISTS session_admissions (
 );
 CREATE INDEX IF NOT EXISTS session_admissions_pending
     ON session_admissions(target_session_id, status, seq);
+-- Native admission's legacy-retry check reads one request's rows of a session; without this it
+-- walked the session's whole history on every inbound message.
+CREATE INDEX IF NOT EXISTS session_admissions_request
+    ON session_admissions(target_session_id, request_id);
 -- Cron run history finds a job's unified-runtime runs by the scheduler principal's request ids
 -- (``cron:<job>:<execution>``); without this a lookup walked
 -- every cron admission of every job. Partial: interactive turns, the bulk of admissions, pay

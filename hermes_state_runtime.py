@@ -191,13 +191,17 @@ def find_session_admission(db, *, principal_id: str, session_id: str, request_id
                                  'AND request_id=?', (principal_id, session_id, request_id)).fetchone())
 
 
-def list_session_admissions(db, *, session_id: str, pending_only: bool = True) -> list[dict]:
+def list_session_admissions(db, *, session_id: str, pending_only: bool = True,
+                            request_id: str | None = None) -> list[dict]:
     with db._read_ctx() as conn:
         # Pending is an explicit index-range IN, not ``!='terminal'``: a negated status cannot
         # bound the (target, status, seq) index, so every probe scanned the session's history.
+        # ``request_id`` bounds the read to one request through (target, request_id).
         sql = ("SELECT * FROM session_admissions WHERE target_session_id=? "
+               + ("AND request_id=? " if request_id is not None else "")
                + ("AND status IN ('queued','started','unknown') " if pending_only else "") + "ORDER BY seq")
-        return [_row(row) for row in conn.execute(sql, (session_id,))]
+        params = (session_id,) if request_id is None else (session_id, request_id)
+        return [_row(row) for row in conn.execute(sql, params)]
 
 
 _ANY_HEAD = object()

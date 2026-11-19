@@ -194,7 +194,23 @@ def _validate_native(runner, event, provenance=None, fresh_roles=False):
 def snapshot_native(runner, event):
     from gateway.session_ingress_context import capture_provenance
     provenance = capture_provenance(runner, event)
-    return _snapshot_native(runner, _adapter_event(event), provenance)
+    frozen = _adapter_event(event)
+    return _snapshot_native(runner, frozen, provenance, legacy_rows=_legacy_rows(runner, frozen, provenance))
+
+
+def _legacy_rows(runner, event, provenance):
+    """The rows an exact persisted legacy retry of ``event`` could match: only this request's rows
+    of its route's session, read through the (target, request_id) index. A blocking store read:
+    ``prepare_native`` runs it in a worker thread."""
+    if provenance is None or getattr(runner.config, 'multiplex_profiles', False):
+        return ()
+    from hermes_state_runtime import list_session_admissions
+    from gateway.session_authorities import active_authority
+    entry = runner.session_store.lookup_by_session_key(runner.session_store._generate_session_key(event.source))
+    if entry is None:
+        return ()
+    return list_session_admissions(active_authority(runner).db, session_id=entry.session_id, pending_only=False,
+                                   request_id=event.message_id)
 
 
 async def prepare_native(runner, event):
@@ -232,10 +248,12 @@ async def prepare_native(runner, event):
         except BaseException:
             await abandon_capture(scope)
             raise
-    return _snapshot_native(runner, frozen, provenance, fresh_roles, encoded_source, media)
+    legacy_rows = await asyncio.to_thread(_legacy_rows, runner, frozen, provenance)
+    return _snapshot_native(runner, frozen, provenance, fresh_roles, encoded_source, media, legacy_rows)
 
 
-def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_source=None, media=None):
+def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_source=None, media=None,
+                     legacy_rows=()):
     if encoded_source is None:
         encoded_source = _validate_native(runner, event, provenance, fresh_roles)
     envelope = {'source': encoded_source,
@@ -276,17 +294,12 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
     payload = {'text': event.text, 'native_text_v1': envelope}
     # Only an exact persisted legacy retry retains its old fingerprint. New
     # ordinary admissions must bind homes too, including execution after restart.
-    if provenance is not None and not getattr(runner.config, 'multiplex_profiles', False):
-        from hermes_state_runtime import list_session_admissions
-        from gateway.session_authorities import active_authority
-        authority = active_authority(runner)
-        entry = runner.session_store.lookup_by_session_key(envelope['route'])
-        if entry is not None:
-            legacy = deepcopy(payload)
-            legacy['native_text_v1'].pop('provenance')
-            for row in list_session_admissions(authority.db, session_id=entry.session_id, pending_only=False):
-                if row['request_id'] == event.message_id and row['payload'] == legacy:
-                    return legacy
+    # ``legacy_rows`` (``_legacy_rows``) is this request's rows of the route's session.
+    if legacy_rows:
+        legacy = deepcopy(payload)
+        legacy['native_text_v1'].pop('provenance')
+        if any(row['request_id'] == event.message_id and row['payload'] == legacy for row in legacy_rows):
+            return legacy
     return payload
 
 
