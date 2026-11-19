@@ -25,6 +25,8 @@ Exit codes: 0 clean, 1 at least one finding, 2 configuration or I/O error.
 Each finding prints as ``<path>:<line>: disallowed prompt pattern``.
 A stale exception, an entry in ``exceptions`` that matches no raw hit,
 prints as ``<path>:<line>: stale exception``.
+A ``file_exceptions`` entry with no raw hit, or a path not in the tree,
+prints as ``<path>:0: stale file exception``.
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ from pathlib import Path
 CONFIG_NAME = "agent_prompt_pattern_gate.toml"
 FINDING_TEXT = "disallowed prompt pattern"
 STALE_TEXT = "stale exception"
+STALE_FILE_TEXT = "stale file exception"
 
 
 @dataclass(frozen=True)
@@ -93,6 +96,8 @@ def load_config(path: Path) -> Config:
         isinstance(f, str) for f in file_exceptions
     ):
         raise ValueError("config: file_exceptions must be a list of strings")
+    if not all(f.endswith(".py") for f in file_exceptions):
+        raise ValueError("config: file_exceptions must be .py paths")
 
     try:
         pattern = re.compile(pattern_src)
@@ -163,14 +168,18 @@ def scan_text(path: str, text: str, cfg: Config) -> list[Finding]:
 
 
 def scan(root: Path, cfg: Config, paths: list[str]) -> list[Finding]:
-    """Findings for ``paths``; exceptions that match no raw hit are reported as stale."""
+    """Findings for ``paths``; stale exceptions and stale file exceptions are reported too."""
     findings: list[Finding] = []
     hit_locations: set[str] = set()
+    hit_files: set[str] = set()
     for rel in paths:
-        if rel in cfg.file_exceptions:
-            continue
         text = (root / rel).read_text(encoding="utf-8", errors="replace")
-        for number in raw_hit_lines(text, cfg):
+        hits = raw_hit_lines(text, cfg)
+        if rel in cfg.file_exceptions:
+            if hits:
+                hit_files.add(rel)
+            continue
+        for number in hits:
             location = f"{rel}:{number}"
             hit_locations.add(location)
             if location not in cfg.exceptions:
@@ -178,6 +187,8 @@ def scan(root: Path, cfg: Config, paths: list[str]) -> list[Finding]:
     for location in sorted(cfg.exceptions - hit_locations):
         rel, _, number = location.rpartition(":")
         findings.append(Finding(rel, int(number), STALE_TEXT))
+    for rel in sorted(cfg.file_exceptions - hit_files):
+        findings.append(Finding(rel, 0, STALE_FILE_TEXT))
     return findings
 
 

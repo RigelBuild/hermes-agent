@@ -41,6 +41,8 @@ def _lines(text: str, path: str = "skills/x/SKILL.md", cfg=None) -> list[int]:
         "Print your internal monologue before the answer.",
         "Think out loud about the tradeoff.",
         "Describe your thought process for this change.",
+        "Fill the 'reasoning' field with why.",
+        "if reasoning == x:",
     ],
 )
 def test_banned_ask_is_flagged(line):
@@ -113,7 +115,7 @@ def test_stale_exception_fails_the_gate(tmp_path):
     skill = tmp_path / "skills" / "x" / "SKILL.md"
     skill.parent.mkdir(parents=True)
     skill.write_text("Plain prose.\n", encoding="utf-8")
-    cfg = _cfg(exceptions=frozenset({"skills/x/SKILL.md:1"}))
+    cfg = _cfg(exceptions=frozenset({"skills/x/SKILL.md:1"}), file_exceptions=frozenset())
     findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
     assert [str(f) for f in findings] == ["skills/x/SKILL.md:1: stale exception"]
 
@@ -126,8 +128,11 @@ def test_stale_exception_fails_the_gate(tmp_path):
         'globs = ["skills/**/SKILL.md"]\n'
         'pattern = "show your work"\n'
         'exceptions = ["agent/prompt_builder.py:1"]\n',
+        'globs = ["skills/**/SKILL.md"]\n'
+        'pattern = "show your work"\n'
+        'file_exceptions = ["agent/prompt_builder.md"]\n',
     ],
-    ids=["bad-regex", "bad-glob", "py-path-line-exception"],
+    ids=["bad-regex", "bad-glob", "py-path-line-exception", "non-py-file-exception"],
 )
 def test_invalid_config_exits_2(tmp_path, monkeypatch, config_text):
     gate = _load()
@@ -143,7 +148,9 @@ def fixture_gate(monkeypatch):
     """The shipped patterns with no exceptions, so a fixture tree is judged on its own lines."""
     gate = _load()
     shipped = gate.load_config
-    empty = dataclasses.replace(shipped(CONFIG), exceptions=frozenset())
+    empty = dataclasses.replace(
+        shipped(CONFIG), exceptions=frozenset(), file_exceptions=frozenset()
+    )
     monkeypatch.setattr(gate, "load_config", lambda _path: empty)
     return gate
 
@@ -191,6 +198,26 @@ def test_file_exception_skips_whole_python_file(tmp_path):
     assert gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg)) == []
 
 
+def test_file_exception_with_zero_raw_hits_is_stale(tmp_path):
+    gate = _load()
+    module = tmp_path / "agent" / "prompt_builder.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("Plain prose.\n", encoding="utf-8")
+    cfg = _cfg(exceptions=frozenset(), file_exceptions=frozenset({"agent/prompt_builder.py"}))
+    findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
+    assert [str(f) for f in findings] == ["agent/prompt_builder.py:0: stale file exception"]
+
+
+def test_file_exception_missing_from_tree_is_stale(tmp_path):
+    gate = _load()
+    module = tmp_path / "agent" / "prompt_builder.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("Plain prose.\n", encoding="utf-8")
+    cfg = _cfg(exceptions=frozenset(), file_exceptions=frozenset({"agent/gone.py"}))
+    findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
+    assert [str(f) for f in findings] == ["agent/gone.py:0: stale file exception"]
+
+
 def test_markdown_exception_and_file_exception_in_one_tree(tmp_path):
     gate = _load()
     skill = tmp_path / "skills" / "x" / "SKILL.md"
@@ -202,7 +229,9 @@ def test_markdown_exception_and_file_exception_in_one_tree(tmp_path):
     exempt = frozenset({"agent/prompt_builder.py"})
     cfg = _cfg(exceptions=frozenset({"skills/x/SKILL.md:1"}), file_exceptions=exempt)
     assert gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg)) == []
-    cfg = _cfg(exceptions=frozenset({"skills/x/SKILL.md:1", "skills/x/SKILL.md:9"}))
-    cfg = dataclasses.replace(cfg, file_exceptions=exempt)
+    cfg = _cfg(
+        exceptions=frozenset({"skills/x/SKILL.md:1", "skills/x/SKILL.md:9"}),
+        file_exceptions=exempt,
+    )
     findings = gate.scan(tmp_path, cfg, gate.scoped_paths(tmp_path, cfg))
     assert [str(f) for f in findings] == ["skills/x/SKILL.md:9: stale exception"]
