@@ -1,17 +1,16 @@
 """A cut-off check-in replays exactly once and counts once (RIG-8084).
 
-Drives the real path end to end: a fire is in flight, gateway shutdown sweeps it
-(``mark_running_jobs_interrupted``), the pending replay persists to the store, the
-scheduler restarts, and the next fire claims the interrupted occurrence. The replay
-run's prompt carries exactly one REPLAY notice. Once that run finishes, the
-occurrence counts once, and a later fire carries no replay.
+Covers the cron store and prompt construction across a shutdown mid-drain: a fire is
+in flight, gateway shutdown sweeps it (``mark_running_jobs_interrupted``), the pending
+replay persists to the store, the scheduler restarts, and the next fire claims the
+interrupted occurrence. The replay run's prompt carries exactly one REPLAY notice.
+Once that run finishes, the occurrence counts once, and a later fire carries no replay.
 
-The Discord tool is registered by ``DISCORD_BOT_TOKEN``. Its REST layer is stubbed
-to fail on any call, so nothing reaches Discord.
+It does not call ``scheduler.run_job`` or the agent, and it does not reach delivery or
+Discord. Delivery targets and toolsets are stubbed in ``prompt_env``.
 """
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
 
 import pytest
 
@@ -26,17 +25,6 @@ def clock(monkeypatch):
     monkeypatch.setattr(jobs, "_hermes_now", lambda: now[0])
     monkeypatch.setattr(unreachable_retry, "_hermes_now", lambda: now[0])
     return now
-
-
-@pytest.fixture
-def discord_stub(monkeypatch):
-    monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
-
-    def refuse(method, path, *args, **kwargs):
-        raise AssertionError(f"unexpected Discord REST call {method} {path}")
-
-    with patch("tools.discord_tool._discord_request", side_effect=refuse):
-        yield
 
 
 @pytest.fixture
@@ -72,7 +60,7 @@ def _claim_next_occurrence(job_id, clock):
 
 
 def test_shutdown_mid_drain_replays_once_and_counts_once(
-    clock, discord_stub, prompt_env, monkeypatch, tmp_path
+    clock, prompt_env, monkeypatch, tmp_path
 ):
     with jobs.use_cron_store(tmp_path / "cron"):
         # 1. A check-in fire is in flight. Its job delivers to Discord.
