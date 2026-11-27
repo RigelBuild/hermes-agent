@@ -21,7 +21,9 @@ MAX_UPSTREAM_ATTEMPTS = 3
 UPSTREAM_TIMEOUT_SECONDS = 30
 RETRYABLE_HTTP_STATUSES = {429, 500, 502, 503, 504}
 RELEASE_SYSTEMS = {"x86_64-linux", "aarch64-linux", "aarch64-darwin"}
+RELEASE_PLATFORMS = {"linux-x64", "linux-arm64", "darwin-arm64"}
 TAG_PATTERN = re.compile(r"^v[A-Za-z0-9._+-]*-rigel\.[A-Za-z0-9._+-]+$")
+CACHE_TAG_PATTERN = re.compile(r"-cache-(?:linux-x64|linux-arm64|darwin-arm64)$")
 STORE_PATH_PATTERN = re.compile(r"^/nix/store/([0-9a-df-np-sv-z]{32})-.+$")
 
 Opener = Callable[..., object]
@@ -326,6 +328,14 @@ def assemble(
     return len(assets)
 
 
+def cache_release_tag(tag: str, platform: str) -> str:
+    if not TAG_PATTERN.fullmatch(tag) or CACHE_TAG_PATTERN.search(tag):
+        raise ValueError(f"tag {tag!r} does not match the v*-rigel.* release pattern")
+    if platform not in RELEASE_PLATFORMS:
+        raise ValueError(f"unknown release platform {platform!r}; want one of {', '.join(sorted(RELEASE_PLATFORMS))}")
+    return f"{tag}-cache-{platform}"
+
+
 def write_pin(system: str, tag: str, path_info_file: Path | str, output_file: Path | str) -> None:
     if system not in RELEASE_SYSTEMS:
         raise ValueError(f"unknown system {system!r}; want one of {', '.join(sorted(RELEASE_SYSTEMS))}")
@@ -396,6 +406,10 @@ def _parser() -> argparse.ArgumentParser:
     assemble_parser.add_argument("-upstream", dest="upstream_url", help="upstream binary cache URL")
     assemble_parser.add_argument("platform_dirs", nargs="+", type=Path)
 
+    cache_tag_parser = commands.add_parser("cache-tag", help="print a platform cache release tag")
+    cache_tag_parser.add_argument("-tag", required=True, help="canonical v*-rigel.* release tag")
+    cache_tag_parser.add_argument("-platform", required=True, help="release platform")
+
     pin_parser = commands.add_parser("write-pin", help="write one system's release closure pin")
     pin_parser.add_argument("-system", required=True)
     pin_parser.add_argument("-tag", required=True)
@@ -418,6 +432,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "assemble":
             count = assemble(args.platform_dirs, args.out, upstream_url=args.upstream_url)
             print(f"wrote {count} release assets to {args.out}")
+        elif args.command == "cache-tag":
+            print(cache_release_tag(args.tag, args.platform))
         elif args.command == "write-pin":
             write_pin(args.system, args.tag, args.path_info, args.out)
         elif args.command == "reconcile":
