@@ -64,6 +64,10 @@ class DiscordRecoveryStore:
                 attempts INTEGER NOT NULL DEFAULT 0, last_attempt_at TEXT, last_error TEXT,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS discord_outage_responses (
+                message_id TEXT NOT NULL, response_message_id TEXT NOT NULL,
+                updated_at TEXT NOT NULL, PRIMARY KEY (message_id, response_message_id)
+            );
             CREATE TABLE IF NOT EXISTS discord_recovery_scans (
                 scan_id TEXT PRIMARY KEY, started_at TEXT NOT NULL, completed_at TEXT, status TEXT NOT NULL,
                 channels TEXT NOT NULL, window_seconds REAL NOT NULL, limit_count INTEGER NOT NULL,
@@ -76,5 +80,6 @@ class DiscordRecoveryStore:
         """)
         cutoff = (dt.datetime.now(dt.UTC) - dt.timedelta(days=_RETENTION_DAYS)).isoformat()
         conn.execute("DELETE FROM discord_messages WHERE updated_at < ?", (cutoff,))
+        conn.execute("DELETE FROM discord_outage_responses WHERE updated_at < ?", (cutoff,))
         conn.execute("DELETE FROM discord_recovery_scans WHERE COALESCE(completed_at, started_at) < ?", (cutoff,))
         conn.execute("DELETE FROM discord_recovery_cursors WHERE updated_at < ?", (cutoff,))

@@ -2790,15 +2790,16 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             return False
         message_id = str(getattr(message, "id", ""))
 
-        def _outage_response_id(conn):
-            row = conn.execute(
-                "SELECT response_message_id FROM discord_messages "
-                "WHERE message_id=? AND outage_response=1",
-                (message_id,),
-            ).fetchone()
-            return str(row[0]) if row and row[0] else None
+        def _outage_response_ids(conn):
+            rows = conn.execute(
+                "SELECT response_message_id FROM discord_outage_responses WHERE message_id=? "
+                "UNION SELECT response_message_id FROM discord_messages "
+                "WHERE message_id=? AND outage_response=1 AND response_message_id IS NOT NULL",
+                (message_id, message_id),
+            ).fetchall()
+            return {str(row[0]) for row in rows}
 
-        outage_response_id = self._with_discord_recovery_db(_outage_response_id)
+        outage_response_ids = self._with_discord_recovery_db(_outage_response_ids, default=set())
         async def _scan_history(channel: Any) -> bool:
             history = getattr(channel, "history", None)
             if not callable(history):
@@ -2812,7 +2813,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     ref_id = str(getattr(reference, "message_id", "") or "")
                     if ref_id != message_id:
                         continue
-                    if str(getattr(candidate, "id", "")) == outage_response_id:
+                    if str(getattr(candidate, "id", "")) in outage_response_ids:
                         continue
                     if self._is_down_notice_content(getattr(candidate, "content", "")):
                         continue
@@ -2964,7 +2965,17 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             self._record_discord_response, reply_to=ledger_reply_to, result=result, content=content, final=final,
             outage=outage,
         )
+        if outage and ledger_reply_to:
+            self._dedup.discard(str(ledger_reply_to))
+            if (metadata or {}).get("_gateway_recovered"):
+                await asyncio.to_thread(self._refund_recovery_attempt, str(ledger_reply_to))
         return result
+
+    def _refund_recovery_attempt(self, message_id: str) -> None:
+        self._with_discord_recovery_db(lambda conn: conn.execute(
+            "UPDATE discord_messages SET attempts=MAX(attempts-1, 0) WHERE message_id=?",
+            (message_id,),
+        ))
 
     def _record_discord_response(
         self, *, reply_to: Optional[str], result: SendResult, content: str, final: bool, outage: bool = False,
@@ -2976,6 +2987,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         status = "responded" if completed else "failed"
 
         def _op(conn):
+            if completed and outage and result.message_id:
+                conn.execute(
+                    "INSERT OR IGNORE INTO discord_outage_responses "
+                    "(message_id, response_message_id, updated_at) VALUES (?, ?, ?)",
+                    (reply_to, result.message_id, now),
+                )
             conn.execute(
                 """
                 INSERT INTO discord_messages (message_id, status, replied, outage_response, response_message_id, updated_at)
@@ -6590,6 +6607,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )
+        if recovered:
+            event._gateway_recovered = True
         if (
             getattr(getattr(message, "author", None), "bot", False)
             and self._is_bot_tag_debounce_continuation(message)

@@ -60,7 +60,6 @@ async def admit_message(authority, event):
             return (f'⚠️ Hermes refused this message ({named}), so it was not saved '
                     'or answered. Ask the operator to check gateway.log.')
         if exc.reason == 'runtime_draining':
-            event._gateway_retryable_refusal = True
             source = event.source
             platform = getattr(getattr(source, 'platform', None), 'value', None) or '?'
             chat_id = getattr(source, 'chat_id', '?')
@@ -74,7 +73,8 @@ async def admit_message(authority, event):
             logger.warning(
                 '[%s] Refusing inbound event for %s (reason=runtime_draining); '
                 'nothing was admitted, a resend notice was sent', platform, chat_id)
-            return notice
+            from gateway.platforms.base import RetryableRefusal
+            return RetryableRefusal(notice)
         if exc.reason != 'queue_full':
             raise
         # Nothing was committed (main's busy-queue cap): say so instead of a generic turn error.
@@ -542,12 +542,16 @@ async def deliver_settled(authority, admission_id):
 async def deliver_response(adapter, event, session_key, response):
     """Send a turn's reply; whether it was delivered (``_process_message_background``'s verdict:
     nothing to send, or at least one send that succeeded)."""
-    from gateway.platforms.base import _thread_metadata_for_event, _mark_notify_metadata
+    from gateway.platforms.base import RetryableRefusal, _thread_metadata_for_event, _mark_notify_metadata
+    retryable_refusal = isinstance(response, RetryableRefusal)
     text, ttl = adapter._unwrap_ephemeral(response)
     if not text:
         return True
     extracted = await adapter._extract_response_content(text, event, session_key, is_ephemeral_response=ttl > 0)
     metadata = _mark_notify_metadata(_thread_metadata_for_event(event))
+    if retryable_refusal:
+        metadata["_gateway_retryable_refusal"] = True
+        metadata["_gateway_recovered"] = getattr(event, "_gateway_recovered", False)
     results = []
     if extracted.text_content:
         await adapter._send_final_text(event, session_key, extracted.text_content,
@@ -568,6 +572,7 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
     next command waits for that too (``burst_gate``): a non-burst busy input (a second video, a voice
     note, text outside queue mode) has no burst commit task to wait on."""
     delivery_event = replace(event, source=replace(event.source))
+    delivery_event._gateway_recovered = getattr(event, '_gateway_recovered', False)
     accepted = asyncio.get_running_loop().create_future()
     committed = asyncio.get_running_loop().create_future()
 

@@ -1684,10 +1684,9 @@ class EphemeralReply(str):
         instance.ttl_seconds = ttl_seconds
         return instance
 
-    @property
-    def text(self) -> str:
-        """The underlying text (explicit form of ``str(reply)``)."""
-        return str.__str__(self)
+
+class RetryableRefusal(str):
+    """A refusal that was not admitted and should be retried by the transport."""
 
 
 def merge_pending_message_event(pending_messages: dict[str, MessageEvent], session_key: str,
@@ -4483,8 +4482,9 @@ class BasePlatformAdapter(ABC):
         typing_task = self._start_typing_refresh(event, interrupt_event, _typing_metadata)
         try:
             await self._run_processing_hook("on_processing_start", event)
-            event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
+            event._turn_marker_handoff = self.gateway_runner is not None
             response = await self._message_handler(event)
+            retryable_refusal = isinstance(response, RetryableRefusal)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
             with self._media_delivery_scope(event.source):
@@ -4504,10 +4504,10 @@ class BasePlatformAdapter(ABC):
                 extracted = await self._extract_response_content(
                     response, event, session_key, is_ephemeral_response=is_ephemeral_response)
                 text_content, media_files = extracted.text_content, extracted.media_files
-                # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
-                if getattr(event, "_gateway_retryable_refusal", False):
+                if retryable_refusal:
                     _final_thread_metadata["_gateway_retryable_refusal"] = True
+                    _final_thread_metadata["_gateway_recovered"] = getattr(event, "_gateway_recovered", False)
                 _tts_paths, _tts_requested_path = [], None
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):
@@ -4546,7 +4546,7 @@ class BasePlatformAdapter(ABC):
                     anything_sent=delivery_attempted or _tts_caption_delivered,
                     record_delivery=_record_delivery)
             await self._release_turn_marker(event)
-            processing_ok = (not getattr(event, "_gateway_retryable_refusal", False)
+            processing_ok = (not retryable_refusal
                              and (delivery_succeeded if delivery_attempted else not bool(response)))
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
