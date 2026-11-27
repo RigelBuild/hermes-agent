@@ -2772,8 +2772,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         # A success reaction is only an ack, not evidence the substantive response completed.
         return not await self._message_has_non_down_bot_response(message)
 
-    def _is_down_notice_content(self, content: str) -> bool:
-        """Recognize only explicit Hermes/gateway outage notices."""
+    def _is_down_notice_content(self, content: str, metadata: Optional[dict[str, Any]] = None) -> bool:
+        """Recognize explicit outage notices and gateway-marked retryable refusals."""
+        if (metadata or {}).get("_gateway_retryable_refusal") is True:
+            return True
         text = (content or "").lower()
         subject = r"(?:hermes|the agent|agent|the gateway|gateway|bmo)"
         state = r"(?:is|was|appears to be|is currently|was currently)"
@@ -2786,7 +2788,17 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         bot_id = getattr(bot_user, "id", None)
         if bot_id is None:
             return False
+        message_id = str(getattr(message, "id", ""))
 
+        def _outage_response_id(conn):
+            row = conn.execute(
+                "SELECT response_message_id FROM discord_messages "
+                "WHERE message_id=? AND outage_response=1",
+                (message_id,),
+            ).fetchone()
+            return str(row[0]) if row and row[0] else None
+
+        outage_response_id = self._with_discord_recovery_db(_outage_response_id)
         async def _scan_history(channel: Any) -> bool:
             history = getattr(channel, "history", None)
             if not callable(history):
@@ -2796,12 +2808,15 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     author = getattr(candidate, "author", None)
                     if getattr(author, "id", None) != bot_id:
                         continue
-                    if self._is_down_notice_content(getattr(candidate, "content", "")):
-                        continue
                     reference = getattr(candidate, "reference", None)
                     ref_id = str(getattr(reference, "message_id", "") or "")
-                    if ref_id == str(getattr(message, "id", "")):
-                        return True
+                    if ref_id != message_id:
+                        continue
+                    if str(getattr(candidate, "id", "")) == outage_response_id:
+                        continue
+                    if self._is_down_notice_content(getattr(candidate, "content", "")):
+                        continue
+                    return True
             except Exception:
                 return False
             return False
@@ -2923,7 +2938,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             # cannot mark the row and backfill would re-dispatch it on every reconnect (#113631).
             def _complete(conn):
                 conn.execute(
-                    "UPDATE discord_messages SET status='responded', replied=1, updated_at=? WHERE message_id=?",
+                    "UPDATE discord_messages SET status='responded', replied=1, outage_response=0, updated_at=? WHERE message_id=?",
                     (now, message_id),
                 )
             self._with_discord_recovery_db(_complete)
@@ -2944,13 +2959,15 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     ) -> SendResult:
         """Record a send outcome using its visual or internal reply anchor."""
         ledger_reply_to = reply_to or (metadata or {}).get("reply_to_message_id")
+        outage = bool((metadata or {}).get("_gateway_retryable_refusal"))
         await asyncio.to_thread(
             self._record_discord_response, reply_to=ledger_reply_to, result=result, content=content, final=final,
+            outage=outage,
         )
         return result
 
     def _record_discord_response(
-        self, *, reply_to: Optional[str], result: SendResult, content: str, final: bool,
+        self, *, reply_to: Optional[str], result: SendResult, content: str, final: bool, outage: bool = False,
     ) -> None:
         if not self._missed_message_backfill_enabled() or not reply_to:
             return
@@ -2962,22 +2979,22 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             conn.execute(
                 """
                 INSERT INTO discord_messages (message_id, status, replied, outage_response, response_message_id, updated_at)
-                VALUES (?, ?, ?, 0, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO UPDATE SET
                     status=CASE WHEN ? THEN 'responded' ELSE discord_messages.status END,
                     replied=CASE WHEN ? THEN 1 ELSE discord_messages.replied END,
-                    outage_response=CASE WHEN ? THEN 0 ELSE discord_messages.outage_response END,
+                    outage_response=CASE WHEN ? THEN ? ELSE discord_messages.outage_response END,
                     response_message_id=COALESCE(?, response_message_id),
                     updated_at=?
                 """,
                 (
-                    reply_to, status, 1 if completed else 0, result.message_id, now,
+                    reply_to, status, 1 if completed else 0, 1 if completed and outage else 0, result.message_id, now,
                     1 if completed else 0, 1 if completed else 0, 1 if completed else 0,
-                    result.message_id, now,
+                    1 if outage else 0, result.message_id, now,
                 ),
             )
         self._with_discord_recovery_db(_op)
-        if completed:
+        if completed and not outage:
             def _channel_for_message(conn):
                 row = conn.execute(
                     "SELECT COALESCE(thread_id, channel_id) FROM discord_messages "

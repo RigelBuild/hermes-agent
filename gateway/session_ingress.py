@@ -59,6 +59,22 @@ async def admit_message(authority, event):
             named = f'{exc.reason}: {exc.field}' if exc.field in _CONTENT_CLAUSES else exc.reason
             return (f'⚠️ Hermes refused this message ({named}), so it was not saved '
                     'or answered. Ask the operator to check gateway.log.')
+        if exc.reason == 'runtime_draining':
+            event._gateway_retryable_refusal = True
+            source = event.source
+            platform = getattr(getattr(source, 'platform', None), 'value', None) or '?'
+            chat_id = getattr(source, 'chat_id', '?')
+            if exc.field == 'profile' or getattr(authority, 'retiring', False):
+                from gateway.parked_route_refusal import PARKED_ROUTE_NOTICE
+                notice = PARKED_ROUTE_NOTICE
+            else:
+                from agent.i18n import t
+                runner = authority.runner
+                notice = t('gateway.busy.drain_rejected_new_work', action=runner._status_action_gerund())
+            logger.warning(
+                '[%s] Refusing inbound event for %s (reason=runtime_draining); '
+                'nothing was admitted, a resend notice was sent', platform, chat_id)
+            return notice
         if exc.reason != 'queue_full':
             raise
         # Nothing was committed (main's busy-queue cap): say so instead of a generic turn error.
