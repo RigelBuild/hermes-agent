@@ -9,7 +9,47 @@ from urllib.error import HTTPError
 
 import pytest
 
-from scripts.releases.nix_release_cache import assemble, fetch_upstream_narinfo, parse_narinfo, write_pin
+from scripts.releases.nix_release_cache import (
+    assemble,
+    cache_release_tag,
+    fetch_upstream_narinfo,
+    parse_narinfo,
+    write_pin,
+)
+
+
+@pytest.mark.parametrize(
+    ("platform", "suffix"),
+    [
+        ("linux-x64", "linux-x64"),
+        ("linux-arm64", "linux-arm64"),
+        ("darwin-arm64", "darwin-arm64"),
+    ],
+)
+def test_cache_release_tag_uses_ruled_per_platform_form(platform: str, suffix: str) -> None:
+    tag = cache_release_tag("v2026.11.1-rigel.1", platform)
+    assert tag == f"v2026.11.1-rigel.1-cache-{suffix}"
+
+
+@pytest.mark.parametrize(
+    ("tag", "platform", "message"),
+    [
+        ("not-a-release", "linux-x64", "release pattern"),
+        ("v2026.11.1-rigel.1-cache-linux-x64", "linux-x64", "release pattern"),
+        ("v2026.11.1-rigel.1", "riscv64-linux", "unknown release platform"),
+    ],
+)
+def test_cache_release_tag_rejects_invalid_tag_or_platform(tag: str, platform: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        cache_release_tag(tag, platform)
+
+
+@pytest.mark.parametrize("platform", ["linux-x64", "linux-arm64", "darwin-arm64"])
+def test_cache_tag_cli_prints_platform_release_tag(platform: str, capsys) -> None:
+    from scripts.releases.nix_release_cache import main
+
+    assert main(["cache-tag", "-tag", "v2026.11.1-rigel.1", "-platform", platform]) == 0
+    assert capsys.readouterr().out == f"v2026.11.1-rigel.1-cache-{platform}\n"
 
 
 SHARED_HASH = "1b9p3x1z5r7c2m8k4w6v0q9s3d5f7h1j"
